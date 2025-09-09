@@ -1,9 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #[cfg(feature = "alloc")]
-use alloc::{string::String, collections::BTreeMap};
+use alloc::{collections::BTreeMap, string::String};
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Default)]

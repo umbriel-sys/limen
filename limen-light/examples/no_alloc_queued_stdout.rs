@@ -1,10 +1,12 @@
-use limen_light::no_alloc::runtime_queued::{NoAllocQueuedRuntime, BackpressurePolicyNoAlloc};
-use limen_light::no_alloc::components::sensor_simulated::{SimulatedSensorNoAlloc, SimulatedPattern};
-use limen_light::no_alloc::components::pre_identity::IdentityPreprocessorNoAlloc;
+use limen_core::types::DataType;
 use limen_light::no_alloc::components::model_identity::IdentityModelNoAlloc;
 use limen_light::no_alloc::components::post_identity::IdentityPostprocessorNoAlloc;
+use limen_light::no_alloc::components::pre_identity::IdentityPreprocessorNoAlloc;
+use limen_light::no_alloc::components::sensor_simulated::{
+    SimulatedPattern, SimulatedSensorNoAlloc,
+};
 use limen_light::no_alloc::components::sink_stdout::StandardOutputSinkNoAlloc;
-use limen_core::types::DataType;
+use limen_light::no_alloc::runtime_queued::{BackpressurePolicyNoAlloc, NoAllocQueuedRuntime};
 
 fn main() {
     let sensor = SimulatedSensorNoAlloc::new(16, 8, SimulatedPattern::Ramp);
@@ -13,12 +15,22 @@ fn main() {
     let post = IdentityPostprocessorNoAlloc::default();
     let sink = StandardOutputSinkNoAlloc::new(8);
 
-    let mut rt: NoAllocQueuedRuntime<_,_,_,_,_, 64,64,64,64, 4, 4, 4> =
-        NoAllocQueuedRuntime::new_with_policies(sensor, pre, model, post, sink, BackpressurePolicyNoAlloc::Block, BackpressurePolicyNoAlloc::DropOldest);
+    let mut rt: NoAllocQueuedRuntime<_, _, _, _, _, 64, 64, 64, 64, 4, 4, 4> =
+        NoAllocQueuedRuntime::new_with_policies(
+            sensor,
+            pre,
+            model,
+            post,
+            sink,
+            BackpressurePolicyNoAlloc::Block,
+            BackpressurePolicyNoAlloc::DropOldest,
+        );
     rt.open().unwrap();
     loop {
         let made_progress = rt.run_step().unwrap();
-        if !made_progress { }
-        if rt.state() == limen_core::runtime::RuntimeState::Stopped { break; }
+        if !made_progress {}
+        if rt.state() == limen_core::runtime::RuntimeState::Stopped {
+            break;
+        }
     }
 }

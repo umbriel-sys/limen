@@ -1,6 +1,6 @@
 use limen_core::errors::ProcessingError;
-use limen_core::traits::{Postprocessor, PostprocessorFactory};
 use limen_core::traits::configuration::PostprocessorConfiguration;
+use limen_core::traits::{Postprocessor, PostprocessorFactory};
 use limen_core::types::{DataType, TensorOutput};
 
 #[cfg(feature = "alloc")]
@@ -36,16 +36,27 @@ impl DebouncePostprocessor {
 impl Postprocessor for DebouncePostprocessor {
     fn process(&mut self, model_output: TensorOutput) -> Result<TensorOutput, ProcessingError> {
         if model_output.data_type != DataType::Unsigned8 {
-            return Err(ProcessingError::InvalidData { message: "debounce postprocessor expects Unsigned8 input".to_string() });
+            return Err(ProcessingError::InvalidData {
+                message: "debounce postprocessor expects Unsigned8 input".to_string(),
+            });
         }
         if model_output.buffer.is_empty() {
-            return Err(ProcessingError::InvalidData { message: "model output buffer is empty".to_string() });
+            return Err(ProcessingError::InvalidData {
+                message: "model output buffer is empty".to_string(),
+            });
         }
         let active_now = model_output.buffer[0] != 0;
         self.push_value(active_now);
         let out_value: u8 = if self.debounced_active { 1 } else { 0 };
-        let output = TensorOutput::new(DataType::Unsigned8, alloc::boxed::Box::from(vec![1usize]), None, vec![out_value])
-            .map_err(|e| ProcessingError::InvalidData { message: e.to_string() })?;
+        let output = TensorOutput::new(
+            DataType::Unsigned8,
+            alloc::boxed::Box::from(vec![1usize]),
+            None,
+            vec![out_value],
+        )
+        .map_err(|e| ProcessingError::InvalidData {
+            message: e.to_string(),
+        })?;
         Ok(output)
     }
     fn reset(&mut self) -> Result<(), ProcessingError> {
@@ -59,22 +70,36 @@ impl Postprocessor for DebouncePostprocessor {
 pub struct DebouncePostprocessorFactory;
 
 impl PostprocessorFactory for DebouncePostprocessorFactory {
-    fn postprocessor_name(&self) -> &'static str { "debounce" }
-    fn create_postprocessor(&self, configuration: &PostprocessorConfiguration) -> Result<Box<dyn Postprocessor>, ProcessingError> {
+    fn postprocessor_name(&self) -> &'static str {
+        "debounce"
+    }
+    fn create_postprocessor(
+        &self,
+        configuration: &PostprocessorConfiguration,
+    ) -> Result<Box<dyn Postprocessor>, ProcessingError> {
         let mut activation_count: u32 = 1;
         let mut deactivation_count: u32 = 1;
         #[cfg(feature = "alloc")]
         {
             if let Some(s) = configuration.parameters.get("activation_count") {
-                activation_count = s.parse::<u32>().map_err(|_| ProcessingError::InvalidData { message: "invalid 'activation_count' parameter".to_string() })?;
+                activation_count = s.parse::<u32>().map_err(|_| ProcessingError::InvalidData {
+                    message: "invalid 'activation_count' parameter".to_string(),
+                })?;
                 if activation_count == 0 {
-                    return Err(ProcessingError::InvalidData { message: "'activation_count' must be greater than zero".to_string() });
+                    return Err(ProcessingError::InvalidData {
+                        message: "'activation_count' must be greater than zero".to_string(),
+                    });
                 }
             }
             if let Some(s) = configuration.parameters.get("deactivation_count") {
-                deactivation_count = s.parse::<u32>().map_err(|_| ProcessingError::InvalidData { message: "invalid 'deactivation_count' parameter".to_string() })?;
+                deactivation_count =
+                    s.parse::<u32>().map_err(|_| ProcessingError::InvalidData {
+                        message: "invalid 'deactivation_count' parameter".to_string(),
+                    })?;
                 if deactivation_count == 0 {
-                    return Err(ProcessingError::InvalidData { message: "'deactivation_count' must be greater than zero".to_string() });
+                    return Err(ProcessingError::InvalidData {
+                        message: "'deactivation_count' must be greater than zero".to_string(),
+                    });
                 }
             }
         }

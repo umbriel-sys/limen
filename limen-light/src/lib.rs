@@ -3,11 +3,13 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod pipeline;
 pub mod builder;
+pub mod pipeline;
 
-pub use pipeline::LightPipeline;
+#[cfg(feature = "alloc")]
 pub use builder::LightPipelineBuilder;
+#[cfg(feature = "alloc")]
+pub use pipeline::LightPipeline;
 
 #[cfg(feature = "no_alloc")]
 pub mod no_alloc;

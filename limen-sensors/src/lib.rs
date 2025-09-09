@@ -16,28 +16,42 @@ pub mod serial_port;
 pub mod mqtt_paho_sensor;
 
 #[cfg(all(feature = "alloc", feature = "register"))]
-pub fn register_all(registries: &mut limen::Registries) -> Result<(), limen::registry::RegistryError> {
+pub fn register_all(
+    registries: &mut limen::Registries,
+) -> Result<(), limen::registry::RegistryError> {
     use alloc::boxed::Box;
     use simulated::SimulatedSensorFactory;
 
-    registries.register_sensor_stream_factory_with_name("simulated".to_string(), Box::new(SimulatedSensorFactory))?;
+    registries.register_sensor_stream_factory_with_name(
+        "simulated".to_string(),
+        Box::new(SimulatedSensorFactory),
+    )?;
 
     #[cfg(all(feature = "csv", feature = "std"))]
     {
         use crate::csv::CsvSensorFactory;
-        registries.register_sensor_stream_factory_with_name("csv".to_string(), Box::new(CsvSensorFactory))?;
+        registries.register_sensor_stream_factory_with_name(
+            "csv".to_string(),
+            Box::new(CsvSensorFactory),
+        )?;
     }
 
     #[cfg(all(feature = "serialport", feature = "std"))]
     {
         use crate::serial_port::SerialPortSensorFactory;
-        registries.register_sensor_stream_factory_with_name("serial".to_string(), Box::new(SerialPortSensorFactory))?;
+        registries.register_sensor_stream_factory_with_name(
+            "serial".to_string(),
+            Box::new(SerialPortSensorFactory),
+        )?;
     }
 
     #[cfg(all(feature = "mqtt-paho", feature = "std"))]
     {
         use crate::mqtt_paho_sensor::MessageQueuingTelemetryTransportSensorFactory;
-        registries.register_sensor_stream_factory_with_name("mqtt".to_string(), Box::new(MessageQueuingTelemetryTransportSensorFactory))?;
+        registries.register_sensor_stream_factory_with_name(
+            "mqtt".to_string(),
+            Box::new(MessageQueuingTelemetryTransportSensorFactory),
+        )?;
     }
 
     Ok(())

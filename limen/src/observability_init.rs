@@ -9,7 +9,9 @@ pub enum ObservabilityInitializationError {
 impl std::fmt::Display for ObservabilityInitializationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ObservabilityInitializationError::TracingInitializationFailed(msg) => write!(f, "tracing initialization failed: {}", msg),
+            ObservabilityInitializationError::TracingInitializationFailed(msg) => {
+                write!(f, "tracing initialization failed: {}", msg)
+            }
         }
     }
 }
@@ -21,7 +23,8 @@ pub fn initialize_observability() -> Result<(), ObservabilityInitializationError
     #[cfg(all(feature = "std", feature = "tracing"))]
     {
         use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         let subscriber = fmt::layer()
             .with_target(true)
             .with_thread_ids(false)

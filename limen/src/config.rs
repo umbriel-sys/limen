@@ -59,22 +59,42 @@ pub struct RuntimeConfiguration {
     pub output_sink: NamedConfiguration<OutputSinkConfiguration>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub platform_backend: Option<NamedConfiguration<PlatformBackendConfiguration>>,
-    #[cfg_attr(feature = "serde", serde(default = "RuntimeConfiguration::default_preprocessor_input_queue_capacity"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "RuntimeConfiguration::default_preprocessor_input_queue_capacity")
+    )]
     pub preprocessor_input_queue_capacity: usize,
-    #[cfg_attr(feature = "serde", serde(default = "RuntimeConfiguration::default_postprocessor_output_queue_capacity"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "RuntimeConfiguration::default_postprocessor_output_queue_capacity")
+    )]
     pub postprocessor_output_queue_capacity: usize,
-    #[cfg_attr(feature = "serde", serde(default = "RuntimeConfiguration::default_backpressure_block"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "RuntimeConfiguration::default_backpressure_block")
+    )]
     pub backpressure_policy_for_preprocessor_input_queue: BackpressurePolicySetting,
-    #[cfg_attr(feature = "serde", serde(default = "RuntimeConfiguration::default_backpressure_drop_oldest"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "RuntimeConfiguration::default_backpressure_drop_oldest")
+    )]
     pub backpressure_policy_for_postprocessor_output_queue: BackpressurePolicySetting,
 }
 
 #[cfg(feature = "alloc")]
 impl RuntimeConfiguration {
-    fn default_preprocessor_input_queue_capacity() -> usize { 64 }
-    fn default_postprocessor_output_queue_capacity() -> usize { 64 }
-    fn default_backpressure_block() -> BackpressurePolicySetting { BackpressurePolicySetting::Block }
-    fn default_backpressure_drop_oldest() -> BackpressurePolicySetting { BackpressurePolicySetting::DropOldest }
+    fn default_preprocessor_input_queue_capacity() -> usize {
+        64
+    }
+    fn default_postprocessor_output_queue_capacity() -> usize {
+        64
+    }
+    fn default_backpressure_block() -> BackpressurePolicySetting {
+        BackpressurePolicySetting::Block
+    }
+    fn default_backpressure_drop_oldest() -> BackpressurePolicySetting {
+        BackpressurePolicySetting::DropOldest
+    }
 }
 
 #[cfg(all(feature = "alloc", feature = "serde", feature = "toml"))]

@@ -1,5 +1,5 @@
 #[cfg(feature = "alloc")]
-use limen_core::runtime::{BackpressurePolicy};
+use limen_core::runtime::BackpressurePolicy;
 
 #[cfg(feature = "alloc")]
 use crate::pipeline::LightPipeline;
@@ -23,12 +23,35 @@ impl LightPipelineBuilder {
             backpressure_policy_for_postprocessor_output_queue: BackpressurePolicy::DropOldest,
         }
     }
-    pub fn with_preprocessor_input_queue_capacity(mut self, capacity: usize) -> Self { self.preprocessor_input_queue_capacity = capacity.max(1); self }
-    pub fn with_postprocessor_output_queue_capacity(mut self, capacity: usize) -> Self { self.postprocessor_output_queue_capacity = capacity.max(1); self }
-    pub fn with_backpressure_policy_for_preprocessor_input_queue(mut self, policy: BackpressurePolicy) -> Self { self.backpressure_policy_for_preprocessor_input_queue = policy; self }
-    pub fn with_backpressure_policy_for_postprocessor_output_queue(mut self, policy: BackpressurePolicy) -> Self { self.backpressure_policy_for_postprocessor_output_queue = policy; self }
+    pub fn with_preprocessor_input_queue_capacity(mut self, capacity: usize) -> Self {
+        self.preprocessor_input_queue_capacity = capacity.max(1);
+        self
+    }
+    pub fn with_postprocessor_output_queue_capacity(mut self, capacity: usize) -> Self {
+        self.postprocessor_output_queue_capacity = capacity.max(1);
+        self
+    }
+    pub fn with_backpressure_policy_for_preprocessor_input_queue(
+        mut self,
+        policy: BackpressurePolicy,
+    ) -> Self {
+        self.backpressure_policy_for_preprocessor_input_queue = policy;
+        self
+    }
+    pub fn with_backpressure_policy_for_postprocessor_output_queue(
+        mut self,
+        policy: BackpressurePolicy,
+    ) -> Self {
+        self.backpressure_policy_for_postprocessor_output_queue = policy;
+        self
+    }
     pub fn build<S, P, M, Q, O>(
-        self, sensor_stream_instance: S, preprocessor_instance: P, model_instance: M, postprocessor_instance: Q, output_sink_instance: O,
+        self,
+        sensor_stream_instance: S,
+        preprocessor_instance: P,
+        model_instance: M,
+        postprocessor_instance: Q,
+        output_sink_instance: O,
     ) -> LightPipeline<S, P, M, Q, O>
     where
         S: limen_core::traits::SensorStream,
@@ -38,10 +61,22 @@ impl LightPipelineBuilder {
         O: limen_core::traits::OutputSink,
     {
         LightPipeline::new(
-            sensor_stream_instance, preprocessor_instance, model_instance, postprocessor_instance, output_sink_instance,
-            self.preprocessor_input_queue_capacity, self.postprocessor_output_queue_capacity,
-            self.backpressure_policy_for_preprocessor_input_queue, self.backpressure_policy_for_postprocessor_output_queue,
+            sensor_stream_instance,
+            preprocessor_instance,
+            model_instance,
+            postprocessor_instance,
+            output_sink_instance,
+            self.preprocessor_input_queue_capacity,
+            self.postprocessor_output_queue_capacity,
+            self.backpressure_policy_for_preprocessor_input_queue,
+            self.backpressure_policy_for_postprocessor_output_queue,
         )
     }
 }
-impl Default for LightPipelineBuilder { fn default() -> Self { Self::new() } }
+
+#[cfg(feature = "alloc")]
+impl Default for LightPipelineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}

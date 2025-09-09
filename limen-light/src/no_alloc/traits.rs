@@ -1,13 +1,24 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-use limen_core::errors::{SensorError, ProcessingError, InferenceError, OutputError};
+use crate::no_alloc::types::{
+    BorrowedTensorView, BorrowedTensorViewMut, FixedShape, SensorFrameMeta,
+};
+use limen_core::errors::{InferenceError, OutputError, ProcessingError, SensorError};
 use limen_core::types::DataType;
-use crate::no_alloc::types::{BorrowedTensorView, BorrowedTensorViewMut, FixedShape, SensorFrameMeta};
 
 pub trait SensorSourceBorrowed {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next_into<'a>(&'a mut self, destination_buffer: &'a mut [u8]) -> Result<Option<(usize, SensorFrameMeta)>, SensorError>;
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
+    fn open(&mut self) -> Result<(), SensorError> {
+        Ok(())
+    }
+    fn read_next_into<'a>(
+        &'a mut self,
+        destination_buffer: &'a mut [u8],
+    ) -> Result<Option<(usize, SensorFrameMeta)>, SensorError>;
+    fn reset(&mut self) -> Result<(), SensorError> {
+        Ok(())
+    }
+    fn close(&mut self) -> Result<(), SensorError> {
+        Ok(())
+    }
 }
 pub trait PreprocessorNoAlloc<const MAX_DIMS: usize> {
     fn process(
@@ -17,7 +28,9 @@ pub trait PreprocessorNoAlloc<const MAX_DIMS: usize> {
         output_shape: &mut FixedShape<MAX_DIMS>,
         output_buffer: &mut [u8],
     ) -> Result<usize, ProcessingError>;
-    fn reset(&mut self) -> Result<(), ProcessingError> { Ok(()) }
+    fn reset(&mut self) -> Result<(), ProcessingError> {
+        Ok(())
+    }
 }
 pub trait ModelNoAlloc<const MAX_DIMS: usize> {
     fn infer(
@@ -27,7 +40,9 @@ pub trait ModelNoAlloc<const MAX_DIMS: usize> {
         output_shape: &mut FixedShape<MAX_DIMS>,
         output_buffer: &mut [u8],
     ) -> Result<usize, InferenceError>;
-    fn unload(&mut self) -> Result<(), InferenceError> { Ok(()) }
+    fn unload(&mut self) -> Result<(), InferenceError> {
+        Ok(())
+    }
 }
 pub trait PostprocessorNoAlloc<const MAX_DIMS: usize> {
     fn process(
@@ -37,10 +52,16 @@ pub trait PostprocessorNoAlloc<const MAX_DIMS: usize> {
         output_shape: &mut FixedShape<MAX_DIMS>,
         output_buffer: &mut [u8],
     ) -> Result<usize, ProcessingError>;
-    fn reset(&mut self) -> Result<(), ProcessingError> { Ok(()) }
+    fn reset(&mut self) -> Result<(), ProcessingError> {
+        Ok(())
+    }
 }
 pub trait OutputSinkNoAlloc {
     fn write(&mut self, output: BorrowedTensorView<'_>) -> Result<(), OutputError>;
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
-    fn close(&mut self) -> Result<(), OutputError> { Ok(()) }
+    fn flush(&mut self) -> Result<(), OutputError> {
+        Ok(())
+    }
+    fn close(&mut self) -> Result<(), OutputError> {
+        Ok(())
+    }
 }

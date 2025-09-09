@@ -3,8 +3,8 @@
 pub mod configuration;
 pub mod platform;
 
-use crate::errors::{SensorError, ProcessingError, InferenceError, OutputError, RuntimeError};
-use crate::types::{SensorData, TensorInput, TensorOutput, ModelMetadata};
+use crate::errors::{InferenceError, OutputError, ProcessingError, RuntimeError, SensorError};
+use crate::types::{ModelMetadata, SensorData, TensorInput, TensorOutput};
 
 pub trait SensorStream {
     fn open(&mut self) -> Result<(), SensorError>;
@@ -15,7 +15,10 @@ pub trait SensorStream {
 }
 
 pub trait Preprocessor {
-    fn process(&mut self, sensor_data: crate::types::SensorData<'_>) -> Result<TensorInput, ProcessingError>;
+    fn process(
+        &mut self,
+        sensor_data: crate::types::SensorData<'_>,
+    ) -> Result<TensorInput, ProcessingError>;
     fn reset(&mut self) -> Result<(), ProcessingError>;
 }
 
@@ -32,32 +35,50 @@ pub trait Postprocessor {
 
 pub trait OutputSink {
     fn write(&mut self, output: &TensorOutput) -> Result<(), OutputError>;
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
+    fn flush(&mut self) -> Result<(), OutputError> {
+        Ok(())
+    }
     fn close(&mut self) -> Result<(), OutputError>;
 }
 
 pub trait SensorStreamFactory {
     fn sensor_name(&self) -> &'static str;
-    fn create_sensor_stream(&self, configuration: &configuration::SensorStreamConfiguration) -> Result<alloc::boxed::Box<dyn SensorStream>, SensorError>;
+    fn create_sensor_stream(
+        &self,
+        configuration: &configuration::SensorStreamConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn SensorStream>, SensorError>;
 }
 
 pub trait PreprocessorFactory {
     fn preprocessor_name(&self) -> &'static str;
-    fn create_preprocessor(&self, configuration: &configuration::PreprocessorConfiguration) -> Result<alloc::boxed::Box<dyn Preprocessor>, ProcessingError>;
+    fn create_preprocessor(
+        &self,
+        configuration: &configuration::PreprocessorConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn Preprocessor>, ProcessingError>;
 }
 
 pub trait PostprocessorFactory {
     fn postprocessor_name(&self) -> &'static str;
-    fn create_postprocessor(&self, configuration: &configuration::PostprocessorConfiguration) -> Result<alloc::boxed::Box<dyn Postprocessor>, ProcessingError>;
+    fn create_postprocessor(
+        &self,
+        configuration: &configuration::PostprocessorConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn Postprocessor>, ProcessingError>;
 }
 
 pub trait OutputSinkFactory {
     fn sink_name(&self) -> &'static str;
-    fn create_output_sink(&self, configuration: &configuration::OutputSinkConfiguration) -> Result<alloc::boxed::Box<dyn OutputSink>, OutputError>;
+    fn create_output_sink(
+        &self,
+        configuration: &configuration::OutputSinkConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn OutputSink>, OutputError>;
 }
 
 pub trait ComputeBackend {
-    fn load_model(&mut self, configuration: &configuration::ComputeBackendConfiguration, metadata_hint: Option<&ModelMetadata>) -> Result<alloc::boxed::Box<dyn Model>, InferenceError>;
+    fn load_model(
+        &mut self,
+        configuration: &configuration::ComputeBackendConfiguration,
+        metadata_hint: Option<&ModelMetadata>,
+    ) -> Result<alloc::boxed::Box<dyn Model>, InferenceError>;
 }
 
 pub trait ComputeBackendFactory {
@@ -73,5 +94,8 @@ pub trait PlatformBackend {
 
 pub trait PlatformBackendFactory {
     fn platform_name(&self) -> &'static str;
-    fn create_platform_backend(&self, configuration: &configuration::PlatformBackendConfiguration) -> Result<alloc::boxed::Box<dyn PlatformBackend>, RuntimeError>;
+    fn create_platform_backend(
+        &self,
+        configuration: &configuration::PlatformBackendConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn PlatformBackend>, RuntimeError>;
 }

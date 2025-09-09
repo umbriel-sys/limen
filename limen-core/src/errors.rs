@@ -11,7 +11,10 @@ pub enum SensorError {
     EndOfStream,
     ResetFailed,
     ConfigurationInvalid,
-    Other { #[cfg(feature="alloc")] message: String },
+    Other {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
 }
 
 impl fmt::Display for SensorError {
@@ -32,8 +35,14 @@ impl std::error::Error for SensorError {}
 
 #[derive(Debug)]
 pub enum ProcessingError {
-    InvalidData { #[cfg(feature="alloc")] message: String },
-    OperationFailed { #[cfg(feature="alloc")] message: String },
+    InvalidData {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
+    OperationFailed {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
 }
 
 impl fmt::Display for ProcessingError {
@@ -51,7 +60,10 @@ impl std::error::Error for ProcessingError {}
 #[derive(Debug)]
 pub enum InferenceError {
     BackendUnavailable,
-    Other { #[cfg(feature="alloc")] message: String },
+    Other {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
 }
 
 impl fmt::Display for InferenceError {
@@ -70,7 +82,10 @@ impl std::error::Error for InferenceError {}
 pub enum OutputError {
     WriteFailed,
     FlushFailed,
-    Other { #[cfg(feature="alloc")] message: String },
+    Other {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
 }
 
 impl fmt::Display for OutputError {
@@ -92,7 +107,10 @@ pub enum RuntimeError {
     ComponentFailureDuringOpen,
     ComponentFailureDuringClose,
     StepFailed,
-    Other { #[cfg(feature="alloc")] message: String },
+    Other {
+        #[cfg(feature = "alloc")]
+        message: String,
+    },
 }
 
 impl fmt::Display for RuntimeError {
@@ -100,7 +118,9 @@ impl fmt::Display for RuntimeError {
         match self {
             RuntimeError::RuntimeNotOpen => write!(f, "runtime is not open"),
             RuntimeError::ComponentFailureDuringOpen => write!(f, "component failure during open"),
-            RuntimeError::ComponentFailureDuringClose => write!(f, "component failure during close"),
+            RuntimeError::ComponentFailureDuringClose => {
+                write!(f, "component failure during close")
+            }
             RuntimeError::StepFailed => write!(f, "step failed"),
             RuntimeError::Other { .. } => write!(f, "runtime error"),
         }

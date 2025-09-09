@@ -4,11 +4,11 @@
 extern crate alloc;
 
 #[cfg(feature = "alloc")]
-use alloc::{collections::VecDeque, boxed::Box, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 
-use crate::errors::{RuntimeError};
+use crate::errors::RuntimeError;
+use crate::traits::{Model, OutputSink, Postprocessor, Preprocessor, SensorStream};
 use crate::types::{TensorInput, TensorOutput};
-use crate::traits::{SensorStream, Preprocessor, Model, Postprocessor, OutputSink};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackpressurePolicy {
@@ -93,7 +93,11 @@ where
         post_policy: BackpressurePolicy,
     ) -> Self {
         Self {
-            sensor, pre, model, post, sink,
+            sensor,
+            pre,
+            model,
+            post,
+            sink,
             state: RuntimeState::Initialized,
             stats: FlowStatistics::default(),
             pre_q: VecDeque::with_capacity(pre_q_cap.max(1)),
@@ -109,7 +113,9 @@ where
         if self.state != RuntimeState::Initialized {
             return Err(RuntimeError::RuntimeNotOpen);
         }
-        self.sensor.open().map_err(|_| RuntimeError::ComponentFailureDuringOpen)?;
+        self.sensor
+            .open()
+            .map_err(|_| RuntimeError::ComponentFailureDuringOpen)?;
         self.state = RuntimeState::Running;
         Ok(())
     }
@@ -143,7 +149,7 @@ where
     }
 
     pub fn run_step(&mut self) -> Result<bool, RuntimeError> {
-        use crate::errors::{SensorError, ProcessingError, InferenceError, OutputError};
+        use crate::errors::{InferenceError, OutputError, ProcessingError, SensorError};
 
         if self.state != RuntimeState::Running && self.state != RuntimeState::Stopping {
             return Err(RuntimeError::RuntimeNotOpen);
@@ -154,36 +160,66 @@ where
         // 1) Sensor -> Preprocessor -> enqueue pre
         match self.sensor.read_next() {
             Ok(Some(data)) => {
-                self.stats.total_sensor_samples_received = self.stats.total_sensor_samples_received.saturating_add(1);
+                self.stats.total_sensor_samples_received =
+                    self.stats.total_sensor_samples_received.saturating_add(1);
                 match self.pre.process(data) {
                     Ok(ti) => {
-                        if Self::push_with_backpressure(&mut self.pre_q, self.pre_q_cap, self.pre_policy, ti) {
-                            self.stats.total_preprocessor_outputs_produced = self.stats.total_preprocessor_outputs_produced.saturating_add(1);
+                        if Self::push_with_backpressure(
+                            &mut self.pre_q,
+                            self.pre_q_cap,
+                            self.pre_policy,
+                            ti,
+                        ) {
+                            self.stats.total_preprocessor_outputs_produced = self
+                                .stats
+                                .total_preprocessor_outputs_produced
+                                .saturating_add(1);
                             did_work = true;
                         } else {
-                            self.stats.total_dropped_at_preprocessor_input_queue = self.stats.total_dropped_at_preprocessor_input_queue.saturating_add(1);
+                            self.stats.total_dropped_at_preprocessor_input_queue = self
+                                .stats
+                                .total_dropped_at_preprocessor_input_queue
+                                .saturating_add(1);
                         }
                     }
                     Err(_e) => { /* drop this sample */ }
                 }
             }
             Ok(None) => { /* no data */ }
-            Err(SensorError::EndOfStream) => { self.request_stop(); }
-            Err(_other) => { self.request_stop(); }
+            Err(SensorError::EndOfStream) => {
+                self.request_stop();
+            }
+            Err(_other) => {
+                self.request_stop();
+            }
         }
 
         // 2) Model + Postprocess -> enqueue post
         if let Some(ti) = self.pre_q.pop_front() {
             match self.model.infer(&ti) {
                 Ok(to_mid) => {
-                    self.stats.total_model_inferences_completed = self.stats.total_model_inferences_completed.saturating_add(1);
+                    self.stats.total_model_inferences_completed = self
+                        .stats
+                        .total_model_inferences_completed
+                        .saturating_add(1);
                     match self.post.process(to_mid) {
                         Ok(to) => {
-                            self.stats.total_postprocessor_outputs_produced = self.stats.total_postprocessor_outputs_produced.saturating_add(1);
-                            if Self::push_with_backpressure(&mut self.post_q, self.post_q_cap, self.post_policy, to) {
+                            self.stats.total_postprocessor_outputs_produced = self
+                                .stats
+                                .total_postprocessor_outputs_produced
+                                .saturating_add(1);
+                            if Self::push_with_backpressure(
+                                &mut self.post_q,
+                                self.post_q_cap,
+                                self.post_policy,
+                                to,
+                            ) {
                                 did_work = true
                             } else {
-                                self.stats.total_dropped_at_postprocessor_output_queue = self.stats.total_dropped_at_postprocessor_output_queue.saturating_add(1);
+                                self.stats.total_dropped_at_postprocessor_output_queue = self
+                                    .stats
+                                    .total_dropped_at_postprocessor_output_queue
+                                    .saturating_add(1);
                             }
                         }
                         Err(_e) => { /* drop */ }
@@ -225,16 +261,21 @@ where
     }
 
     #[cfg(feature = "std")]
-    pub fn run_blocking(&mut self, idle_sleep_duration_milliseconds: u64) -> Result<(), RuntimeError> {
-        use std::time::Duration;
+    pub fn run_blocking(
+        &mut self,
+        idle_sleep_duration_milliseconds: u64,
+    ) -> Result<(), RuntimeError> {
         use std::thread::sleep;
+        use std::time::Duration;
         self.open()?;
         loop {
             let progressed = self.run_step()?;
             if !progressed {
                 sleep(Duration::from_millis(idle_sleep_duration_milliseconds));
             }
-            if self.state == RuntimeState::Stopped { break; }
+            if self.state == RuntimeState::Stopped {
+                break;
+            }
         }
         Ok(())
     }
@@ -250,5 +291,7 @@ where
         }
     }
 
-    pub fn statistics(&self) -> &FlowStatistics { &self.stats }
+    pub fn statistics(&self) -> &FlowStatistics {
+        &self.stats
+    }
 }

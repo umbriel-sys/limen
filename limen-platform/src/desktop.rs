@@ -1,9 +1,11 @@
 use limen_core::errors::RuntimeError;
-use limen_core::traits::{PlatformBackend, PlatformBackendFactory};
 use limen_core::traits::configuration::PlatformBackendConfiguration;
 use limen_core::traits::platform::PlatformConstraints;
+use limen_core::traits::{PlatformBackend, PlatformBackendFactory};
 
-pub struct DesktopPlatformBackend { constraints: PlatformConstraints }
+pub struct DesktopPlatformBackend {
+    constraints: PlatformConstraints,
+}
 
 impl DesktopPlatformBackend {
     fn detect_recommended_worker_thread_count() -> u16 {
@@ -28,15 +30,28 @@ impl DesktopPlatformBackend {
 }
 
 impl PlatformBackend for DesktopPlatformBackend {
-    fn constraints(&self) -> PlatformConstraints { self.constraints }
-    fn initialize(&mut self) -> Result<(), RuntimeError> { Ok(()) }
-    fn shutdown(&mut self) -> Result<(), RuntimeError> { Ok(()) }
+    fn constraints(&self) -> PlatformConstraints {
+        self.constraints
+    }
+    fn initialize(&mut self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+    fn shutdown(&mut self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 }
 
 pub struct DesktopPlatformBackendFactory;
 impl PlatformBackendFactory for DesktopPlatformBackendFactory {
-    fn platform_name(&self) -> &'static str { "desktop" }
-    fn create_platform_backend(&self, _configuration: &PlatformBackendConfiguration) -> Result<alloc::boxed::Box<dyn PlatformBackend>, RuntimeError> {
-        Ok(alloc::boxed::Box::new(DesktopPlatformBackend { constraints: DesktopPlatformBackend::default_constraints() }))
+    fn platform_name(&self) -> &'static str {
+        "desktop"
+    }
+    fn create_platform_backend(
+        &self,
+        _configuration: &PlatformBackendConfiguration,
+    ) -> Result<alloc::boxed::Box<dyn PlatformBackend>, RuntimeError> {
+        Ok(alloc::boxed::Box::new(DesktopPlatformBackend {
+            constraints: DesktopPlatformBackend::default_constraints(),
+        }))
     }
 }

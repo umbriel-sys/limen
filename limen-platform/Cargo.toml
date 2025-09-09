@@ -12,7 +12,7 @@ alloc = ["limen-core/alloc"]
 std = ["limen-core/std", "alloc"]
 register = ["dep:limen"]
 serde = ["limen-core/serde", "dep:serde"]
-num_cpus = []
+num_cpus = ["dep:num_cpus"]
 
 [dependencies]
 limen-core = { path = "../limen-core", default-features = false }

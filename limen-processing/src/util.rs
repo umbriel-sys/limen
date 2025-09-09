@@ -28,11 +28,19 @@ pub fn parse_shape_csv(csv: &str) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
     for part in csv.split(',') {
         let trimmed = part.trim();
-        if trimmed.is_empty() { return Err("empty dimension in shape".to_string()); }
-        let value: usize = trimmed.parse().map_err(|_| format!("invalid dimension '{}'", trimmed))?;
-        if value == 0 { return Err("shape dimensions must be greater than zero".to_string()); }
+        if trimmed.is_empty() {
+            return Err("empty dimension in shape".to_string());
+        }
+        let value: usize = trimmed
+            .parse()
+            .map_err(|_| format!("invalid dimension '{}'", trimmed))?;
+        if value == 0 {
+            return Err("shape dimensions must be greater than zero".to_string());
+        }
         out.push(value);
     }
-    if out.is_empty() { return Err("shape must have at least one dimension".to_string()); }
+    if out.is_empty() {
+        return Err("shape must have at least one dimension".to_string());
+    }
     Ok(out)
 }

@@ -3,13 +3,13 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod config;
-pub mod registry;
-pub mod builder;
 pub mod boxed;
+pub mod builder;
+pub mod config;
 pub mod observability_init;
+pub mod registry;
 
+pub use boxed::*;
+pub use builder::*;
 pub use config::*;
 pub use registry::*;
-pub use builder::*;
-pub use boxed::*;

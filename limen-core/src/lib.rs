@@ -5,6 +5,6 @@
 extern crate alloc;
 
 pub mod errors;
-pub mod types;
-pub mod traits;
 pub mod runtime;
+pub mod traits;
+pub mod types;

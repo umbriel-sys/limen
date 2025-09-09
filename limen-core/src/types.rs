@@ -4,7 +4,7 @@
 extern crate alloc;
 
 #[cfg(feature = "alloc")]
-use alloc::{boxed::Box, vec::Vec, string::String, collections::BTreeMap};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
 #[cfg(feature = "alloc")]
 use alloc::borrow::Cow;
@@ -12,7 +12,7 @@ use alloc::borrow::Cow;
 use core::fmt;
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -126,7 +126,12 @@ pub struct ModelMetadata {
 }
 
 impl ModelMetadata {
-    pub fn empty() -> Self { Self { inputs: Vec::new(), outputs: Vec::new() } }
+    pub fn empty() -> Self {
+        Self {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -148,7 +153,9 @@ pub struct TensorOutput {
 fn product(shape: &[usize]) -> Option<usize> {
     let mut p: usize = 1;
     for &d in shape.iter() {
-        if d == 0 { return None; }
+        if d == 0 {
+            return None;
+        }
         p = p.checked_mul(d)?;
     }
     Some(p)
@@ -162,12 +169,21 @@ impl TensorInput {
         buffer: Vec<u8>,
     ) -> Result<Self, alloc::string::String> {
         let elem = data_type.byte_size();
-        let expected = product(&shape).ok_or_else(|| alloc::string::String::from("invalid shape"))?
-            .checked_mul(elem).ok_or_else(|| alloc::string::String::from("size overflow"))?;
+        let expected = product(&shape)
+            .ok_or_else(|| alloc::string::String::from("invalid shape"))?
+            .checked_mul(elem)
+            .ok_or_else(|| alloc::string::String::from("size overflow"))?;
         if expected != buffer.len() {
-            return Err(alloc::string::String::from("buffer length does not match shape * dtype"));
+            return Err(alloc::string::String::from(
+                "buffer length does not match shape * dtype",
+            ));
         }
-        Ok(Self { data_type, shape, strides, buffer })
+        Ok(Self {
+            data_type,
+            shape,
+            strides,
+            buffer,
+        })
     }
 }
 
@@ -179,11 +195,20 @@ impl TensorOutput {
         buffer: Vec<u8>,
     ) -> Result<Self, alloc::string::String> {
         let elem = data_type.byte_size();
-        let expected = product(&shape).ok_or_else(|| alloc::string::String::from("invalid shape"))?
-            .checked_mul(elem).ok_or_else(|| alloc::string::String::from("size overflow"))?;
+        let expected = product(&shape)
+            .ok_or_else(|| alloc::string::String::from("invalid shape"))?
+            .checked_mul(elem)
+            .ok_or_else(|| alloc::string::String::from("size overflow"))?;
         if expected != buffer.len() {
-            return Err(alloc::string::String::from("buffer length does not match shape * dtype"));
+            return Err(alloc::string::String::from(
+                "buffer length does not match shape * dtype",
+            ));
         }
-        Ok(Self { data_type, shape, strides, buffer })
+        Ok(Self {
+            data_type,
+            shape,
+            strides,
+            buffer,
+        })
     }
 }

@@ -1,6 +1,6 @@
 use limen_core::errors::ProcessingError;
-use limen_core::traits::{Preprocessor, PreprocessorFactory};
 use limen_core::traits::configuration::PreprocessorConfiguration;
+use limen_core::traits::{Preprocessor, PreprocessorFactory};
 use limen_core::types::{DataType, TensorInput};
 
 #[cfg(feature = "alloc")]
@@ -16,11 +16,20 @@ pub struct NormalizePreprocessor {
 }
 
 impl Preprocessor for NormalizePreprocessor {
-    fn process(&mut self, sensor_data: limen_core::types::SensorData<'_>) -> Result<TensorInput, ProcessingError> {
-        let shape = if let Some(s) = &self.output_shape_override { s.clone() } else { alloc::boxed::Box::from(vec![sensor_data.payload.len()]) };
+    fn process(
+        &mut self,
+        sensor_data: limen_core::types::SensorData<'_>,
+    ) -> Result<TensorInput, ProcessingError> {
+        let shape = if let Some(s) = &self.output_shape_override {
+            s.clone()
+        } else {
+            alloc::boxed::Box::from(vec![sensor_data.payload.len()])
+        };
         let element_count = shape.iter().copied().product::<usize>();
         if element_count != sensor_data.payload.len() {
-            return Err(ProcessingError::InvalidData { message: "output shape does not match the number of input bytes".to_string() });
+            return Err(ProcessingError::InvalidData {
+                message: "output shape does not match the number of input bytes".to_string(),
+            });
         }
 
         let mut buffer = Vec::with_capacity(element_count * core::mem::size_of::<f32>());
@@ -29,19 +38,29 @@ impl Preprocessor for NormalizePreprocessor {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
 
-        TensorInput::new(DataType::Float32, shape, None, buffer)
-            .map_err(|e| ProcessingError::InvalidData { message: e.to_string() })
+        TensorInput::new(DataType::Float32, shape, None, buffer).map_err(|e| {
+            ProcessingError::InvalidData {
+                message: e.to_string(),
+            }
+        })
     }
 
-    fn reset(&mut self) -> Result<(), ProcessingError> { Ok(()) }
+    fn reset(&mut self) -> Result<(), ProcessingError> {
+        Ok(())
+    }
 }
 
 pub struct NormalizePreprocessorFactory;
 
 impl PreprocessorFactory for NormalizePreprocessorFactory {
-    fn preprocessor_name(&self) -> &'static str { "normalize" }
+    fn preprocessor_name(&self) -> &'static str {
+        "normalize"
+    }
 
-    fn create_preprocessor(&self, configuration: &PreprocessorConfiguration) -> Result<Box<dyn Preprocessor>, ProcessingError> {
+    fn create_preprocessor(
+        &self,
+        configuration: &PreprocessorConfiguration,
+    ) -> Result<Box<dyn Preprocessor>, ProcessingError> {
         let mut scale: f32 = 1.0 / 255.0;
         let mut offset: f32 = 0.0;
         let mut output_shape_override: Option<alloc::boxed::Box<[usize]>> = None;
@@ -49,17 +68,26 @@ impl PreprocessorFactory for NormalizePreprocessorFactory {
         #[cfg(feature = "alloc")]
         {
             if let Some(s) = configuration.parameters.get("scale") {
-                scale = s.parse::<f32>().map_err(|_| ProcessingError::InvalidData { message: "invalid 'scale' parameter".to_string() })?;
+                scale = s.parse::<f32>().map_err(|_| ProcessingError::InvalidData {
+                    message: "invalid 'scale' parameter".to_string(),
+                })?;
             }
             if let Some(s) = configuration.parameters.get("offset") {
-                offset = s.parse::<f32>().map_err(|_| ProcessingError::InvalidData { message: "invalid 'offset' parameter".to_string() })?;
+                offset = s.parse::<f32>().map_err(|_| ProcessingError::InvalidData {
+                    message: "invalid 'offset' parameter".to_string(),
+                })?;
             }
             if let Some(s) = configuration.parameters.get("output_shape") {
-                let parsed = parse_shape_csv(s).map_err(|m| ProcessingError::InvalidData { message: m })?;
+                let parsed =
+                    parse_shape_csv(s).map_err(|m| ProcessingError::InvalidData { message: m })?;
                 output_shape_override = Some(alloc::boxed::Box::from(parsed));
             }
         }
 
-        Ok(Box::new(NormalizePreprocessor { scale, offset, output_shape_override }))
+        Ok(Box::new(NormalizePreprocessor {
+            scale,
+            offset,
+            output_shape_override,
+        }))
     }
 }

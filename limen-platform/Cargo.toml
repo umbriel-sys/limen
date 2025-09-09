@@ -3,7 +3,19 @@ name = "limen-platform"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Platform backends for Limen."
+description = "Platform backends for the Limen runtime (desktop)."
+repository = "https://example.com/your/limen"
+
+[features]
+default = ["alloc", "std"]
+alloc = ["limen-core/alloc"]
+std = ["limen-core/std", "alloc"]
+register = ["dep:limen"]
+serde = ["limen-core/serde", "dep:serde"]
+num_cpus = []
 
 [dependencies]
-limen-core = { path = "../limen-core" }
+limen-core = { path = "../limen-core", default-features = false }
+limen = { path = "../limen", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
+num_cpus = { version = "1.16", optional = true }

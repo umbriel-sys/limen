@@ -4,4 +4,18 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "Examples for the Limen runtime."
+
+[features]
+default = ["std"]
+std = []
+use_tract = []
+
+[dependencies]
+limen-core = { path = "../limen-core", default-features = false, features = ["std"] }
+limen = { path = "../limen", default-features = false, features = ["std", "serde", "toml", "tracing"] }
+
+limen-processing = { path = "../limen-processing", default-features = false, features = ["std", "register"] }
+limen-sensors = { path = "../limen-sensors", default-features = false, features = ["std", "register"] }
+limen-output = { path = "../limen-output", default-features = false, features = ["std", "register", "stdout"] }
+limen-platform = { path = "../limen-platform", default-features = false, features = ["std", "register"] }
+limen-models = { path = "../limen-models", default-features = false, features = ["std", "register", "native-identity"] }

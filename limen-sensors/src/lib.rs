@@ -1,82 +1,44 @@
-#![doc = r#"
-limen-sensors
+#![cfg_attr(not(feature = "std"), no_std)]
 
-Sensor stream implementations producing `SensorData`. Implementations are
-non-blocking and must return `Ok(None)` promptly when no data is available.
-"#]
-
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec::Vec;
+#[cfg(feature = "alloc")]
+pub mod simulated;
 
-use limen_core::errors::SensorError;
-use limen_core::traits::SensorStream;
-use limen_core::types::{SensorData, SensorMetadata, SequenceNumber, Timestamp};
+#[cfg(all(feature = "csv", feature = "alloc", feature = "std"))]
+pub mod csv;
 
-pub struct CommaSeparatedValuesSensor;
+#[cfg(all(feature = "serialport", feature = "alloc", feature = "std"))]
+pub mod serial_port;
 
-impl SensorStream for CommaSeparatedValuesSensor {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next(&mut self) -> Result<Option<SensorData>, SensorError> {
-        todo!("CommaSeparatedValuesSensor::read_next is not implemented in the specification scaffold")
+#[cfg(all(feature = "mqtt-paho", feature = "alloc", feature = "std"))]
+pub mod mqtt_paho_sensor;
+
+#[cfg(all(feature = "alloc", feature = "register"))]
+pub fn register_all(registries: &mut limen::Registries) -> Result<(), limen::registry::RegistryError> {
+    use alloc::boxed::Box;
+    use simulated::SimulatedSensorFactory;
+
+    registries.register_sensor_stream_factory_with_name("simulated".to_string(), Box::new(SimulatedSensorFactory))?;
+
+    #[cfg(all(feature = "csv", feature = "std"))]
+    {
+        use crate::csv::CsvSensorFactory;
+        registries.register_sensor_stream_factory_with_name("csv".to_string(), Box::new(CsvSensorFactory))?;
     }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-}
 
-pub struct SimulatedSensor;
-
-impl SensorStream for SimulatedSensor {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next(&mut self) -> Result<Option<SensorData>, SensorError> {
-        todo!("SimulatedSensor::read_next is not implemented in the specification scaffold")
+    #[cfg(all(feature = "serialport", feature = "std"))]
+    {
+        use crate::serial_port::SerialPortSensorFactory;
+        registries.register_sensor_stream_factory_with_name("serial".to_string(), Box::new(SerialPortSensorFactory))?;
     }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-}
 
-#[cfg(feature = "message-queuing-telemetry-transport")]
-pub struct MessageQueuingTelemetryTransportSensor;
-
-#[cfg(feature = "message-queuing-telemetry-transport")]
-impl SensorStream for MessageQueuingTelemetryTransportSensor {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next(&mut self) -> Result<Option<SensorData>, SensorError> {
-        todo!("MessageQueuingTelemetryTransportSensor::read_next is not implemented in the specification scaffold")
+    #[cfg(all(feature = "mqtt-paho", feature = "std"))]
+    {
+        use crate::mqtt_paho_sensor::MessageQueuingTelemetryTransportSensorFactory;
+        registries.register_sensor_stream_factory_with_name("mqtt".to_string(), Box::new(MessageQueuingTelemetryTransportSensorFactory))?;
     }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-}
 
-#[cfg(feature = "serial-port")]
-pub struct SerialPortSensor;
-
-#[cfg(feature = "serial-port")]
-impl SensorStream for SerialPortSensor {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next(&mut self) -> Result<Option<SensorData>, SensorError> {
-        todo!("SerialPortSensor::read_next is not implemented in the specification scaffold")
-    }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-}
-
-#[cfg(feature = "audio-linux")]
-pub struct PulseCodeModulationAudioSensor;
-
-#[cfg(feature = "audio-linux")]
-impl SensorStream for PulseCodeModulationAudioSensor {
-    fn open(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn read_next(&mut self) -> Result<Option<SensorData>, SensorError> {
-        todo!("PulseCodeModulationAudioSensor::read_next is not implemented in the specification scaffold")
-    }
-    fn close(&mut self) -> Result<(), SensorError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), SensorError> { Ok(()) }
-}
-
-pub mod register {
-    pub fn register_all() {
-        // Registration wiring placeholder.
-    }
+    Ok(())
 }

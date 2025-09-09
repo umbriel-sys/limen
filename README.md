@@ -1,17 +1,15 @@
-# Limen (Workspace Skeleton)
+# Limen Workspace
 
-This repository is a scaffold for the Limen edge AI inference runtime. It provides a Cargo workspace,
-crate skeletons, module doc comments, and a minimal CI workflow. Implementations are intentionally
-left as `todo!()` so the repo compiles once features are stubbed in.
+This is the complete Limen workspace assembled from our conversation.
 
 Crates:
-- limen-core
-- limen-processing
-- limen-models
-- limen-sensors
-- limen-output
-- limen-platform
-- limen (host runtime and CLI library)
-- limen-light
-- limen-examples
-- limen-devtools
+- `limen-core` – core traits, types, errors, and the generic runtime.
+- `limen` – dynamic orchestration (config + registries + builder).
+- `limen-processing` – preprocessors/postprocessors.
+- `limen-sensors` – sensors (simulated, csv, serial, mqtt).
+- `limen-output` – sinks (stdout, file, mqtt, gpio).
+- `limen-models` – model backends (native-identity; Tract real backend; ORT placeholder).
+- `limen-platform` – platform glue (desktop).
+- `limen-examples` – runnable examples.
+- `limen-devtools` – CLI tools (validate-config, generate-sim, inspect-model).
+- `limen-light` – minimal, embedded-friendly wrapper; and a no-alloc path with optional heapless queues.

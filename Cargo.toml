@@ -1,19 +1,15 @@
 [workspace]
 members = [
     "limen-core",
+    "limen",
     "limen-processing",
-    "limen-models",
     "limen-sensors",
     "limen-output",
+    "limen-models",
     "limen-platform",
-    "limen",
-    "limen-light",
     "limen-examples",
     "limen-devtools",
+    "limen-light",
 ]
-resolver = "2"
 
-[workspace.package]
-edition = "2021"
-license = "MIT OR Apache-2.0"
-rust-version = "1.77"
+resolver = "2"

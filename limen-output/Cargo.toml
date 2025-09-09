@@ -3,16 +3,23 @@ name = "limen-output"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Output sinks for Limen."
+description = "Output sinks for the Limen runtime (stdout, file, optional MQTT and GPIO)."
+repository = "https://example.com/your/limen"
 
 [features]
-default = ["std"]
-std = []
-alloc = []
-message-queuing-telemetry-transport = []
-general-purpose-input-output-raspberry-pi = []
-serde = ["dep:serde"]
+default = ["alloc"]
+alloc = ["limen-core/alloc"]
+std = ["limen-core/std", "alloc"]
+register = ["dep:limen"]
+mqtt-paho = ["std", "dep:paho-mqtt"]
+gpio-rpi = ["std", "dep:rppal"]
+file = ["std"]
+stdout = ["std"]
+serde = ["limen-core/serde", "dep:serde"]
 
 [dependencies]
-limen-core = { path = "../limen-core" }
-serde = { version = "1.0", features = ["derive"], optional = true }
+limen-core = { path = "../limen-core", default-features = false }
+limen = { path = "../limen", default-features = false, optional = true }
+paho-mqtt = { version = "0.12", optional = true, default-features = true, features = ["bundled"] }
+rppal = { version = "0.22", optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }

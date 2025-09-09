@@ -3,20 +3,26 @@ name = "limen"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Dynamic runtime with configuration-driven orchestration for Limen."
+description = "Dynamic runtime wiring for the Limen edge inference system (config, registries, builder, observability)."
+repository = "https://example.com/your/limen"
 
 [features]
 default = ["std"]
-std = []
-watch-config = []
-serde = ["dep:serde"]
-toml = ["dep:toml"]
-tracing = ["dep:tracing"]
+std = ["limen-core/std", "alloc"]
+alloc = ["limen-core/alloc"]
+serde = ["dep:serde", "limen-core/serde"]
+toml = ["dep:toml", "serde"]
+json = ["dep:serde_json", "serde"]
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
 metrics = ["dep:metrics"]
 
 [dependencies]
-limen-core = { path = "../limen-core" }
-serde = { version = "1.0", features = ["derive"], optional = true }
+limen-core = { path = "../limen-core", default-features = false }
+
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 toml = { version = "0.8", optional = true }
-tracing = { version = "0.1", optional = true }
+serde_json = { version = "1.0", optional = true }
+
+tracing = { version = "0.1", default-features = false, optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"], optional = true }
 metrics = { version = "0.23", optional = true }

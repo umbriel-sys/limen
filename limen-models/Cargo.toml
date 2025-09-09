@@ -3,17 +3,21 @@ name = "limen-models"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Backend adapters implementing ComputeBackend and Model for Limen."
+description = "Model backends for the Limen runtime (native identity backend, Tract ONNX backend)."
+repository = "https://example.com/your/limen"
 
 [features]
-default = ["tract"]
-tract = []
-onnxruntime = []
-tensorrt = []
-openvino = []
-iree = []
-serde = ["dep:serde"]
+default = ["alloc", "native-identity"]
+alloc = ["limen-core/alloc"]
+std = ["limen-core/std", "alloc"]
+register = ["dep:limen"]
+native-identity = []
+backend-tract = ["std", "dep:tract-onnx"]
+backend-onnxruntime = [] # reserved for future wiring
+serde = ["limen-core/serde", "dep:serde"]
 
 [dependencies]
-limen-core = { path = "../limen-core" }
-serde = { version = "1.0", features = ["derive"], optional = true }
+limen-core = { path = "../limen-core", default-features = false }
+limen = { path = "../limen", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
+tract-onnx = { version = "0.22", optional = true }

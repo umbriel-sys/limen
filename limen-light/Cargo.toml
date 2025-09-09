@@ -3,14 +3,17 @@ name = "limen-light"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Minimal no_std runtime for embedded targets for Limen."
+description = "Minimal embedded wrapper around Limen's generic runtime (no_std + alloc friendly)."
+repository = "https://example.com/your/limen"
 
 [features]
-default = ["std"]
-std = []
-alloc = []
-serde = ["dep:serde"]
+default = []
+alloc = ["limen-core/alloc"]
+std = ["limen-core/std", "alloc"]
+serde = ["limen-core/serde", "dep:serde"]
+no_alloc = ["dep:heapless"]
 
 [dependencies]
-limen-core = { path = "../limen-core" }
-serde = { version = "1.0", features = ["derive"], optional = true }
+limen-core = { path = "../limen-core", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
+heapless = { version = "0.8", default-features = false, optional = true }

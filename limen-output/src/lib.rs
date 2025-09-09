@@ -1,64 +1,31 @@
-#![doc = r#"
-limen-output
+#![cfg_attr(not(feature = "std"), no_std)]
 
-Output sinks that publish or persist `TensorOutput`. Sinks must not block
-indefinitely in `publish` and should honor backpressure semantics at the host.
-"#]
-
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
-use alloc::string::String;
+#[cfg(all(feature = "std", feature = "stdout"))]
+pub mod stdout_sink;
 
-use limen_core::errors::OutputError;
-use limen_core::traits::OutputSink;
-use limen_core::types::TensorOutput;
+#[cfg(all(feature = "std", feature = "file"))]
+pub mod file_sink;
 
-pub struct StandardOutputSink { pub pretty_print: bool }
+#[cfg(all(feature = "std", feature = "mqtt-paho"))]
+pub mod mqtt_paho_sink;
 
-impl OutputSink for StandardOutputSink {
-    fn publish(&mut self, _output: &TensorOutput) -> Result<(), OutputError> {
-        todo!("StandardOutputSink::publish is not implemented in the specification scaffold")
-    }
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
-    fn close(&mut self) -> Result<(), OutputError> { Ok(()) }
-}
+#[cfg(all(feature = "std", feature = "gpio-rpi"))]
+pub mod gpio_rpi_sink;
 
-pub struct FileSink { pub path: String, pub append: bool, pub buffer_bytes: Option<usize> }
+#[cfg(all(feature = "alloc", feature = "register"))]
+pub fn register_all(registries: &mut limen::Registries) -> Result<(), limen::registry::RegistryError> {
+    use alloc::boxed::Box;
 
-impl OutputSink for FileSink {
-    fn publish(&mut self, _output: &TensorOutput) -> Result<(), OutputError> {
-        todo!("FileSink::publish is not implemented in the specification scaffold")
-    }
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
-    fn close(&mut self) -> Result<(), OutputError> { Ok(()) }
-}
-
-#[cfg(feature = "message-queuing-telemetry-transport")]
-pub struct MessageQueuingTelemetryTransportSink;
-
-#[cfg(feature = "message-queuing-telemetry-transport")]
-impl OutputSink for MessageQueuingTelemetryTransportSink {
-    fn publish(&mut self, _output: &TensorOutput) -> Result<(), OutputError> {
-        todo!("MessageQueuingTelemetryTransportSink::publish is not implemented in the specification scaffold")
-    }
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
-    fn close(&mut self) -> Result<(), OutputError> { Ok(()) }
-}
-
-#[cfg(feature = "general-purpose-input-output-raspberry-pi")]
-pub struct GeneralPurposeInputOutputSink { pub pin_number: u8, pub active_high: bool }
-
-#[cfg(feature = "general-purpose-input-output-raspberry-pi")]
-impl OutputSink for GeneralPurposeInputOutputSink {
-    fn publish(&mut self, _output: &TensorOutput) -> Result<(), OutputError> {
-        todo!("GeneralPurposeInputOutputSink::publish is not implemented in the specification scaffold")
-    }
-    fn flush(&mut self) -> Result<(), OutputError> { Ok(()) }
-    fn close(&mut self) -> Result<(), OutputError> { Ok(()) }
-}
-
-pub mod register {
-    pub fn register_all() {
-        // Registration wiring placeholder.
-    }
+    #[cfg(all(feature = "std", feature = "stdout"))]
+    { registries.register_output_sink_factory_with_name("stdout".to_string(), Box::new(stdout_sink::StandardOutputSinkFactory))?; }
+    #[cfg(all(feature = "std", feature = "file"))]
+    { registries.register_output_sink_factory_with_name("file".to_string(), Box::new(file_sink::FileOutputSinkFactory))?; }
+    #[cfg(all(feature = "std", feature = "mqtt-paho"))]
+    { registries.register_output_sink_factory_with_name("mqtt".to_string(), Box::new(mqtt_paho_sink::MessageQueuingTelemetryTransportSinkFactory))?; }
+    #[cfg(all(feature = "std", feature = "gpio-rpi"))]
+    { registries.register_output_sink_factory_with_name("gpio".to_string(), Box::new(gpio_rpi_sink::GeneralPurposeInputOutputSinkFactory))?; }
+    Ok(())
 }

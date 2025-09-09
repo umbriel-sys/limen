@@ -3,16 +3,17 @@ name = "limen-processing"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Preprocessing and postprocessing components for Limen."
+description = "Preprocessors and postprocessors for the Limen runtime."
+repository = "https://example.com/your/limen"
 
 [features]
-default = ["std"]
-std = []
-alloc = []
-fast-fourier-transform = []
-mel-frequency-cepstral-coefficients = []
-serde = ["dep:serde"]
+default = ["alloc"]
+alloc = ["limen-core/alloc"]
+std = ["limen-core/std", "alloc"]
+register = ["dep:limen"]
+serde = ["limen-core/serde", "dep:serde"]
 
 [dependencies]
-limen-core = { path = "../limen-core" }
-serde = { version = "1.0", features = ["derive"], optional = true }
+limen-core = { path = "../limen-core", default-features = false }
+limen = { path = "../limen", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }

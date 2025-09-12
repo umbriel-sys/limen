@@ -1,17 +1,18 @@
 [package]
 name = "limen-core"
-description = "Core traits, types, errors, and the generic runtime for the Limen edge inference system."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Limen core contracts and primitives for a graph-driven edge inference runtime (no_std by default)."
+repository = "https://example.com/limen" # replace with real repo
+categories = ["embedded", "no-std", "science", "computer-vision"]
+keywords = ["edge-ai", "inference", "no_std", "runtime", "graph"]
 
 [features]
-default = ["alloc"]
+default = []
 alloc = []
 std = ["alloc"]
-serde = ["dep:serde"]
 
-[dependencies]
-serde = { workspace = true, optional = true, features = ["derive"] }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

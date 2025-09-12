@@ -1,62 +1,15 @@
-# Workspace Members are in dependency order.
 [workspace]
 members = [
-    # Apps / top-level binaries & demos
-    "limen-examples",
-    "limen-devtools",
-    # Component crates
-    "limen-sensors",
+    "limen-core",
+    "limen-light",
+    "limen",
     "limen-processing",
     "limen-models",
+    "limen-sensors",
     "limen-output",
     "limen-platform",
-    # Runtimes/orchestration
-    "limen",         # dynamic, config-driven runtime
-    "limen-light",   # strict no_alloc path
-    # Foundation
-    "limen-core",
+    "limen-devtools",
+    "limen-examples",
 ]
 
-# Use the edition 2021 dependency resolver in the workspace, to match the crates
 resolver = "2"
-
-[workspace.package]
-authors = ["Idky137"]
-repository = "https://github.com/idky137/limen"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-version = "0.0.1"
-
-[profile.test]
-opt-level = 3
-debug = true
-
-# -----------------------------
-# Centralized dependency versions
-# -----------------------------
-[workspace.dependencies]
-# Core serialization & config
-serde = { version = "1.0", default-features = false }
-serde_json = "1.0"
-toml = "0.8"
-
-# Telemetry & metrics
-tracing = { version = "0.1", default-features = false }
-tracing-subscriber = { version = "0.3", default-features = false }
-metrics = "0.23"
-
-# CLI & error handling
-anyhow = "1.0"
-clap = "4.5"
-
-# I/O, OS, hardware
-serialport = "4.7"
-paho-mqtt = { version = "0.12", default-features = true }
-rppal = "0.22"
-num_cpus = "1.17"
-
-# Embedded / no-alloc
-heapless = { version = "0.8", default-features = false }
-
-# ML backends
-tract-onnx = "0.22"

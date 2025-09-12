@@ -1,33 +1,29 @@
 [package]
 name = "limen-devtools"
-description = "Developer tools and utilities for the Limen edge inference runtime."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Codegen and test utilities for Limen (POC)."
+repository = "https://example.com/limen"
 
 [features]
 default = ["std"]
-std = []
-with-limen = ["dep:limen", "dep:limen-core", "dep:serde", "dep:toml"]
-with-processing = ["dep:limen-processing"]
-with-sensors = ["dep:limen-sensors"]
-with-output = ["dep:limen-output"]
-with-platform = ["dep:limen-platform"]
-with-models = ["dep:limen-models"]
-with-tract = []
+std = ["limen-core/std"]
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false, optional = true, features = ["std", "serde"] }
-limen = { path = "../limen", default-features = false, optional = true, features = ["std", "serde", "toml", "tracing"] }
-limen-processing = { path = "../limen-processing", default-features = false, optional = true, features = ["std", "register"] }
-limen-sensors = { path = "../limen-sensors", default-features = false, optional = true, features = ["std", "register"] }
-limen-output = { path = "../limen-output", default-features = false, optional = true, features = ["std", "register", "stdout", "file"] }
-limen-platform = { path = "../limen-platform", default-features = false, optional = true, features = ["std", "register"] }
-limen-models = { path = "../limen-models", default-features = false, optional = true, features = ["std", "register", "native-identity"] }
+limen-core = { path = "../limen-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
 
-anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-serde = { workspace = true, optional = true, features = ["derive"] }
-toml = { workspace = true, optional = true }
+[lib]
+name = "limen_devtools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "limen-codegen"
+path = "src/bin/codegen.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

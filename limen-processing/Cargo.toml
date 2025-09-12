@@ -1,21 +1,19 @@
 [package]
 name = "limen-processing"
-description = "Preprocessors and postprocessors for the Limen runtime."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Processing nodes (normalize, window, threshold, classify, debounce) and split/join operators for Limen."
+repository = "https://example.com/limen"
 
 [features]
-default = ["alloc"]
-alloc = ["limen-core/alloc"]
-std = ["limen-core/std", "alloc"]
-register = ["dep:limen"]
-serde = ["limen-core/serde", "dep:serde"]
+default = []
+alloc = []
+std = ["alloc", "limen-core/std"]
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
-limen = { path = "../limen", default-features = false, optional = true }
+limen-core = { path = "../limen-core" }
 
-serde = { workspace = true, optional = true, features = ["derive"] }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

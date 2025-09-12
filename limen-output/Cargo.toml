@@ -1,28 +1,19 @@
 [package]
 name = "limen-output"
-description = "Output sinks for the Limen runtime (stdout, file, optional MQTT and GPIO)."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Output SinkNodes for Limen (stdout, file)."
+repository = "https://example.com/limen"
 
 [features]
-default = ["alloc"]
-alloc = ["limen-core/alloc"]
-std = ["limen-core/std", "alloc"]
-register = ["dep:limen"]
-mqtt-paho = ["std", "dep:paho-mqtt"]
-gpio-rpi = ["std", "dep:rppal"]
-file = ["std"]
-stdout = ["std"]
-serde = ["limen-core/serde", "dep:serde"]
+default = ["std"]
+std = ["limen-core/std"]
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
-limen = { path = "../limen", default-features = false, optional = true }
+limen-core = { path = "../limen-core" }
+limen-processing = { path = "../limen-processing", default-features = true }
 
-paho-mqtt = { workspace = true, optional = true, features = ["bundled"] }
-rppal = { workspace = true, optional = true }
-
-serde = { workspace = true, optional = true, features = ["derive"] }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

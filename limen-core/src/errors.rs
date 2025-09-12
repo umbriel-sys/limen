@@ -1,131 +1,110 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+//! Error families used across Limen Core.
+//!
+//! Errors are designed to be allocation-free in P0, bounded in P1, and richer
+//! in P2. The types here avoid `std::error::Error` unless the `std` feature is
+//! enabled.
 
-#[cfg(feature = "alloc")]
-use alloc::string::String;
-use core::fmt;
-
-#[derive(Debug)]
-pub enum SensorError {
-    OpenFailed,
-    ReadFailed,
-    EndOfStream,
-    ResetFailed,
-    ConfigurationInvalid,
-    Other {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
+/// Generic runtime error kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeErrorKind {
+    /// An invariant has been violated (e.g., cyclic graph or type mismatch).
+    InvariantViolation,
+    /// A platform service was requested but is unavailable.
+    PlatformUnavailable,
+    /// The operation is unsupported in this profile or configuration.
+    Unsupported,
+    /// An unspecified failure occurred.
+    Unknown,
 }
 
-impl fmt::Display for SensorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SensorError::OpenFailed => write!(f, "sensor open failed"),
-            SensorError::ReadFailed => write!(f, "sensor read failed"),
-            SensorError::EndOfStream => write!(f, "end of stream"),
-            SensorError::ResetFailed => write!(f, "sensor reset failed"),
-            SensorError::ConfigurationInvalid => write!(f, "sensor configuration invalid"),
-            SensorError::Other { .. } => write!(f, "sensor other error"),
-        }
+/// Errors originating from queue operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueError {
+    /// The queue is at or above the hard watermark capacity.
+    AtOrAboveHardCap,
+    /// The queue is backpressured but not full; caller may retry later.
+    Backpressured,
+    /// The queue is empty when a pop operation was requested.
+    Empty,
+}
+
+/// Errors from node execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeErrorKind {
+    /// Inputs were not available to progress this node.
+    NoInput,
+    /// Outputs could not be enqueued due to backpressure.
+    Backpressured,
+    /// An execution budget or deadline was exceeded.
+    OverBudget,
+    /// External dependency (device, transport) was unavailable or timed out.
+    ExternalUnavailable,
+    /// A generic failure in node logic.
+    ExecutionFailed,
+}
+
+/// A unified error used by node lifecycle methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeError {
+    /// The error kind.
+    pub kind: NodeErrorKind,
+    /// Optional numeric code for platform/backend-specific mapping.
+    pub code: u32,
+}
+
+impl NodeError {
+    /// Construct a new node error with the given kind and optional code.
+    pub const fn new(kind: NodeErrorKind, code: u32) -> Self {
+        Self { kind, code }
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for SensorError {}
-
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidData {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
-    OperationFailed {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
+/// Scheduler-related errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerError {
+    /// The scheduler cannot proceed due to an invariant violation.
+    InvariantViolation,
+    /// An internal error occurred.
+    Internal,
 }
 
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidData { .. } => write!(f, "invalid data"),
-            ProcessingError::OperationFailed { .. } => write!(f, "operation failed"),
-        }
+/// Graph validation and wiring errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphError {
+    /// The graph contains a cycle.
+    // TODO: ENABLE!
+    Cyclic,
+    /// Port schema or memory placement is incompatible across an edge.
+    IncompatiblePorts,
+    /// Queue capacity or watermark configuration is invalid.
+    InvalidCapacity,
+}
+
+/// Errors related to model loading and inference execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceErrorKind {
+    /// A model artifact is invalid or unsupported.
+    InvalidArtifact,
+    /// The input or output payload is incompatible with the model.
+    ShapeOrTypeMismatch,
+    /// Execution failed inside the backend.
+    ExecutionFailed,
+    /// Backend resource not available (e.g., device).
+    ResourceUnavailable,
+}
+
+/// Inference error including a kind and optional code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InferenceError {
+    /// Error kind.
+    pub kind: InferenceErrorKind,
+    /// Optional numeric code.
+    pub code: u32,
+}
+
+impl InferenceError {
+    /// Construct a new inference error.
+    pub const fn new(kind: InferenceErrorKind, code: u32) -> Self {
+        Self { kind, code }
     }
 }
-
-#[cfg(feature = "std")]
-impl std::error::Error for ProcessingError {}
-
-#[derive(Debug)]
-pub enum InferenceError {
-    BackendUnavailable,
-    Other {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
-}
-
-impl fmt::Display for InferenceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            InferenceError::BackendUnavailable => write!(f, "backend unavailable"),
-            InferenceError::Other { .. } => write!(f, "inference error"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for InferenceError {}
-
-#[derive(Debug)]
-pub enum OutputError {
-    WriteFailed,
-    FlushFailed,
-    Other {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
-}
-
-impl fmt::Display for OutputError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OutputError::WriteFailed => write!(f, "write failed"),
-            OutputError::FlushFailed => write!(f, "flush failed"),
-            OutputError::Other { .. } => write!(f, "output error"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for OutputError {}
-
-#[derive(Debug)]
-pub enum RuntimeError {
-    RuntimeNotOpen,
-    ComponentFailureDuringOpen,
-    ComponentFailureDuringClose,
-    StepFailed,
-    Other {
-        #[cfg(feature = "alloc")]
-        message: String,
-    },
-}
-
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RuntimeError::RuntimeNotOpen => write!(f, "runtime is not open"),
-            RuntimeError::ComponentFailureDuringOpen => write!(f, "component failure during open"),
-            RuntimeError::ComponentFailureDuringClose => {
-                write!(f, "component failure during close")
-            }
-            RuntimeError::StepFailed => write!(f, "step failed"),
-            RuntimeError::Other { .. } => write!(f, "runtime error"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for RuntimeError {}

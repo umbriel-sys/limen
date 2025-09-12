@@ -1,23 +1,18 @@
 [package]
 name = "limen-platform"
-description = "Platform backends for the Limen runtime (desktop)."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Platform adapters for Limen (initial: Linux/desktop)."
+repository = "https://example.com/limen"
 
 [features]
-default = ["alloc", "std"]
-alloc = ["limen-core/alloc"]
-std = ["limen-core/std", "alloc"]
-register = ["dep:limen"]
-serde = ["limen-core/serde", "dep:serde"]
-num_cpus = ["dep:num_cpus"]
+default = ["std"]
+std = ["limen-core/std"]
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
-limen = { path = "../limen", default-features = false, optional = true }
+limen-core = { path = "../limen-core" }
 
-serde = { workspace = true, optional = true, features = ["derive"] }
-num_cpus = { workspace = true, optional = true }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

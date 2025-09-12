@@ -1,25 +1,19 @@
 [package]
 name = "limen-models"
-description = "Model backends for the Limen runtime (native identity backend, Tract ONNX backend)."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Compute backends and model nodes for Limen (identity and Tract POC)."
+repository = "https://example.com/limen"
 
 [features]
-default = ["alloc", "native-identity"]
-alloc = ["limen-core/alloc"]
-std = ["limen-core/std", "alloc"]
-register = ["dep:limen"]
-native-identity = []
-backend-tract = ["std", "dep:tract-onnx"]
-backend-onnxruntime = [] # reserved for future wiring
-serde = ["limen-core/serde", "dep:serde"]
+default = ["std"]
+std = ["limen-core/std"]
+backend-tract = [] # POC feature, no deps wired yet (documentation to expand)
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
-limen = { path = "../limen", default-features = false, optional = true }
+limen-core = { path = "../limen-core" }
 
-serde = { workspace = true, optional = true, features = ["derive"] }
-tract-onnx = { workspace = true, optional = true }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

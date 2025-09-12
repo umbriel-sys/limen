@@ -1,26 +1,20 @@
 [package]
 name = "limen-sensors"
-description = "Sensor input implementations for the Limen runtime (simulated, CSV, serial, MQTT)."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Sensor SourceNodes for Limen (simulated, CSV)."
+repository = "https://example.com/limen"
 
 [features]
-default = ["alloc"]
-alloc = ["limen-core/alloc"]
-std = ["limen-core/std", "alloc"]
+default = ["std"]
+std = ["limen-core/std"]
 csv = ["std"]
-serialport = ["std", "dep:serialport"]
-mqtt-paho = ["std", "dep:paho-mqtt"]
-register = ["dep:limen"]
-serde = ["limen-core/serde", "dep:serde"]
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
-limen = { path = "../limen", default-features = false, optional = true }
+limen-core = { path = "../limen-core" }
+limen-processing = { path = "../limen-processing", default-features = true }
 
-serialport = { workspace = true, optional = true }
-paho-mqtt = { workspace = true, optional = true, features = ["bundled"] }
-serde = { workspace = true, optional = true, features = ["derive"] }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

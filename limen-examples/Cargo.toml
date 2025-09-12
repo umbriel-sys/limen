@@ -1,22 +1,21 @@
 [package]
 name = "limen-examples"
-publish = false
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
-
-[features]
-default = ["std"]
-std = []
-use_tract = []
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "End-to-end examples for Limen (P2 simple chain PoC)."
+repository = "https://example.com/limen"
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false, features = ["std"] }
-limen = { path = "../limen", default-features = false, features = ["std", "serde", "toml", "tracing"] }
-limen-processing = { path = "../limen-processing", default-features = false, features = ["std", "register"] }
-limen-sensors = { path = "../limen-sensors", default-features = false, features = ["std", "register"] }
-limen-output = { path = "../limen-output", default-features = false, features = ["std", "register", "stdout"] }
-limen-platform = { path = "../limen-platform", default-features = false, features = ["std", "register"] }
-limen-models = { path = "../limen-models", default-features = false, features = ["std", "register", "native-identity"] }
+limen-core = { path = "../limen-core", features = ["std"] }
+limen-light = { path = "../limen-light", default-features = false, features = ["p1"] }
+limen = { path = "../limen", default-features = true }
+limen-processing = { path = "../limen-processing", default-features = true }
+limen-models = { path = "../limen-models", default-features = true }
+limen-sensors = { path = "../limen-sensors", default-features = true }
+limen-output = { path = "../limen-output", default-features = true }
+limen-platform = { path = "../limen-platform", default-features = true }
+
+[[bin]]
+name = "p2_sim_chain"
+path = "src/p2_sim_chain.rs"

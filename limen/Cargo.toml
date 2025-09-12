@@ -1,29 +1,22 @@
 [package]
 name = "limen"
-description = "Dynamic runtime wiring for the Limen edge inference system (config, registries, builder, observability)."
-authors = { workspace = true }
-repository = { workspace = true }
-edition = { workspace = true }
-license = { workspace = true }
-version = { workspace = true }
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "P2 runtime (std) for Limen: EDF and throughput schedulers, lock-free SPSC queues, and platform adapters."
+repository = "https://example.com/limen" # replace with real repo
+categories = ["science", "computer-vision", "concurrency"]
+keywords = ["edge-ai", "runtime", "scheduler", "edf"]
 
 [features]
-default = ["std"]
-std = ["limen-core/std", "alloc"]
-alloc = ["limen-core/alloc"]
-serde = ["dep:serde", "limen-core/serde"]
-toml = ["dep:toml", "serde"]
-json = ["dep:serde_json", "serde"]
-tracing = ["dep:tracing", "dep:tracing-subscriber"]
-metrics = ["dep:metrics"]
+default = ["latency_edf", "throughput"]
+latency_edf = []
+throughput = []
+priority_lanes = []
 
 [dependencies]
-limen-core = { path = "../limen-core", default-features = false }
+limen-core = { path = "../limen-core", features = ["std"] }
 
-serde = { workspace = true, optional = true, features = ["derive"] }
-toml = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-
-tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true, features = ["fmt", "env-filter"] }
-metrics = { workspace = true, optional = true }
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

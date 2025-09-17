@@ -5,7 +5,7 @@
 //! always prefers the high-priority lane when available.
 
 use crate::errors::QueueError;
-use crate::message::{Message, Payload};
+use crate::message::{payload::Payload, Message};
 use crate::policy::EdgePolicy;
 use crate::queue::{EnqueueResult, QueueOccupancy, SpscQueue};
 use crate::types::QoSClass;
@@ -42,7 +42,7 @@ impl<QHi, QLo, P> SpscQueue for Priority2<QHi, QLo, P>
 where
     QHi: SpscQueue<Item = Message<P>>,
     QLo: SpscQueue<Item = Message<P>>,
-    P: Payload,
+    P: Payload + std::clone::Clone,
 {
     type Item = Message<P>;
 

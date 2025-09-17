@@ -4,7 +4,11 @@
 //! [`Payload`]. For simple byte buffers, `&[u8]` or fixed-size arrays can
 //! be used directly because `Payload` is implemented for them.
 
-use crate::memory::{BufferDescriptor, MemoryClass};
+pub mod payload;
+pub mod tensor;
+
+use crate::memory::MemoryClass;
+use crate::message::payload::Payload;
 use crate::types::{DeadlineNs, QoSClass, SequenceNumber, Ticks, TraceId};
 
 /// A compact bitfield of message flags.
@@ -88,44 +92,8 @@ impl MessageHeader {
     }
 }
 
-/// Trait for payload types that can provide byte length and memory class.
-pub trait Payload {
-    /// Return the buffer descriptor (byte size & memory class).
-    fn buffer_descriptor(&self) -> BufferDescriptor;
-}
-
-impl<'a> Payload for &'a [u8] {
-    #[inline]
-    fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: self.len(),
-            class: MemoryClass::Host,
-        }
-    }
-}
-
-impl<const N: usize> Payload for [u8; N] {
-    #[inline]
-    fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: N,
-            class: MemoryClass::Host,
-        }
-    }
-}
-
-impl<'a, const N: usize> Payload for &'a [u8; N] {
-    #[inline]
-    fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: N,
-            class: MemoryClass::Host,
-        }
-    }
-}
-
 /// A message with a generic payload `P`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Message<P: Payload> {
     /// The header fields.
     pub header: MessageHeader,
@@ -147,7 +115,7 @@ impl<P: Payload> Message<P> {
 ///
 /// Batch formation is runtime-specific; the core only provides
 /// a convenient immutable view for policies and telemetry.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Batch<'a, P: Payload> {
     /// The ordered messages in the batch.
     pub messages: &'a [Message<P>],

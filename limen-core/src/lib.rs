@@ -46,7 +46,6 @@ pub mod types;
 pub mod message;
 pub mod platform;
 pub mod policy;
-pub mod routing;
 pub mod scheduling;
 
 pub mod compute;

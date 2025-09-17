@@ -7,7 +7,7 @@
 
 use crate::errors::InferenceError;
 use crate::memory::MemoryClass;
-use crate::message::Payload;
+use crate::message::payload::Payload;
 
 /// Capability descriptor of a compute backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

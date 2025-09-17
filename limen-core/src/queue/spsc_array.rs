@@ -4,7 +4,7 @@
 //! Tracks both item and byte occupancy; supports DropOldest between watermarks.
 
 use crate::errors::QueueError;
-use crate::message::{Message, Payload};
+use crate::message::{payload::Payload, Message};
 use crate::policy::{AdmissionPolicy, EdgePolicy, WatermarkState};
 use crate::queue::{EnqueueResult, QueueOccupancy, SpscQueue};
 
@@ -53,7 +53,7 @@ impl<T, const N: usize> StaticRing<T, N> {
     }
 }
 
-impl<P: Payload, const N: usize> SpscQueue for StaticRing<Message<P>, N> {
+impl<P: Payload + std::clone::Clone, const N: usize> SpscQueue for StaticRing<Message<P>, N> {
     type Item = Message<P>;
 
     fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {

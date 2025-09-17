@@ -8,7 +8,6 @@ pub use crate::node::*;
 pub use crate::platform::*;
 pub use crate::policy::*;
 pub use crate::queue::*;
-pub use crate::routing::*;
 pub use crate::scheduling::*;
 pub use crate::telemetry::*;
 pub use crate::types::*;

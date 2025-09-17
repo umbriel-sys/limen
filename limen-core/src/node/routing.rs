@@ -3,7 +3,7 @@
 //! Implementations live in `limen-processing`. These traits allow developers
 //! to plug custom routing/aggregation logic (copy, scatter, concat, sum, learned).
 
-use crate::message::Payload;
+use crate::message::payload::Payload;
 use crate::types::Ticks;
 
 /// A split operator transforms one input payload into N output payloads.

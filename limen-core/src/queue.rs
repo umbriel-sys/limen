@@ -4,8 +4,10 @@
 //! The core defines capacities, watermarking, admission, and generic results.
 
 use crate::errors::QueueError;
-use crate::message::{Message, Payload};
+use crate::message::{payload::Payload, Message};
 use crate::policy::{AdmissionDecision, EdgePolicy, WatermarkState};
+
+pub mod descriptor;
 
 pub mod spsc_array;
 
@@ -14,6 +16,9 @@ pub mod spsc_vecdeque;
 
 #[cfg(feature = "std")]
 pub mod spsc_ringbuf;
+
+#[cfg(feature = "std")]
+pub mod spsc_concurrent;
 
 #[cfg(feature = "spsc_raw")]
 pub mod spsc_raw;
@@ -48,7 +53,7 @@ pub struct QueueOccupancy {
 /// but the trait is generic and can be used for other types as needed.
 pub trait SpscQueue {
     /// The type of items stored in the queue.
-    type Item;
+    type Item: Clone;
 
     /// Attempt to push an item onto the queue using the given edge policy.
     ///
@@ -70,6 +75,16 @@ pub trait SpscQueue {
     /// uses `try_pop` and re-insert is left to concrete impls; many queues
     /// will override this to be non-destructive.
     fn try_peek(&self) -> Result<&Self::Item, QueueError>;
+
+    /// std-only helper: clone the front item without removing it.
+    ///
+    /// Default implementation calls `try_peek()` and clones the result.
+    /// Concurrent implementations that cannot return `&Item` across lock
+    /// guards should override this to avoid returning `Unsupported`.
+    #[cfg(feature = "std")]
+    fn try_peek_cloned(&self) -> Result<Self::Item, QueueError> {
+        self.try_peek().cloned()
+    }
 }
 
 /// Convenience helper to enqueue a message using policy-derived admission logic.

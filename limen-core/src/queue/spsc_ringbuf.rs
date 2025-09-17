@@ -8,7 +8,7 @@ use ringbuf::traits::{
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 use crate::errors::QueueError;
-use crate::message::{Message, Payload};
+use crate::message::{payload::Payload, Message};
 use crate::policy::{AdmissionPolicy, EdgePolicy, WatermarkState};
 use crate::queue::{EnqueueResult, QueueOccupancy, SpscQueue};
 
@@ -54,7 +54,7 @@ impl<T> SpscRingbuf<T> {
     }
 }
 
-impl<P: Payload> SpscQueue for SpscRingbuf<Message<P>> {
+impl<P: Payload + std::clone::Clone> SpscQueue for SpscRingbuf<Message<P>> {
     type Item = Message<P>;
 
     fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
@@ -112,5 +112,14 @@ impl<P: Payload> SpscQueue for SpscRingbuf<Message<P>> {
 
     fn try_peek(&self) -> Result<&Self::Item, QueueError> {
         self.cons.try_peek().ok_or(QueueError::Empty)
+    }
+
+    /// Clone the front item without removing it.
+    #[inline]
+    fn try_peek_cloned(&self) -> Result<Message<P>, QueueError> {
+        match self.try_peek() {
+            Ok(m) => Ok(m.clone()),
+            Err(e) => Err(e),
+        }
     }
 }

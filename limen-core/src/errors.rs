@@ -4,18 +4,12 @@
 //! in P2. The types here avoid `std::error::Error` unless the `std` feature is
 //! enabled.
 
-/// Generic runtime error kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeErrorKind {
-    /// An invariant has been violated (e.g., cyclic graph or type mismatch).
-    InvariantViolation,
-    /// A platform service was requested but is unavailable.
-    PlatformUnavailable,
-    /// The operation is unsupported in this profile or configuration.
-    Unsupported,
-    /// An unspecified failure occurred.
-    Unknown,
-}
+use core::fmt;
+
+#[cfg(feature = "std")]
+use std::error::Error;
+
+// **** Edge Errors *****
 
 /// Errors originating from queue operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +20,29 @@ pub enum QueueError {
     Backpressured,
     /// The queue is empty when a pop operation was requested.
     Empty,
+    /// The queue lock has been poisoned (concurrent mode only).
+    Poisoned,
 }
+
+impl fmt::Display for QueueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueueError::AtOrAboveHardCap => {
+                f.write_str("queue is at or above the hard watermark capacity")
+            }
+            QueueError::Backpressured => {
+                f.write_str("queue is backpressured but not full; caller may retry later")
+            }
+            QueueError::Empty => f.write_str("queue is empty"),
+            QueueError::Poisoned => f.write_str("queue lock is poisoned"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for QueueError {}
+
+// ***** Node Errors *****
 
 /// Errors from node execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +57,28 @@ pub enum NodeErrorKind {
     ExternalUnavailable,
     /// A generic failure in node logic.
     ExecutionFailed,
+}
+
+impl fmt::Display for NodeErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeErrorKind::NoInput => {
+                f.write_str("inputs were not available to progress this node")
+            }
+            NodeErrorKind::Backpressured => {
+                f.write_str("outputs could not be enqueued due to backpressure")
+            }
+            NodeErrorKind::OverBudget => {
+                f.write_str("an execution budget or deadline was exceeded")
+            }
+            NodeErrorKind::ExternalUnavailable => {
+                f.write_str("an external dependency was unavailable or timed out")
+            }
+            NodeErrorKind::ExecutionFailed => {
+                f.write_str("a generic failure occurred in node logic")
+            }
+        }
+    }
 }
 
 /// A unified error used by node lifecycle methods.
@@ -59,26 +97,14 @@ impl NodeError {
     }
 }
 
-/// Scheduler-related errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchedulerError {
-    /// The scheduler cannot proceed due to an invariant violation.
-    InvariantViolation,
-    /// An internal error occurred.
-    Internal,
+impl fmt::Display for NodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "node error: {} (code: {})", self.kind, self.code)
+    }
 }
 
-/// Graph validation and wiring errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphError {
-    /// The graph contains a cycle.
-    // TODO: ENABLE!
-    Cyclic,
-    /// Port schema or memory placement is incompatible across an edge.
-    IncompatiblePorts,
-    /// Queue capacity or watermark configuration is invalid.
-    InvalidCapacity,
-}
+#[cfg(feature = "std")]
+impl Error for NodeError {}
 
 /// Errors related to model loading and inference execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +117,25 @@ pub enum InferenceErrorKind {
     ExecutionFailed,
     /// Backend resource not available (e.g., device).
     ResourceUnavailable,
+}
+
+impl fmt::Display for InferenceErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InferenceErrorKind::InvalidArtifact => {
+                f.write_str("model artifact is invalid or unsupported")
+            }
+            InferenceErrorKind::ShapeOrTypeMismatch => {
+                f.write_str("input or output payload is incompatible with the model")
+            }
+            InferenceErrorKind::ExecutionFailed => {
+                f.write_str("execution failed inside the backend")
+            }
+            InferenceErrorKind::ResourceUnavailable => {
+                f.write_str("backend resource is unavailable")
+            }
+        }
+    }
 }
 
 /// Inference error including a kind and optional code.
@@ -108,3 +153,154 @@ impl InferenceError {
         Self { kind, code }
     }
 }
+
+impl fmt::Display for InferenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "inference error: {} (code: {})", self.kind, self.code)
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for InferenceError {}
+
+// ***** Graph Errors *****
+
+/// Graph validation and wiring errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphError {
+    /// The graph contains a cycle.
+    // TODO: ENABLE?
+    Cyclic,
+    /// Port schema or memory placement is incompatible across an edge.
+    IncompatiblePorts,
+    /// Queue capacity or watermark configuration is invalid.
+    InvalidCapacity,
+}
+
+impl fmt::Display for GraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GraphError::Cyclic => f.write_str("graph contains a cycle"),
+            GraphError::IncompatiblePorts => {
+                f.write_str("port schema or memory placement is incompatible across an edge")
+            }
+            GraphError::InvalidCapacity => {
+                f.write_str("queue capacity or watermark configuration is invalid")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for GraphError {}
+
+// ***** Runtime Errors *****
+
+/// Generic runtime error kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeErrorKind {
+    /// An invariant has been violated (e.g., cyclic graph or type mismatch).
+    InvariantViolation,
+    /// A platform service was requested but is unavailable.
+    PlatformUnavailable,
+    /// The operation is unsupported in this profile or configuration.
+    Unsupported,
+    /// An unspecified failure occurred.
+    Unknown,
+}
+
+impl fmt::Display for RuntimeErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RuntimeErrorKind::InvariantViolation => f.write_str("an invariant has been violated"),
+            RuntimeErrorKind::PlatformUnavailable => {
+                f.write_str("a requested platform service is unavailable")
+            }
+            RuntimeErrorKind::Unsupported => {
+                f.write_str("the operation is unsupported in this profile or configuration")
+            }
+            RuntimeErrorKind::Unknown => f.write_str("an unspecified failure occurred"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for RuntimeErrorKind {}
+
+/// Scheduler-related errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerError {
+    /// The scheduler cannot proceed due to an invariant violation.
+    InvariantViolation,
+    /// An internal error occurred.
+    Internal,
+}
+
+impl fmt::Display for SchedulerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SchedulerError::InvariantViolation => {
+                f.write_str("the scheduler cannot proceed due to an invariant violation")
+            }
+            SchedulerError::Internal => f.write_str("an internal scheduler error occurred"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for SchedulerError {}
+
+// ***** Source Errors *****
+
+/// Source / sensor related errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensorError {
+    /// Sensor open failed.
+    OpenFailed,
+    /// Sensor read failed.
+    ReadFailed,
+    /// Sensor stream ended.
+    EndOfStream,
+    /// Sensor reset failed.
+    ResetFailed,
+    /// Invalid sensor configuration
+    ConfigurationInvalid,
+}
+
+impl fmt::Display for SensorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SensorError::OpenFailed => f.write_str("sensor open failed"),
+            SensorError::ReadFailed => f.write_str("sensor read failed"),
+            SensorError::EndOfStream => f.write_str("sensor stream ended"),
+            SensorError::ResetFailed => f.write_str("sensor reset failed"),
+            SensorError::ConfigurationInvalid => f.write_str("invalid sensor configuration"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for SensorError {}
+
+// ***** Sink Errors *****
+
+/// Output / sink related errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputError {
+    /// Sink write failed.
+    WriteFailed,
+    /// Sink flush failed.
+    FlushFailed,
+}
+
+impl fmt::Display for OutputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OutputError::WriteFailed => f.write_str("sink write failed"),
+            OutputError::FlushFailed => f.write_str("sink flush failed"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for OutputError {}

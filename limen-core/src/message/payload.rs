@@ -47,3 +47,73 @@ impl<'a, const N: usize> Payload for &'a [u8; N] {
         }
     }
 }
+
+impl Payload for u32 {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl<'a> Payload for &'a u32 {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl Payload for [u32] {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: self.len() * core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl<'a> Payload for &'a [u32] {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: self.len() * core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl<const N: usize> Payload for [u32; N] {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: N * core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl<'a, const N: usize> Payload for &'a [u32; N] {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: N * core::mem::size_of::<u32>(),
+            class: MemoryClass::Host,
+        }
+    }
+}
+
+impl Payload for () {
+    #[inline]
+    fn buffer_descriptor(&self) -> BufferDescriptor {
+        BufferDescriptor {
+            bytes: 0,
+            class: MemoryClass::Host,
+        }
+    }
+}

@@ -45,15 +45,21 @@ impl BatchingPolicy {
     }
 }
 
+impl Default for BatchingPolicy {
+    fn default() -> Self {
+        BatchingPolicy::none()
+    }
+}
+
 /// Budget policy for node execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BudgetPolicy {
     /// Per-step tick budget; exceeding invokes over-budget action.
     pub tick_budget: Option<Ticks>,
 }
 
 /// Deadline policy for messages processed by a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeadlinePolicy {
     /// Whether to require absolute deadlines on inputs (P2).
     pub require_absolute_deadline: bool,

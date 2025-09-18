@@ -13,10 +13,24 @@ pub enum MemoryClass {
     Shared,
 }
 
+impl Default for MemoryClass {
+    fn default() -> Self {
+        // default: regular host memory
+        MemoryClass::Host
+    }
+}
+
 /// A bitfield describing which memory classes a port can accept zero-copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementAcceptance {
     bits: u32,
+}
+
+impl Default for PlacementAcceptance {
+    fn default() -> Self {
+        // default: accept host memory only
+        Self::empty().with_host()
+    }
 }
 
 impl PlacementAcceptance {

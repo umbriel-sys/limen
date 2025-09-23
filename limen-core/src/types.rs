@@ -48,13 +48,34 @@ pub struct PortId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PortIndex(pub usize);
 
+impl core::convert::From<usize> for PortIndex {
+    #[inline]
+    fn from(value: usize) -> Self {
+        PortIndex(value)
+    }
+}
+
 /// A logical index of a node in a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeIndex(pub usize);
 
+impl core::convert::From<usize> for NodeIndex {
+    #[inline]
+    fn from(value: usize) -> Self {
+        NodeIndex(value)
+    }
+}
+
 /// A logical index of an edge in a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EdgeIndex(pub usize);
+
+impl core::convert::From<usize> for EdgeIndex {
+    #[inline]
+    fn from(value: usize) -> Self {
+        EdgeIndex(value)
+    }
+}
 
 // ***** Payload *****
 

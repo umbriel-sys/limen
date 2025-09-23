@@ -13,7 +13,7 @@ pub use crate::telemetry::*;
 pub use crate::types::*;
 
 // Used by define_graph macro.
-pub use crate::define_graph;
+// pub use crate::define_graph;
 pub use crate::graph::{
     GraphApi, GraphEdgeAccess, GraphNodeAccess, GraphNodeContextBuilder, GraphNodeTypes,
 };

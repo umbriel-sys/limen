@@ -18,7 +18,7 @@ use crate::{
 pub mod descriptor;
 pub mod validate;
 
-pub mod builder;
+// pub mod builder;
 
 /// Provides indexed access to a graph node.
 ///

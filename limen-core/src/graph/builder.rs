@@ -132,294 +132,475 @@
 ///     let _ = node.step::<InQ, OutQ, _, _>(&mut ctx);
 /// }
 /// ```
-// #[macro_export]
-// macro_rules! define_graph {
-//     (
-//         $(#[$meta:meta])*
-//         $vis:vis struct $Graph:ident;
+#[macro_export]
+macro_rules! define_graph {
+    // Initial arm, builds edge map for internal use.
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $Graph:ident;
 
-//         nodes {
-//             $(
-//                 $nidx:tt : {
-//                     ty: $nty:ty,
-//                     in_ports: $nin:expr,
-//                     out_ports: $nout:expr,
-//                     in_payload: $in_p:ty,
-//                     out_payload: $out_p:ty,
-//                     name: $nlabel:expr
-//                 }
-//             ),+ $(,)?
-//         }
+        nodes {
+            $(
+                $nidx:tt : {
+                    ty: $nty:ty,
+                    in_ports: $nin:expr,
+                    out_ports: $nout:expr,
+                    in_payload: $in_p:ty,
+                    out_payload: $out_p:ty,
+                    name: $nlabel:expr
+                }
+            ),+ $(,)?
+        }
 
-//         edges {
-//             $(
-//                 $eidx:tt : {
-//                     ty: $qty:ty,
-//                     payload: $ep:ty,
-//                     from: ($from_node:tt, $from_port:expr),
-//                     to:   ($to_node:tt,   $to_port:expr),
-//                     policy: $epol:expr,
-//                     name: $elabel:expr
-//                 }
-//             ),+ $(,)?
-//         }
+        edges {
+            $(
+                $eidx:tt : {
+                    ty: $qty:ty,
+                    payload: $ep:ty,
+                    from: ($from_node:tt, $from_port:expr),
+                    to:   ($to_node:tt,   $to_port:expr),
+                    policy: $epol:expr,
+                    name: $elabel:expr
+                }
+            ),+ $(,)?
+        }
 
-//         wiring {
-//             $(
-//                 node $w_node:tt : {
-//                     in:  [ $( $win:tt ),* $(,)? ],
-//                     out: [ $( $wout:tt ),* $(,)? ]
-//                 }
-//             ),+ $(,)?
-//         }
-//     ) => {
-//         $(#[$meta])*
-//         $vis struct $Graph {
-//             nodes: (
-//                 $(
-//                     NodeLink<$nty, { $nin }, { $nout }, $in_p, $out_p>
-//                 ),*
-//             ),
-//             edges: (
-//                 $(
-//                     EdgeLink<$qty, $ep>
-//                 ),*
-//             ),
-//         }
+        wiring {
+            $(
+                node $w_node:tt : {
+                    in:  [ $( $win:tt ),* $(,)? ],
+                    out: [ $( $wout:tt ),* $(,)? ]
+                }
+            ),+ $(,)?
+        }
+    ) => {
+        $crate::define_graph!(
+            @emit_impls
+            $(#[$meta])*
+            $vis struct $Graph;
 
-//         impl $Graph {
-//             #[inline]
-//             pub fn new(
-//                 $( node_$nidx: $nty ),*,
-//                 $( q_$eidx: $qty ),*
-//             ) -> Self {
-//                 let nodes = (
-//                     $(
-//                         NodeLink::<$nty, { $nin }, { $nout }, $in_p, $out_p>::new(
-//                             node_$nidx,
-//                             <NodeIndex as core::convert::From<usize>>::from($nidx),
-//                             $nlabel
-//                         )
-//                     ),*
-//                 );
-//                 let edges = (
-//                     $(
-//                         EdgeLink::<$qty, $ep>::new(
-//                             q_$eidx,
-//                             <EdgeIndex as core::convert::From<usize>>::from($eidx),
-//                             PortId {
-//                                 node: <NodeIndex as core::convert::From<usize>>::from($from_node),
-//                                 port: PortIndex($from_port),
-//                             },
-//                             PortId {
-//                                 node: <NodeIndex as core::convert::From<usize>>::from($to_node),
-//                                 port: PortIndex($to_port),
-//                             },
-//                             $epol,
-//                             $elabel
-//                         )
-//                     ),*
-//                 );
-//                 Self { nodes, edges }
-//             }
-//         }
+            nodes {
+                $( $nidx : {
+                    ty: $nty,
+                    in_ports: $nin,
+                    out_ports: $nout,
+                    in_payload: $in_p,
+                    out_payload: $out_p,
+                    name: $nlabel
+                } ),+
+            }
 
-//         // GraphApi
-//         impl $crate::prelude::GraphApi<
-//             { $crate::::prelude::define_graph!(@count $( $nidx )*) },
-//             { $crate::prelude::define_graph!(@count $( $eidx )*) }
-//         > for $Graph
-//         {
-//             #[inline]
-//             fn get_node_descriptors(&self) -> [NodeDescriptor; $crate::prelude::define_graph!(@count $( $nidx )*)] {
-//                 [ $( self.nodes.$nidx.descriptor() ),* ]
-//             }
-//             #[inline]
-//             fn get_edge_descriptors(&self) -> [EdgeDescriptor; $crate::prelude::define_graph!(@count $( $eidx )*)] {
-//                 [ $( self.edges.$eidx.descriptor() ),* ]
-//             }
-//         }
+            edges {
+                $( $eidx : {
+                    ty: $qty,
+                    payload: $ep,
+                    from: ($from_node, $from_port),
+                    to:   ($to_node,   $to_port),
+                    policy: $epol,
+                    name: $elabel
+                } ),+
+            }
 
-//         // Per-node typed access
-//         $(
-//             impl $crate::prelude:::GraphNodeAccess<{ $nidx }> for $Graph {
-//                 type Node = NodeLink<$nty, { $nin }, { $nout }, $in_p, $out_p>;
-//                 #[inline] fn node_ref(&self) -> &Self::Node { &self.nodes.$nidx }
-//                 #[inline] fn node_mut(&mut self) -> &mut Self::Node { &mut self.nodes.$nidx }
-//             }
-//         )*
+            wiring {
+                $( node $w_node : {
+                    in:  [ $( $win ),* ],
+                    out: [ $( $wout ),* ]
+                } ),+
+            }
 
-//         // Per-edge typed access
-//         $(
-//             impl $crate::prelude:::GraphEdgeAccess<{ $eidx }> for $Graph {
-//                 type Edge = EdgeLink<$qty, $ep>;
-//                 #[inline] fn edge_ref(&self) -> &Self::Edge { &self.edges.$eidx }
-//                 #[inline] fn edge_mut(&mut self) -> &mut Self::Edge { &mut self.edges.$eidx }
-//             }
-//         )*
+            // Single token-tree for node id → full node spec
+            node_map [ $( $nidx : {
+                ty: $nty,
+                in_ports: $nin,
+                out_ports: $nout,
+                in_payload: $in_p,
+               out_payload: $out_p,
+                name: $nlabel
+            } ),* ]
 
-//         // Per-node compile-time types/arity (updated to use const generics instead of assoc consts)
-//         $(
-//             impl $crate::prelude::GraphNodeTypes<
-//                 { $w_node },
-//                 { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                 { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//             > for $Graph
-//             {
-//                 type InP  = $crate::prelude::define_graph!(@node_field in_payload  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* );
-//                 type OutP = $crate::prelude::define_graph!(@node_field out_payload $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* );
-//                 type InQ  = $crate::prelude::define_graph!(@in_q_ty
-//                     $crate::prelude::define_graph!(@node_field in_payload  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* )
-//                     ;
-//                     [ $( $win ),* ] ; $( $eidx => $qty ),*
-//                 );
-//                 type OutQ = $crate::prelude::define_graph!(@out_q_ty
-//                     $crate::prelude::define_graph!(@node_field out_payload $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* )
-//                     ;
-//                     [ $( $wout ),* ] ; $( $eidx => $qty ),*
-//                 );
-//             }
+            // Single token-tree for edge id → queue type
+            edge_map [ $( $eidx => $qty ),* ]
+        );
+    };
 
-//             impl $crate::prelude::GraphNodeContextBuilder<
-//                 { $w_node },
-//                 { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                 { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//             > for $Graph
-//             {
-//                 #[inline]
-//                 fn make_step_context<C, T>(
-//                     &mut self,
-//                     clock: &C,
-//                     telemetry: &mut T,
-//                 ) -> $crate::prelude::StepContext<
-//                     { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                     { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                     <Self as $crate::prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::InP,
-//                     <Self as $crate::prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::OutP,
-//                     <Self as $crate:prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::InQ,
-//                     <Self as $crate::prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::OutQ,
-//                     C, T
-//                 >
-//                 where
-//                     EdgePolicy: Copy,
-//                 {
-//                     $( let e$eidx = &mut self.edges.$eidx; )*
+    // Main arm, builds structs and implements traits.
+    (
+        @emit_impls
+        $(#[$meta:meta])*
+        $vis:vis struct $Graph:ident;
 
-//                     let inputs: [&mut <Self as $crate::prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::InQ;
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     ] = [
-//                         $( e$win.queue_mut() ),*
-//                     ];
+        nodes {
+            $(
+                $nidx:tt : {
+                    ty: $nty:ty,
+                    in_ports: $nin:expr,
+                    out_ports: $nout:expr,
+                    in_payload: $in_p:ty,
+                    out_payload: $out_p:ty,
+                    name: $nlabel:expr
+                }
+            ),+ $(,)?
+        }
 
-//                     let outputs: [&mut <Self as $crate::prelude::GraphNodeTypes<
-//                         { $w_node },
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     >>::OutQ;
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     ] = [
-//                         $( e$wout.queue_mut() ),*
-//                     ];
+        edges {
+            $(
+                $eidx:tt : {
+                    ty: $qty:ty,
+                    payload: $ep:ty,
+                    from: ($from_node:tt, $from_port:expr),
+                    to:   ($to_node:tt,   $to_port:expr),
+                    policy: $epol:expr,
+                    name: $elabel:expr
+                }
+            ),+ $(,)?
+        }
 
-//                     let in_policies: [EdgePolicy;
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     ] = [
-//                         $( e$win.policy() ),*
-//                     ];
+        wiring {
+            $(
+                node $w_node:tt : {
+                    in:  [ $( $win:tt ),* $(,)? ],
+                    out: [ $( $wout:tt ),* $(,)? ]
+                }
+            ),+ $(,)?
+        }
 
-//                     let out_policies: [EdgePolicy;
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                     ] = [
-//                         $( e$wout.policy() ),*
-//                     ];
+        node_map $NODE_MAP:tt
 
-//                     $crate::prelude::StepContext::<'_,
-//                         { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                         <Self as $crate::prelude::GraphNodeTypes<
-//                             { $w_node },
-//                             { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                             { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                         >>::InP,
-//                         <Self as $crate::prelude::GraphNodeTypes<
-//                             { $w_node },
-//                             { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                             { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                         >>::OutP,
-//                         <Self as $crate::prelude::GraphNodeTypes<
-//                             { $w_node },
-//                             { $crate::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                             { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                         >>::InQ,
-//                         <Self as $crate::prelude::GraphNodeTypes<
-//                             { $w_node },
-//                             { $crate::prelude::prelude::define_graph!(@node_field in_ports  $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) },
-//                             { $crate::prelude::define_graph!(@node_field out_ports $w_node ; $( $nidx : { ty: $nty, in_ports: $nin, out_ports: $nout, in_payload: $in_p, out_payload: $out_p, name: $nlabel } ),* ) }
-//                         >>::OutQ,
-//                         C, T
-//                     >::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
-//                 }
-//             }
-//         )*
-//     };
+        edge_map $EDGE_MAP:tt
+    ) => {
+        $(#[$meta])*
+        $vis struct $Graph {
+            nodes: (
+                $(
+                    $crate::prelude::NodeLink<$nty, { $nin }, { $nout }, $in_p, $out_p>
+                ),*
+            ),
+            edges: (
+                $(
+                    $crate::prelude::EdgeLink<$qty, $ep>
+                ),*
+            ),
+        }
 
-//     // helpers
-//     (@count $($tt:tt)*) => { <[()]>::len(&[ $( { let _ = stringify!($tt); () } ),* ]) };
+        impl $Graph {
+            #[inline]
+            pub fn new(
+                $( ::paste::paste! { [<node_ $nidx>] }: $nty ),*,
+                $( ::paste::paste! { [<q_ $eidx>] }: $qty ),*
+            ) -> Self {
+                let nodes = (
+                    $(
+                        $crate::prelude::NodeLink::<$nty, { $nin }, { $nout }, $in_p, $out_p>::new(
+                            ::paste::paste! { [<node_ $nidx>] },
+                            <$crate::prelude::NodeIndex as core::convert::From<usize>>::from($nidx),
+                            $nlabel
+                        )
+                    ),*
+                );
+                let edges = (
+                    $(
+                        $crate::prelude::EdgeLink::<$qty, $ep>::new(
+                            ::paste::paste! { [<q_ $eidx>] },
+                            <$crate::prelude::EdgeIndex as core::convert::From<usize>>::from($eidx),
+                            $crate::prelude::PortId {
+                                node: <$crate::prelude::NodeIndex as core::convert::From<usize>>::from($from_node),
+                                port: $crate::prelude::PortIndex($from_port),
+                            },
+                            $crate::prelude::PortId {
+                                node: <$crate::prelude::NodeIndex as core::convert::From<usize>>::from($to_node),
+                                port: $crate::prelude::PortIndex($to_port),
+                            },
+                            $epol,
+                            $elabel
+                        )
+                    ),*
+                );
+                Self { nodes, edges }
+            }
+        }
 
-//     // node field lookup
-//     (@node_field ty $want:tt ; $want2:tt : { ty: $nty:ty, in_ports: $nin:expr, out_ports: $nout:expr, in_payload: $in_p:ty, out_payload: $out_p:ty, name: $nm:expr } $(, $rest:tt : { $($rt:tt)* } )* ) => { $nty };
-//     (@node_field in_ports $want:tt ; $want2:tt : { ty: $nty:ty, in_ports: $nin:expr, out_ports: $nout:expr, in_payload: $in_p:ty, out_payload: $out_p:ty, name: $nm:expr } $(, $rest:tt : { $($rt:tt)* } )* ) => { $nin };
-//     (@node_field out_ports $want:tt ; $want2:tt : { ty: $nty:ty, in_ports: $nin:expr, out_ports: $nout:expr, in_payload: $in_p:ty, out_payload: $out_p:ty, name: $nm:expr } $(, $rest:tt : { $($rt:tt)* } )* ) => { $nout };
-//     (@node_field in_payload $want:tt ; $want2:tt : { ty: $nty:ty, in_ports: $nin:expr, out_ports: $nout:expr, in_payload: $in_p:ty, out_payload: $out_p:ty, name: $nm:expr } $(, $rest:tt : { $($rt:tt)* } )* ) => { $in_p };
-//     (@node_field out_payload $want:tt ; $want2:tt : { ty: $nty:ty, in_ports: $nin:expr, out_ports: $nout:expr, in_payload: $in_p:ty, out_payload: $out_p:ty, name: $nm:expr } $(, $rest:tt : { $($rt:tt)* } )* ) => { $out_p };
-//     (@node_field $field:ident $want:tt ; $head:tt : { $($h:tt)* } , $( $tail:tt : { $($t:tt)* } ),+ ) => {
-//         $crate::define_graph!(@node_field $field $want ; $( $tail : { $($t)* } ),+ )
-//     };
+        // GraphApi
+        impl $crate::prelude::GraphApi<
+            { $crate::define_graph!(@count $( $nidx )*) },
+            { $crate::define_graph!(@count $( $eidx )*) }
+        > for $Graph
+        {
+            #[inline]
+            fn get_node_descriptors(&self) -> [$crate::prelude::NodeDescriptor; $crate::define_graph!(@count $( $nidx )*)] {
+                [ $( self.nodes.$nidx.descriptor() ),* ]
+            }
+            #[inline]
+            fn get_edge_descriptors(&self) -> [$crate::prelude::EdgeDescriptor; $crate::define_graph!(@count $( $eidx )*)] {
+                [ $( self.edges.$eidx.descriptor() ),* ]
+            }
+        }
 
-//     // queue type from edges (first) or NoQueue<Payload> when empty
-//     (@in_q_ty $Payload:ty ; [ $first:tt $(, $rest:tt )* ] ; $( $eidx:tt => $qty:ty ),* ) => {
-//         $crate::prelude::define_graph!(@edge_q_ty $first ; $( $eidx => $qty ),* )
-//     };
-//     (@in_q_ty $Payload:ty ; [ ] ; $( $eidx:tt => $qty:ty ),* ) => {
-//         $crate::prelude::NoQueue<$Payload>
-//     };
-//     (@out_q_ty $Payload:ty ; [ $first:tt $(, $rest:tt )* ] ; $( $eidx:tt => $qty:ty ),* ) => {
-//         $crate::prelude::define_graph!(@edge_q_ty $first ; $( $eidx => $qty ),* )
-//     };
-//     (@out_q_ty $Payload:ty ; [ ] ; $( $eidx:tt => $qty:ty ),* ) => {
-//         $crate::prelude::NoQueue<$Payload>
-//     };
-//     (@edge_q_ty $want:tt ; $want2:tt => $qty2:ty $(, $tail:tt => $qtail:ty )* ) => { $qty2 };
-//     (@edge_q_ty $want:tt ; $head:tt => $qhead:ty, $( $tail:tt => $qtail:ty ),+ ) => {
-//         $crate::prelude::define_graph!(@edge_q_ty $want ; $( $tail => $qtail ),+ )
-//     };
-// }
+        // Per-node typed access
+        $(
+            impl $crate::prelude::GraphNodeAccess<{ $nidx }> for $Graph {
+                type Node = $crate::prelude::NodeLink<$nty, { $nin }, { $nout }, $in_p, $out_p>;
+                #[inline] fn node_ref(&self) -> &Self::Node { &self.nodes.$nidx }
+                #[inline] fn node_mut(&mut self) -> &mut Self::Node { &mut self.nodes.$nidx }
+            }
+        )*
+
+        // Per-edge typed access
+        $(
+            impl $crate::prelude::GraphEdgeAccess<{ $eidx }> for $Graph {
+                type Edge = $crate::prelude::EdgeLink<$qty, $ep>;
+                #[inline] fn edge_ref(&self) -> &Self::Edge { &self.edges.$eidx }
+                #[inline] fn edge_mut(&mut self) -> &mut Self::Edge { &mut self.edges.$eidx }
+            }
+        )*
+
+        // ---------- Per-node compile-time types/arity (const generics) ----------
+        $(
+            impl $crate::prelude::GraphNodeTypes<
+            { $w_node },
+            { $crate::define_graph!(@node_field in_ports  $w_node ;  $NODE_MAP  ) },
+            { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+        > for $Graph
+            {
+                type InP  = $crate::define_graph!(@node_field in_payload  $w_node ; $NODE_MAP );
+                type OutP = $crate::define_graph!(@node_field out_payload $w_node ; $NODE_MAP );
+
+                type InQ  = $crate::define_graph!(@in_q_ty
+                    $crate::define_graph!(@node_field in_payload  $w_node ; $NODE_MAP )
+                    ;
+                    [ $( $win ),* ] ;
+                    $EDGE_MAP
+                );
+
+                type OutQ = $crate::define_graph!(@out_q_ty
+                    $crate::define_graph!(@node_field out_payload $w_node ; $NODE_MAP )
+                    ;
+                    [ $( $wout ),* ] ;
+                    $EDGE_MAP
+                );
+            }
+        )*
+
+        // ---------- Per-node StepContext builder ----------
+$(
+    impl $crate::prelude::GraphNodeContextBuilder<
+        { $w_node },
+        { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+        { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+    > for $Graph
+    {
+        #[inline]
+        fn make_step_context<C, T>(
+            &mut self,
+            clock: &C,
+            telemetry: &mut T,
+        ) -> $crate::prelude::StepContext<
+            { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+            { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) },
+            <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::InP,
+            <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::OutP,
+            <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::InQ,
+            <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::OutQ,
+            C, T
+        >
+        where
+            $crate::prelude::EdgePolicy: Copy,
+        {
+            let inputs: [&mut <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::InQ;
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) }
+            ] = [
+                $( self.edges.$win.queue_mut() ),*
+            ];
+
+            let outputs: [&mut <Self as $crate::prelude::GraphNodeTypes<
+                { $w_node },
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            >>::OutQ;
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            ] = [
+                $( self.edges.$wout.queue_mut() ),*
+            ];
+
+            let in_policies: [$crate::prelude::EdgePolicy;
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) }
+            ] = [
+                $( self.edges.$win.policy() ),*
+            ];
+
+            let out_policies: [$crate::prelude::EdgePolicy;
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+            ] = [
+                $( self.edges.$wout.policy() ),*
+            ];
+
+            $crate::prelude::StepContext::<'_,
+                { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) },
+                <Self as $crate::prelude::GraphNodeTypes<
+                    { $w_node },
+                    { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                    { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+                >>::InP,
+                <Self as $crate::prelude::GraphNodeTypes<
+                    { $w_node },
+                    { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                    { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+                >>::OutP,
+                <Self as $crate::prelude::GraphNodeTypes<
+                    { $w_node },
+                    { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                    { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+                >>::InQ,
+                <Self as $crate::prelude::GraphNodeTypes<
+                    { $w_node },
+                    { $crate::define_graph!(@node_field in_ports  $w_node ; $NODE_MAP ) },
+                    { $crate::define_graph!(@node_field out_ports $w_node ; $NODE_MAP ) }
+                >>::OutQ,
+                C, T
+            >::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+                }
+            }
+        )*
+    };
+
+    // helpers
+    (@count $($tt:tt)*) =>
+    {
+        <[()]>::len(&[ $( { let _ = stringify!($tt); () } ),* ])
+    };
+
+     // --- accept bracketed node_map and forward to your existing flat rules ---
+    (@node_field $field:ident $want:tt ;
+        [ $( $idx:tt : { $($body:tt)* } ),* $(,)? ]
+    ) => {
+        $crate::define_graph!(
+            @node_field $field $want ;
+            $( $idx : { $($body)* } ),*
+        )
+    };
+    // node field lookup
+    (@node_field ty $want:tt ; $want2:tt :
+        {
+            ty: $nty:ty,
+            in_ports: $nin:expr,
+            out_ports: $nout:expr,
+            in_payload: $in_p:ty,
+            out_payload: $out_p:ty,
+            name: $nm:expr
+        }
+        $(, $rest:tt : { $($rt:tt)* } )*
+    ) =>
+        {
+            $nty
+        };
+    (@node_field in_ports $want:tt ; $want2:tt :
+        {
+            ty: $nty:ty,
+            in_ports: $nin:expr,
+            out_ports: $nout:expr,
+            in_payload: $in_p:ty,
+            out_payload: $out_p:ty,
+            name: $nm:expr
+        }
+        $(, $rest:tt : { $($rt:tt)* } )*
+    ) => {
+        $nin
+    };
+    (@node_field out_ports $want:tt ; $want2:tt :
+        {
+            ty: $nty:ty,
+            in_ports: $nin:expr,
+            out_ports: $nout:expr,
+            in_payload: $in_p:ty,
+            out_payload: $out_p:ty,
+            name: $nm:expr
+        }
+        $(, $rest:tt : { $($rt:tt)* } )*
+    ) => {
+        $nout
+    };
+    (@node_field in_payload $want:tt ; $want2:tt :
+        {
+            ty: $nty:ty,
+            in_ports: $nin:expr,
+            out_ports: $nout:expr,
+            in_payload: $in_p:ty,
+            out_payload: $out_p:ty,
+            name: $nm:expr
+        }
+        $(, $rest:tt : { $($rt:tt)* } )*
+    ) => {
+        $in_p
+    };
+    (@node_field out_payload $want:tt ; $want2:tt :
+        {
+            ty: $nty:ty,
+            in_ports: $nin:expr,
+            out_ports: $nout:expr,
+            in_payload: $in_p:ty,
+            out_payload: $out_p:ty,
+            name: $nm:expr
+        }
+        $(, $rest:tt : { $($rt:tt)* } )*
+    ) => {
+        $out_p
+    };
+    (@node_field $field:ident $want:tt ; $head:tt :
+        { $($h:tt)* } , $( $tail:tt : { $($t:tt)* } ),+
+    ) => {
+        $crate::define_graph!(
+            @node_field $field $want ; $( $tail : { $($t)* } ),+ )
+    };
+
+
+    // Accept a bracketed edge-id → queue-type map as one tt group.
+    (@in_q_ty $Payload:ty ; [ $first:tt $(, $rest:tt )* ] ; [ $( $eidx:tt => $qty:ty ),* ]) => {
+        $crate::define_graph!(@edge_q_ty $first ; [ $( $eidx => $qty ),* ])
+    };
+    (@in_q_ty $Payload:ty ; [ ] ; [ $( $eidx:tt => $qty:ty ),* ]) => {
+        $crate::prelude::NoQueue<$Payload>
+    };
+    (@out_q_ty $Payload:ty ; [ $first:tt $(, $rest:tt )* ] ; [ $( $eidx:tt => $qty:ty ),* ]) => {
+        $crate::define_graph!(@edge_q_ty $first ; [ $( $eidx => $qty ),* ])
+    };
+    (@out_q_ty $Payload:ty ; [ ] ; [ $( $eidx:tt => $qty:ty ),* ]) => {
+        $crate::prelude::NoQueue<$Payload>
+    };
+    (@edge_q_ty $want:tt ; [ $want2:tt => $qty2:ty $(, $tail:tt => $qtail:ty )* ]) => { $qty2 };
+    (@edge_q_ty $want:tt ; [ $head:tt => $qhead:ty $(, $tail:tt => $qtail:ty )+ ]) => {
+        $crate::define_graph!(@edge_q_ty $want ; [ $( $tail => $qtail ),+ ])
+    };
+}
 
 #[cfg(test)]
 mod tests {
     use crate::message::MessageFlags;
     use crate::node::NodeCapabilities;
     use crate::node::NodePolicy;
+    use crate::policy::AdmissionPolicy;
+    use crate::policy::EdgePolicy;
+    use crate::policy::OverBudgetAction;
+    use crate::policy::QueueCaps;
     use crate::prelude::spsc_array::StaticRing;
     use crate::prelude::GraphApi;
     use crate::prelude::GraphNodeTypes;
@@ -437,6 +618,17 @@ mod tests {
     // Concrete queue type for Message<u32> with a small fixed capacity.
     type Q32 = StaticRing<Message<u32>, 8>;
 
+    const Q_32_POLICY: EdgePolicy = EdgePolicy {
+        caps: QueueCaps {
+            max_items: 8,
+            soft_items: 8,
+            max_bytes: None,
+            soft_bytes: None,
+        },
+        over_budget: OverBudgetAction::Drop,
+        admission: AdmissionPolicy::DropOldest,
+    };
+
     // ---------- Build a tiny graph with the macro ----------
     define_graph! {
         pub struct TestPipeline;
@@ -448,8 +640,8 @@ mod tests {
         }
 
         edges {
-            0: { ty: Q32, payload: u32, from: (0,0), to: (1,0), policy: EdgePolicy::default(), name: Some("e0") },
-            1: { ty: Q32, payload: u32, from: (1,0), to: (2,0), policy: EdgePolicy::default(), name: Some("e1") }
+            0: { ty: Q32, payload: u32, from: (0,0), to: (1,0), policy: Q_32_POLICY, name: Some("e0") },
+            1: { ty: Q32, payload: u32, from: (1,0), to: (2,0), policy: Q_32_POLICY, name: Some("e1") }
         }
 
         wiring {

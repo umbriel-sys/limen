@@ -52,5 +52,6 @@ pub mod compute;
 pub mod graph;
 pub mod node;
 pub mod queue;
+pub mod runtime;
 
 pub mod prelude;

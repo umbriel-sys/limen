@@ -5,7 +5,6 @@
 
 pub mod bench;
 pub mod link;
-pub mod routing;
 
 use crate::errors::{NodeError, QueueError};
 use crate::memory::PlacementAcceptance;

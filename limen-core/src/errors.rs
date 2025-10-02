@@ -106,6 +106,43 @@ impl fmt::Display for NodeError {
 #[cfg(feature = "std")]
 impl Error for NodeError {}
 
+impl NodeError {
+    #[inline]
+    pub const fn no_input() -> Self {
+        Self::new(NodeErrorKind::NoInput, 0)
+    }
+    #[inline]
+    pub const fn backpressured() -> Self {
+        Self::new(NodeErrorKind::Backpressured, 0)
+    }
+    #[inline]
+    pub const fn over_budget() -> Self {
+        Self::new(NodeErrorKind::OverBudget, 0)
+    }
+    #[inline]
+    pub const fn external_unavailable() -> Self {
+        Self::new(NodeErrorKind::ExternalUnavailable, 0)
+    }
+    #[inline]
+    pub const fn execution_failed() -> Self {
+        Self::new(NodeErrorKind::ExecutionFailed, 0)
+    }
+
+    /// Same as the above but lets you tack on a backend/platform error code.
+    #[inline]
+    pub const fn with_code(mut self, code: u32) -> Self {
+        self.code = code;
+        self
+    }
+}
+
+impl From<NodeErrorKind> for NodeError {
+    #[inline]
+    fn from(kind: NodeErrorKind) -> Self {
+        NodeError::new(kind, 0)
+    }
+}
+
 /// Errors related to model loading and inference execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferenceErrorKind {
@@ -175,6 +212,8 @@ pub enum GraphError {
     IncompatiblePorts,
     /// Queue capacity or watermark configuration is invalid.
     InvalidCapacity,
+    /// Invalid graph index used.
+    InvalidEdgeIndex,
 }
 
 impl fmt::Display for GraphError {
@@ -187,6 +226,7 @@ impl fmt::Display for GraphError {
             GraphError::InvalidCapacity => {
                 f.write_str("queue capacity or watermark configuration is invalid")
             }
+            GraphError::InvalidEdgeIndex => f.write_str("edge index is invalid"),
         }
     }
 }
@@ -304,3 +344,38 @@ impl fmt::Display for OutputError {
 
 #[cfg(feature = "std")]
 impl Error for OutputError {}
+
+// ***** Runtime Errors *****
+
+/// Error surface for runtimes: can wrap graph- and node-level errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeError {
+    Graph(GraphError),
+    Node(NodeError),
+}
+
+impl From<GraphError> for RuntimeError {
+    #[inline]
+    fn from(e: GraphError) -> Self {
+        RuntimeError::Graph(e)
+    }
+}
+
+impl From<NodeError> for RuntimeError {
+    #[inline]
+    fn from(e: NodeError) -> Self {
+        RuntimeError::Node(e)
+    }
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RuntimeError::Graph(e) => write!(f, "runtime graph error: {e}"),
+            RuntimeError::Node(e) => write!(f, "runtime node error: {e}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for RuntimeError {}

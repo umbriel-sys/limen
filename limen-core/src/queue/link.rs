@@ -166,3 +166,142 @@ pub struct EdgeDescriptor {
     /// Optional static name (for diagnostics or graph tooling).
     pub name: Option<&'static str>,
 }
+
+/// Std-only, owning edge link that stores the concrete queue behind an
+/// `Arc<Mutex<Q>>` plus static routing/policy metadata.
+///
+/// This is the thread-safe sibling of `EdgeLink`: instead of borrowing a queue,
+/// it **owns** it in an `Arc<Mutex<_>>` so concurrent runtimes can hand out
+/// cloned, thread-safe endpoints to worker threads.
+#[cfg(feature = "std")]
+#[derive(Debug)]
+pub struct ConcurrentEdgeLink<Q, P>
+where
+    P: Payload,
+    Q: SpscQueue<Item = Message<P>>,
+{
+    /// Shared, thread-safe buffer for this edge.
+    buf: std::sync::Arc<std::sync::Mutex<Q>>,
+    /// Unique identifier for this edge in the graph.
+    id: EdgeIndex,
+    /// Upstream node/port (producer).
+    upstream: PortId,
+    /// Downstream node/port (consumer).
+    downstream: PortId,
+    /// Admission/scheduling policy for this edge.
+    policy: EdgePolicy,
+    /// Optional static name for diagnostics/tooling.
+    name: Option<&'static str>,
+    /// Bind payload type at the type level without storing it.
+    _marker: core::marker::PhantomData<P>,
+}
+
+#[cfg(feature = "std")]
+impl<Q, P> ConcurrentEdgeLink<Q, P>
+where
+    P: Payload,
+    Q: SpscQueue<Item = Message<P>>,
+{
+    /// Create from a concrete queue and edge metadata.
+    ///
+    /// The queue is placed behind an `Arc<Mutex<_>>` so callers can construct
+    /// concurrent producer/consumer endpoints that share the same buffer.
+    #[inline]
+    pub fn new(
+        queue: Q,
+        id: EdgeIndex,
+        upstream: PortId,
+        downstream: PortId,
+        policy: EdgePolicy,
+        name: Option<&'static str>,
+    ) -> Self {
+        Self {
+            buf: std::sync::Arc::new(std::sync::Mutex::new(queue)),
+            id,
+            upstream,
+            downstream,
+            policy,
+            name,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Return a lightweight descriptor for this edge (IDs/ports/name).
+    #[inline]
+    pub fn descriptor(&self) -> EdgeDescriptor {
+        EdgeDescriptor {
+            id: self.id,
+            upstream: self.upstream,
+            downstream: self.downstream,
+            name: self.name,
+        }
+    }
+
+    /// Get the edge policy (admission/watermarks/over-budget behavior).
+    #[inline]
+    pub fn policy(&self) -> EdgePolicy {
+        self.policy
+    }
+
+    /// Access the shared `Arc<Mutex<Q>>` to build thread-safe endpoints.
+    #[inline]
+    pub fn arc(&self) -> std::sync::Arc<std::sync::Mutex<Q>> {
+        std::sync::Arc::clone(&self.buf)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<Q, P> crate::queue::SpscQueue for ConcurrentEdgeLink<Q, P>
+where
+    P: crate::message::payload::Payload + Clone,
+    Q: crate::queue::SpscQueue<Item = crate::message::Message<P>> + Send + 'static,
+{
+    type Item = crate::message::Message<P>;
+
+    #[inline]
+    fn try_push(
+        &mut self,
+        item: Self::Item,
+        policy: &crate::policy::EdgePolicy,
+    ) -> crate::queue::EnqueueResult {
+        match self.buf.lock() {
+            Ok(mut q) => q.try_push(item, policy),
+            Err(_) => crate::queue::EnqueueResult::Rejected,
+        }
+    }
+
+    #[inline]
+    fn try_pop(&mut self) -> Result<Self::Item, crate::errors::QueueError> {
+        match self.buf.lock() {
+            Ok(mut q) => q.try_pop(),
+            Err(_) => Err(crate::errors::QueueError::Poisoned),
+        }
+    }
+
+    #[inline]
+    fn occupancy(&self, policy: &crate::policy::EdgePolicy) -> crate::queue::QueueOccupancy {
+        match self.buf.lock() {
+            Ok(q) => q.occupancy(policy),
+            Err(_) => crate::queue::QueueOccupancy {
+                items: 0,
+                bytes: 0,
+                watermark: crate::policy::WatermarkState::AtOrAboveHard,
+            },
+        }
+    }
+
+    // Cannot return `&Item` through a Mutex guard.
+    #[inline]
+    fn try_peek(&self) -> Result<&Self::Item, crate::errors::QueueError> {
+        Err(crate::errors::QueueError::Empty)
+    }
+
+    #[cfg(feature = "std")]
+    #[inline]
+    fn try_peek_cloned(&self) -> Result<Self::Item, crate::errors::QueueError> {
+        match self.buf.lock() {
+            Ok(q) => q.try_peek_cloned(),
+            Err(_) => Err(crate::errors::QueueError::Poisoned),
+        }
+    }
+}

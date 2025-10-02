@@ -8,13 +8,15 @@
 //!
 //! Runtimes consume the **typed** `Graph` trait; tooling and codegen use descriptors.
 
+use crate::node::Node;
+
 use crate::{
-    errors::GraphError,
+    errors::{GraphError, NodeError},
     graph::validate::{GraphDescBuf, GraphValidator},
     message::{payload::Payload, Message},
-    node::{link::NodeDescriptor, StepContext},
+    node::{link::NodeDescriptor, NodePolicy, StepContext, StepResult},
     policy::EdgePolicy,
-    queue::{link::EdgeDescriptor, SpscQueue},
+    queue::{link::EdgeDescriptor, QueueOccupancy, SpscQueue},
 };
 
 pub mod bench;
@@ -121,6 +123,72 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
     >
     where
         EdgePolicy: Copy;
+
+    /// Borrowed handoff: in one `&mut self` borrow, lend both
+    /// `&mut node(I)` and a fully wired `StepContext` to a closure.
+    /// This avoids overlapping `&mut` borrows escaping the call.
+    fn with_node_and_step_context<'telemetry, 'clock, C, T, R, E>(
+        &mut self,
+        clock: &'clock C,
+        telemetry: &'telemetry mut T,
+        f: impl FnOnce(
+            &mut <Self as GraphNodeAccess<I>>::Node,
+            &mut StepContext<
+                '_,
+                'telemetry,
+                'clock,
+                IN,
+                OUT,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InP,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+                C,
+                T,
+            >,
+        ) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        Self: GraphNodeAccess<I>,
+        EdgePolicy: Copy;
+}
+
+/// Std-only: move `node I` and owned endpoint queues to a worker thread.
+#[cfg(feature = "std")]
+pub trait GraphNodeOwnedEndpointHandoff<const I: usize, const IN: usize, const OUT: usize>:
+    GraphNodeTypes<I, IN, OUT> + GraphNodeAccess<I>
+{
+    /// Node type to be moved to workers (usually the same as `GraphNodeAccess<I>::Node`).
+    type NodeOwned: Node<
+            IN,
+            OUT,
+            <Self as GraphNodeTypes<I, IN, OUT>>::InP,
+            <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
+        > + Send
+        + 'static;
+
+    /// Take ownership of node `I` and produce owned endpoint queues + policies.
+    #[allow(clippy::complexity)]
+    fn take_node_and_endpoints(
+        &mut self,
+    ) -> (
+        Self::NodeOwned,
+        [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
+        [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+        [EdgePolicy; IN],
+        [EdgePolicy; OUT],
+    )
+    where
+        <Self as GraphNodeTypes<I, IN, OUT>>::InQ: Send + 'static,
+        <Self as GraphNodeTypes<I, IN, OUT>>::OutQ: Send + 'static;
+
+    /// (Optional) Reattach ownership after the worker is done.
+    fn put_node_and_endpoints(
+        &mut self,
+        node: Self::NodeOwned,
+        inputs: [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
+        outputs: [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+    );
 }
 
 /// Unified runtime-facing graph API.
@@ -219,5 +287,143 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
         EdgePolicy: Copy,
     {
         <Self as GraphNodeContextBuilder<I, IN, OUT>>::make_step_context(self, clock, telemetry)
+    }
+
+    /// Borrowed handoff: in one `&mut self` borrow, lend both
+    /// `&mut node(I)` and a fully wired `StepContext` to a closure.
+    /// This avoids overlapping `&mut` borrows escaping the call.
+    #[inline]
+    fn with_node_and_step_context_for<
+        'telemetry,
+        'clock,
+        const I: usize,
+        const IN: usize,
+        const OUT: usize,
+        C,
+        T,
+        R,
+        E,
+    >(
+        &mut self,
+        clock: &'clock C,
+        telemetry: &'telemetry mut T,
+        f: impl FnOnce(
+            &mut <Self as GraphNodeAccess<I>>::Node,
+            &mut StepContext<
+                '_,
+                'telemetry,
+                'clock,
+                IN,
+                OUT,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InP,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+                C,
+                T,
+            >,
+        ) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        Self: GraphNodeContextBuilder<I, IN, OUT> + GraphNodeTypes<I, IN, OUT> + GraphNodeAccess<I>,
+        EdgePolicy: Copy,
+    {
+        <Self as GraphNodeContextBuilder<I, IN, OUT>>::with_node_and_step_context(
+            self, clock, telemetry, f,
+        )
+    }
+
+    /// Compute the current occupancy for edge `E` (read-only, no stepping).
+    fn edge_occupancy_for<const E: usize>(&self) -> Result<QueueOccupancy, GraphError>;
+
+    /// Fill the caller-provided buffer with current occupancies for all edges.
+    /// No nodes are stepped; this is a read-only snapshot into a buffer the
+    /// runtime owns persistently.
+    fn write_all_edge_occupancies(
+        &self,
+        out: &mut [QueueOccupancy; EDGE_COUNT],
+    ) -> Result<(), GraphError>;
+
+    /// Update only the occupancies for edges incident to node `I`.
+    /// Proc-macro expands this by writing to `out[e]` for inbound/outbound edges of `I`.
+    fn refresh_occupancies_for_node<const I: usize, const IN: usize, const OUT: usize>(
+        &self,
+        out: &mut [QueueOccupancy; EDGE_COUNT],
+    ) -> Result<(), GraphError>;
+
+    /// Step the node at `index` once, using its compile-time-typed StepContext.
+    ///
+    /// The proc-macro should generate a `match index { ... }` that delegates to
+    /// `with_node_and_step_context_for::<I, IN_I, OUT_I>(...)` and calls
+    /// `node.step(ctx)`. No allocation, no trait objects.
+    fn step_node_by_index<C, T>(
+        &mut self,
+        index: usize,
+        clock: &C,
+        telemetry: &mut T,
+    ) -> Result<StepResult, NodeError>
+    where
+        EdgePolicy: Copy;
+
+    /// Return the `NodePolicy` for node `I` without requiring &mut access.
+    /// This simply calls `self.get_node_ref::<I>().policy()`. Useful for
+    /// schedulers that want static hints alongside occupancy.
+    fn node_policy_for<const I: usize, const IN: usize, const OUT: usize>(&self) -> NodePolicy
+    where
+        Self: GraphNodeAccess<I> + GraphNodeTypes<I, IN, OUT>,
+        <Self as GraphNodeAccess<I>>::Node: Node<
+            IN,
+            OUT,
+            <Self as GraphNodeTypes<I, IN, OUT>>::InP,
+            <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
+        >,
+    {
+        <<Self as GraphNodeAccess<I>>::Node as Node<
+            IN,
+            OUT,
+            <Self as GraphNodeTypes<I, IN, OUT>>::InP,
+            <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
+        >>::policy(self.get_node_ref::<I>())
+    }
+
+    /// TODO: Add doc.
+    #[cfg(feature = "std")]
+    #[inline]
+    #[allow(clippy::complexity)]
+    fn take_node_and_endpoints_for<const I: usize, const IN: usize, const OUT: usize>(
+        &mut self,
+    ) -> (
+        <Self as crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>>::NodeOwned,
+        [<Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::InQ; IN],
+        [<Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+        [crate::policy::EdgePolicy; IN],
+        [crate::policy::EdgePolicy; OUT],
+    )
+    where
+        Self: crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>
+            + crate::graph::GraphNodeTypes<I, IN, OUT>,
+        <Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::InQ: Send + 'static,
+        <Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::OutQ: Send + 'static,
+    {
+        <Self as crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>>::take_node_and_endpoints(
+            self,
+        )
+    }
+
+    /// TODO: Add doc.
+    #[cfg(feature = "std")]
+    #[inline]
+    fn put_node_and_endpoints_for<const I: usize, const IN: usize, const OUT: usize>(
+        &mut self,
+        node: <Self as crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>>::NodeOwned,
+        inputs: [<Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::InQ; IN],
+        outputs: [<Self as crate::graph::GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+    ) where
+        Self: crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>
+            + crate::graph::GraphNodeTypes<I, IN, OUT>,
+    {
+        <Self as crate::graph::GraphNodeOwnedEndpointHandoff<I, IN, OUT>>::put_node_and_endpoints(
+            self, node, inputs, outputs,
+        )
     }
 }

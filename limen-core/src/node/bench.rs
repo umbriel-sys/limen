@@ -118,7 +118,23 @@ impl Node<0, 1, (), u32> for TestSourceNodeU32 {
         let header = self.make_header();
         let message = Message::new(header, self.next_value_to_emit);
 
-        let _ = ctx.out_try_push(0, message);
+        #[cfg(feature = "std")]
+        {
+            println!("--- [src::step] --- pushing message: {:?}", message);
+        }
+
+        let enqueue_result = ctx.out_try_push(0, message);
+
+        #[cfg(feature = "std")]
+        {
+            match enqueue_result {
+                EnqueueResult::Enqueued => println!("--- [src::step] --- Enqueue succeded."),
+                EnqueueResult::DroppedNewest => {
+                    println!("--- [src::step] --- Enqueue succeded, newest dropped.")
+                }
+                EnqueueResult::Rejected => print!("--- [src::step] --- Enqueue Rejected."),
+            }
+        }
 
         // Advance counters (wrapping is fine for simple test behavior).
         self.next_value_to_emit = self.next_value_to_emit.wrapping_add(1);
@@ -208,10 +224,30 @@ impl Node<1, 1, u32, u32> for TestIdentityModelNodeU32 {
         OutQ: SpscQueue<Item = Message<u32>>,
     {
         let Ok(message) = ctx.in_try_pop(0) else {
+            #[cfg(feature = "std")]
+            {
+                println!("--- [map::step] --- no input on in0");
+            }
             return Ok(StepResult::NoInput);
         };
 
-        let _ = ctx.out_try_push(0, message);
+        #[cfg(feature = "std")]
+        {
+            println!("--- [map::step] --- received on in0: {:?}", message);
+        }
+
+        let enqueue_result = ctx.out_try_push(0, message);
+
+        #[cfg(feature = "std")]
+        {
+            match enqueue_result {
+                EnqueueResult::Enqueued => println!("--- [map::step] --- out0 enqueue succeeded."),
+                EnqueueResult::DroppedNewest => {
+                    println!("--- [map::step] --- out0 enqueue succeeded, newest dropped.")
+                }
+                EnqueueResult::Rejected => println!("--- [map::step] --- out0 enqueue rejected."),
+            }
+        }
 
         Ok(StepResult::MadeProgress)
     }
@@ -332,8 +368,17 @@ impl Node<1, 0, u32, ()> for TestSinkNodeU32 {
         OutQ: SpscQueue<Item = Message<()>>,
     {
         let Ok(message) = ctx.in_try_pop(0) else {
+            #[cfg(feature = "std")]
+            {
+                println!("--- [snk::step] --- no input on in0");
+            }
             return Ok(StepResult::NoInput);
         };
+
+        #[cfg(feature = "std")]
+        {
+            println!("--- [snk::step] --- received on in0: {:?}", message);
+        }
 
         let mut buf: FixedBuf<256> = FixedBuf::new();
         let _ = core::write!(&mut buf, "{:?}", message);

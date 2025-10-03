@@ -145,7 +145,7 @@ impl<'a> TensorRef<'a> {
     /// Convenience: build from a typed slice (no allocation).
     ///
     /// Example:
-    /// ```
+    /// ```text
     /// # let shape = &[2, 3];
     /// # let data: &[f32] = &[0.0; 6];
     /// # let class = MemoryClass::Host;

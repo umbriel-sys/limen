@@ -3,7 +3,7 @@
 //! These are the graph structs, and correspoding trait impls that are produced by the limen-build
 //! graph builder for the following input, a concerete example has been given here for test purposes.
 //!
-//! ```
+//! ```text
 //! define_graph! {
 //!     pub struct TestPipeline;
 //!
@@ -656,6 +656,8 @@ pub mod concurrent_graph {
             (InEpU32, OutEpU32), // e0: (to node1 in0, from node0 out0)
             (InEpU32, OutEpU32), // e1: (to node2 in0, from node1 out0)
         ),
+        // NEW: cache node descriptors so validation still works after nodes are moved out
+        node_descs: [NodeDescriptor; 3],
     }
 
     impl TestPipelineStd {
@@ -733,10 +735,17 @@ pub mod concurrent_graph {
                 ((e0_cons, e0_prod), (e1_cons, e1_prod))
             };
 
+            let node_descs = [
+                nodes.0.as_ref().unwrap().descriptor(),
+                nodes.1.as_ref().unwrap().descriptor(),
+                nodes.2.as_ref().unwrap().descriptor(),
+            ];
+
             Self {
                 nodes,
                 edges: (e0, e1),
                 endpoints,
+                node_descs,
             }
         }
     }
@@ -769,11 +778,7 @@ pub mod concurrent_graph {
     impl GraphApi<3, 2> for TestPipelineStd {
         #[inline]
         fn get_node_descriptors(&self) -> [NodeDescriptor; 3] {
-            [
-                self.nodes.0.as_ref().expect("node 0 moved").descriptor(),
-                self.nodes.1.as_ref().expect("node 1 moved").descriptor(),
-                self.nodes.2.as_ref().expect("node 2 moved").descriptor(),
-            ]
+            self.node_descs.clone()
         }
         #[inline]
         fn get_edge_descriptors(&self) -> [EdgeDescriptor; 2] {

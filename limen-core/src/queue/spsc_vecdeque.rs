@@ -39,7 +39,7 @@ impl<T> HeapRing<T> {
     }
 }
 
-impl<P: Payload + std::clone::Clone> SpscQueue for HeapRing<Message<P>> {
+impl<P: Payload + Clone> SpscQueue for HeapRing<Message<P>> {
     type Item = Message<P>;
 
     fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {

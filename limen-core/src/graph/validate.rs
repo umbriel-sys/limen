@@ -5,6 +5,11 @@ use crate::node::link::NodeDescriptor;
 use crate::node::NodeKind;
 use crate::queue::link::EdgeDescriptor;
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
 /// An interface for descriptor validation (borrowed/owned/buffer).
 pub trait GraphValidator {
     /// Validates the wiring of the graph.

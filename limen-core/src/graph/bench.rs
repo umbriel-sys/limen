@@ -201,23 +201,64 @@ impl GraphApi<3, 2> for TestPipeline {
         EdgePolicy: Copy,
     {
         match index {
-            0 => self.with_node_and_step_context_for::<0, 0, 1, C, T, StepResult, NodeError>(
-                clock,
-                telemetry,
-                |node, ctx| node.step(ctx),
-            ),
-            1 => self.with_node_and_step_context_for::<1, 1, 1, C, T, StepResult, NodeError>(
-                clock,
-                telemetry,
-                |node, ctx| node.step(ctx),
-            ),
-            2 => self.with_node_and_step_context_for::<2, 1, 0, C, T, StepResult, NodeError>(
-                clock,
-                telemetry,
-                |node, ctx| node.step(ctx),
-            ),
+            0 => <Self as GraphNodeContextBuilder<0, 0, 1>>::with_node_and_step_context::<
+                C,
+                T,
+                StepResult,
+                NodeError,
+            >(self, clock, telemetry, |node, ctx| node.step(ctx)),
+
+            1 => <Self as GraphNodeContextBuilder<1, 1, 1>>::with_node_and_step_context::<
+                C,
+                T,
+                StepResult,
+                NodeError,
+            >(self, clock, telemetry, |node, ctx| node.step(ctx)),
+
+            2 => <Self as GraphNodeContextBuilder<2, 1, 0>>::with_node_and_step_context::<
+                C,
+                T,
+                StepResult,
+                NodeError,
+            >(self, clock, telemetry, |node, ctx| node.step(ctx)),
+
             _ => unreachable!("invalid node index"),
         }
+    }
+
+    // --- std-only required items: provide no-op stubs for the "no-std" test graph ---
+    #[cfg(feature = "std")]
+    type OwnedBundle = ();
+
+    #[cfg(feature = "std")]
+    #[inline]
+    fn take_owned_bundle_by_index(
+        &mut self,
+        _index: usize,
+    ) -> Result<Self::OwnedBundle, GraphError> {
+        // This graph doesn't support owned handoff; return an error so tests compile.
+        Err(GraphError::InvalidEdgeIndex)
+    }
+
+    #[cfg(feature = "std")]
+    #[inline]
+    fn put_owned_bundle_by_index(&mut self, _bundle: Self::OwnedBundle) -> Result<(), GraphError> {
+        // No-op; nothing was taken.
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    #[inline]
+    fn step_owned_bundle<C, T>(
+        _bundle: &mut Self::OwnedBundle,
+        _clock: &C,
+        _telemetry: &mut T,
+    ) -> Result<StepResult, NodeError>
+    where
+        EdgePolicy: Copy,
+    {
+        // Not supported for this graph; make it explicit.
+        Err(NodeError::execution_failed().with_code(1))
     }
 }
 
@@ -700,6 +741,30 @@ pub mod concurrent_graph {
         }
     }
 
+    /// ===== std-only opaque owned-bundle used by GraphApi take/put =====
+    pub enum TestPipelineStdOwnedBundle {
+        // node 0: out=[e0.out]
+        N0 {
+            node: NodeLink<TestSourceNodeU32, 0, 1, (), u32>,
+            out0: OutEpU32,
+            out0_policy: EdgePolicy,
+        },
+        // node 1: in=[e0.in], out=[e1.out]
+        N1 {
+            node: NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>,
+            in0: InEpU32,
+            out1: OutEpU32,
+            in0_policy: EdgePolicy,
+            out1_policy: EdgePolicy,
+        },
+        // node 2: in=[e1.in]
+        N2 {
+            node: NodeLink<TestSinkNodeU32, 1, 0, u32, ()>,
+            in1: InEpU32,
+            in1_policy: EdgePolicy,
+        },
+    }
+
     // ===== GraphApi<3,2> =====
     impl GraphApi<3, 2> for TestPipelineStd {
         #[inline]
@@ -775,22 +840,178 @@ pub mod concurrent_graph {
             EdgePolicy: Copy,
         {
             match index {
-                0 => self.with_node_and_step_context_for::<0, 0, 1, C, T, StepResult, NodeError>(
-                    clock,
-                    telemetry,
-                    |node, ctx| node.step(ctx),
-                ),
-                1 => self.with_node_and_step_context_for::<1, 1, 1, C, T, StepResult, NodeError>(
-                    clock,
-                    telemetry,
-                    |node, ctx| node.step(ctx),
-                ),
-                2 => self.with_node_and_step_context_for::<2, 1, 0, C, T, StepResult, NodeError>(
-                    clock,
-                    telemetry,
-                    |node, ctx| node.step(ctx),
-                ),
+                0 => <Self as GraphNodeContextBuilder<0, 0, 1>>::with_node_and_step_context::<
+                    C,
+                    T,
+                    StepResult,
+                    NodeError,
+                >(self, clock, telemetry, |node, ctx| node.step(ctx)),
+                1 => <Self as GraphNodeContextBuilder<1, 1, 1>>::with_node_and_step_context::<
+                    C,
+                    T,
+                    StepResult,
+                    NodeError,
+                >(self, clock, telemetry, |node, ctx| node.step(ctx)),
+                2 => <Self as GraphNodeContextBuilder<2, 1, 0>>::with_node_and_step_context::<
+                    C,
+                    T,
+                    StepResult,
+                    NodeError,
+                >(self, clock, telemetry, |node, ctx| node.step(ctx)),
                 _ => unreachable!("invalid node index"),
+            }
+        }
+
+        type OwnedBundle = TestPipelineStdOwnedBundle;
+
+        #[cfg(feature = "std")]
+        fn take_owned_bundle_by_index(
+            &mut self,
+            index: usize,
+        ) -> Result<Self::OwnedBundle, GraphError> {
+            match index {
+                0 => {
+                    let node = self.nodes.0.take().ok_or(GraphError::InvalidEdgeIndex)?; // or a NodeIndex error variant if you have it
+                    let out0_policy = self.edges.0.policy();
+                    let out0 = (self.endpoints.0).1.clone();
+                    Ok(TestPipelineStdOwnedBundle::N0 {
+                        node,
+                        out0,
+                        out0_policy,
+                    })
+                }
+                1 => {
+                    let node = self.nodes.1.take().ok_or(GraphError::InvalidEdgeIndex)?;
+                    let in0_policy = self.edges.0.policy();
+                    let out1_policy = self.edges.1.policy();
+                    let in0 = (self.endpoints.0).0.clone();
+                    let out1 = (self.endpoints.1).1.clone();
+                    Ok(TestPipelineStdOwnedBundle::N1 {
+                        node,
+                        in0,
+                        out1,
+                        in0_policy,
+                        out1_policy,
+                    })
+                }
+                2 => {
+                    let node = self.nodes.2.take().ok_or(GraphError::InvalidEdgeIndex)?;
+                    let in1_policy = self.edges.1.policy();
+                    let in1 = (self.endpoints.1).0.clone();
+                    Ok(TestPipelineStdOwnedBundle::N2 {
+                        node,
+                        in1,
+                        in1_policy,
+                    })
+                }
+                _ => Err(GraphError::InvalidEdgeIndex),
+            }
+        }
+
+        #[cfg(feature = "std")]
+        fn put_owned_bundle_by_index(
+            &mut self,
+            bundle: Self::OwnedBundle,
+        ) -> Result<(), GraphError> {
+            match bundle {
+                TestPipelineStdOwnedBundle::N0 { node, out0, .. } => {
+                    assert!(self.nodes.0.is_none(), "node 0 already present");
+                    self.nodes.0 = Some(node);
+                    (self.endpoints.0).1 = out0; // keep local endpoint clone in sync
+                    Ok(())
+                }
+                TestPipelineStdOwnedBundle::N1 {
+                    node, in0, out1, ..
+                } => {
+                    assert!(self.nodes.1.is_none(), "node 1 already present");
+                    self.nodes.1 = Some(node);
+                    (self.endpoints.0).0 = in0;
+                    (self.endpoints.1).1 = out1;
+                    Ok(())
+                }
+                TestPipelineStdOwnedBundle::N2 { node, in1, .. } => {
+                    assert!(self.nodes.2.is_none(), "node 2 already present");
+                    self.nodes.2 = Some(node);
+                    (self.endpoints.1).0 = in1;
+                    Ok(())
+                }
+            }
+        }
+
+        #[cfg(feature = "std")]
+        #[inline]
+        fn step_owned_bundle<C, T>(
+            bundle: &mut Self::OwnedBundle,
+            clock: &C,
+            telemetry: &mut T,
+        ) -> Result<StepResult, NodeError>
+        where
+            EdgePolicy: Copy,
+        {
+            match bundle {
+                TestPipelineStdOwnedBundle::N0 {
+                    node,
+                    out0,
+                    out0_policy,
+                } => {
+                    // Build a StepContext that borrows the endpoints inside the bundle.
+                    let inputs: [&mut NoQueue<()>; 0] = [];
+                    let outputs: [&mut OutEpU32; 1] = [out0];
+                    let in_policies: [EdgePolicy; 0] = [];
+                    let out_policies: [EdgePolicy; 1] = [*out0_policy];
+
+                    let mut ctx = crate::node::StepContext::new(
+                        inputs,
+                        outputs,
+                        in_policies,
+                        out_policies,
+                        clock,
+                        telemetry,
+                    );
+                    node.step(&mut ctx)
+                }
+                TestPipelineStdOwnedBundle::N1 {
+                    node,
+                    in0,
+                    out1,
+                    in0_policy,
+                    out1_policy,
+                } => {
+                    let inputs: [&mut InEpU32; 1] = [in0];
+                    let outputs: [&mut OutEpU32; 1] = [out1];
+                    let in_policies: [EdgePolicy; 1] = [*in0_policy];
+                    let out_policies: [EdgePolicy; 1] = [*out1_policy];
+
+                    let mut ctx = crate::node::StepContext::new(
+                        inputs,
+                        outputs,
+                        in_policies,
+                        out_policies,
+                        clock,
+                        telemetry,
+                    );
+                    node.step(&mut ctx)
+                }
+                TestPipelineStdOwnedBundle::N2 {
+                    node,
+                    in1,
+                    in1_policy,
+                } => {
+                    let inputs: [&mut InEpU32; 1] = [in1];
+                    let outputs: [&mut NoQueue<()>; 0] = [];
+                    let in_policies: [EdgePolicy; 1] = [*in1_policy];
+                    let out_policies: [EdgePolicy; 0] = [];
+
+                    let mut ctx = crate::node::StepContext::new(
+                        inputs,
+                        outputs,
+                        in_policies,
+                        out_policies,
+                        clock,
+                        telemetry,
+                    );
+                    node.step(&mut ctx)
+                }
             }
         }
     }

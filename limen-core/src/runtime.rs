@@ -25,7 +25,7 @@ where
     /// Initialize internal state and adopt the provided clock & telemetry.
     fn init(
         &mut self,
-        graph: &Graph,
+        graph: &mut Graph,
         clock: Self::Clock,
         telemetry: Self::Telemetry,
     ) -> Result<(), Self::Error>;

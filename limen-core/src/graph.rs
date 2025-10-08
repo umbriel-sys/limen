@@ -10,6 +10,7 @@
 
 use crate::node::Node;
 
+use crate::prelude::Telemetry;
 use crate::{
     edge::{link::EdgeDescriptor, Edge, EdgeOccupancy},
     errors::{GraphError, NodeError},
@@ -122,7 +123,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
         T,
     >
     where
-        EdgePolicy: Copy;
+        EdgePolicy: Copy,
+        T: Telemetry;
 
     /// Borrowed handoff: in one `&mut self` borrow, lend both
     /// `&mut node(I)` and a fully wired `StepContext` to a closure.
@@ -150,7 +152,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
     ) -> Result<R, E>
     where
         Self: GraphNodeAccess<I>,
-        EdgePolicy: Copy;
+        EdgePolicy: Copy,
+        T: Telemetry;
 }
 
 /// Std-only: move `node I` and owned endpoint queues to a worker thread.
@@ -306,7 +309,8 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
         telemetry: &mut T,
     ) -> Result<StepResult, NodeError>
     where
-        EdgePolicy: Copy;
+        EdgePolicy: Copy,
+        T: Telemetry;
 
     // ----- Optional: static node policy read -----
 
@@ -396,5 +400,6 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
         telemetry: &mut T,
     ) -> Result<StepResult, NodeError>
     where
-        EdgePolicy: Copy;
+        EdgePolicy: Copy,
+        T: Telemetry;
 }

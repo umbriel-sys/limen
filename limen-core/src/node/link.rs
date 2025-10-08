@@ -6,6 +6,7 @@ use crate::{
     memory::PlacementAcceptance,
     message::{payload::Payload, Message},
     node::{Node, NodeCapabilities, NodeKind, NodePolicy, StepContext, StepResult},
+    prelude::Telemetry,
     types::{NodeIndex, PortId, PortIndex},
 };
 
@@ -168,12 +169,18 @@ where
     }
 
     #[inline]
-    fn initialize<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError> {
+    fn initialize<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry,
+    {
         self.node.initialize(clock, telemetry)
     }
 
     #[inline]
-    fn start<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError> {
+    fn start<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry,
+    {
         self.node.start(clock, telemetry)
     }
 
@@ -185,6 +192,7 @@ where
     where
         InQ: Edge<Item = Message<InP>>,
         OutQ: Edge<Item = Message<OutP>>,
+        T: Telemetry,
     {
         self.node.step(ctx)
     }
@@ -194,12 +202,18 @@ where
         &mut self,
         clock: &C,
         telemetry: &mut T,
-    ) -> Result<StepResult, NodeError> {
+    ) -> Result<StepResult, NodeError>
+    where
+        T: Telemetry,
+    {
         self.node.on_watchdog_timeout(clock, telemetry)
     }
 
     #[inline]
-    fn stop<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError> {
+    fn stop<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry,
+    {
         self.node.stop(clock, telemetry)
     }
 }

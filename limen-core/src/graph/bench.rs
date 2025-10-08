@@ -35,7 +35,7 @@ use crate::{
         Node as _, StepContext, StepResult,
     },
     policy::EdgePolicy,
-    prelude::{EdgeDescriptor, EdgeLink, NodeDescriptor, NodeLink},
+    prelude::{EdgeDescriptor, EdgeLink, NodeDescriptor, NodeLink, Telemetry},
     types::{EdgeIndex, NodeIndex, PortId, PortIndex},
 };
 
@@ -199,6 +199,7 @@ impl GraphApi<3, 2> for TestPipeline {
     ) -> Result<StepResult, NodeError>
     where
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         match index {
             0 => <Self as GraphNodeContextBuilder<0, 0, 1>>::with_node_and_step_context::<
@@ -367,6 +368,7 @@ impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
     >
     where
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         let out0_policy = self.edges.0.policy();
 
@@ -375,6 +377,10 @@ impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
 
         let in_policies: [EdgePolicy; 0] = [/* empty */];
         let out_policies: [EdgePolicy; 1] = [out0_policy];
+
+        let node_id: u32 = 0;
+        let in_edge_ids: [u32; 0] = [/* empty */];
+        let out_edge_ids: [u32; 1] = [0];
 
         StepContext::<
             'graph,
@@ -388,7 +394,17 @@ impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
             <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
             C,
             T,
-        >::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+        >::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        )
     }
 
     #[inline]
@@ -416,18 +432,34 @@ impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
     where
         Self: GraphNodeAccess<0>,
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         // Disjoint borrows: nodes and edges are separate fields.
         let node = &mut self.nodes.0;
 
         let out0_policy = self.edges.0.policy();
+
         let inputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InQ; 0] = [];
         let outputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] = [self.edges.0.queue_mut()];
-        let in_policies: [EdgePolicy; 0] = [];
+
+        let in_policies: [EdgePolicy; 0] = [/* empty */];
         let out_policies: [EdgePolicy; 1] = [out0_policy];
 
-        let mut ctx =
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+        let node_id: u32 = 0;
+        let in_edge_ids: [u32; 0] = [/* empty */];
+        let out_edge_ids: [u32; 1] = [0];
+
+        let mut ctx = StepContext::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        );
         f(node, &mut ctx)
     }
 }
@@ -454,6 +486,7 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
     >
     where
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         let in0_policy = self.edges.0.policy();
         let out1_policy = self.edges.1.policy();
@@ -463,6 +496,10 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
 
         let in_policies: [EdgePolicy; 1] = [in0_policy];
         let out_policies: [EdgePolicy; 1] = [out1_policy];
+
+        let node_id: u32 = 1;
+        let in_edge_ids: [u32; 1] = [0];
+        let out_edge_ids: [u32; 1] = [1];
 
         StepContext::<
             'graph,
@@ -476,7 +513,17 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
             <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
             C,
             T,
-        >::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+        >::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        )
     }
 
     #[inline]
@@ -504,6 +551,7 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
     where
         Self: GraphNodeAccess<1>,
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         let node = &mut self.nodes.1;
 
@@ -512,11 +560,25 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
 
         let inputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::InQ; 1] = [self.edges.0.queue_mut()];
         let outputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1] = [self.edges.1.queue_mut()];
+
         let in_policies: [EdgePolicy; 1] = [in0_policy];
         let out_policies: [EdgePolicy; 1] = [out1_policy];
 
-        let mut ctx =
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+        let node_id: u32 = 1;
+        let in_edge_ids: [u32; 1] = [0];
+        let out_edge_ids: [u32; 1] = [1];
+
+        let mut ctx = StepContext::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        );
         f(node, &mut ctx)
     }
 }
@@ -543,6 +605,7 @@ impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
     >
     where
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         let in1_policy = self.edges.1.policy();
 
@@ -551,6 +614,10 @@ impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
 
         let in_policies: [EdgePolicy; 1] = [in1_policy];
         let out_policies: [EdgePolicy; 0] = [/* empty */];
+
+        let node_id: u32 = 2;
+        let in_edge_ids: [u32; 1] = [1];
+        let out_edge_ids: [u32; 0] = [/* empty */];
 
         StepContext::<
             'graph,
@@ -564,7 +631,17 @@ impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
             <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
             C,
             T,
-        >::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+        >::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        )
     }
 
     #[inline]
@@ -592,6 +669,7 @@ impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
     where
         Self: GraphNodeAccess<2>,
         EdgePolicy: Copy,
+        T: Telemetry,
     {
         let node = &mut self.nodes.2;
 
@@ -600,10 +678,23 @@ impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
         let inputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::InQ; 1] = [self.edges.1.queue_mut()];
         let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
         let in_policies: [EdgePolicy; 1] = [in1_policy];
-        let out_policies: [EdgePolicy; 0] = [];
+        let out_policies: [EdgePolicy; 0] = [/* empty */];
 
-        let mut ctx =
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+        let node_id: u32 = 2;
+        let in_edge_ids: [u32; 1] = [1];
+        let out_edge_ids: [u32; 0] = [/* empty */];
+
+        let mut ctx = StepContext::new(
+            inputs,
+            outputs,
+            in_policies,
+            out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        );
         f(node, &mut ctx)
     }
 }
@@ -854,6 +945,7 @@ pub mod concurrent_graph {
         ) -> Result<StepResult, NodeError>
         where
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             match index {
                 0 => <Self as GraphNodeContextBuilder<0, 0, 1>>::with_node_and_step_context::<
@@ -963,6 +1055,7 @@ pub mod concurrent_graph {
         ) -> Result<StepResult, NodeError>
         where
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             match bundle {
                 TestPipelineStdOwnedBundle::N0 {
@@ -970,17 +1063,24 @@ pub mod concurrent_graph {
                     out0,
                     out0_policy,
                 } => {
-                    // Build a StepContext that borrows the endpoints inside the bundle.
-                    let inputs: [&mut NoQueue<()>; 0] = [];
+                    let inputs: [&mut NoQueue<()>; 0] = [/* empty */];
                     let outputs: [&mut OutEpU32; 1] = [out0];
-                    let in_policies: [EdgePolicy; 0] = [];
+
+                    let in_policies: [EdgePolicy; 0] = [/* empty */];
                     let out_policies: [EdgePolicy; 1] = [*out0_policy];
+
+                    let node_id: u32 = 0;
+                    let in_edge_ids: [u32; 0] = [/* empty */];
+                    let out_edge_ids: [u32; 1] = [0];
 
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
                         in_policies,
                         out_policies,
+                        node_id,
+                        in_edge_ids,
+                        out_edge_ids,
                         clock,
                         telemetry,
                     );
@@ -998,11 +1098,18 @@ pub mod concurrent_graph {
                     let in_policies: [EdgePolicy; 1] = [*in0_policy];
                     let out_policies: [EdgePolicy; 1] = [*out1_policy];
 
+                    let node_id: u32 = 1;
+                    let in_edge_ids: [u32; 1] = [0];
+                    let out_edge_ids: [u32; 1] = [1];
+
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
                         in_policies,
                         out_policies,
+                        node_id,
+                        in_edge_ids,
+                        out_edge_ids,
                         clock,
                         telemetry,
                     );
@@ -1014,15 +1121,22 @@ pub mod concurrent_graph {
                     in1_policy,
                 } => {
                     let inputs: [&mut InEpU32; 1] = [in1];
-                    let outputs: [&mut NoQueue<()>; 0] = [];
+                    let outputs: [&mut NoQueue<()>; 0] = [/* empty */];
                     let in_policies: [EdgePolicy; 1] = [*in1_policy];
-                    let out_policies: [EdgePolicy; 0] = [];
+                    let out_policies: [EdgePolicy; 0] = [/* empty */];
+
+                    let node_id: u32 = 2;
+                    let in_edge_ids: [u32; 1] = [1];
+                    let out_edge_ids: [u32; 0] = [/* empty */];
 
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
                         in_policies,
                         out_policies,
+                        node_id,
+                        in_edge_ids,
+                        out_edge_ids,
                         clock,
                         telemetry,
                     );
@@ -1143,6 +1257,7 @@ pub mod concurrent_graph {
         >
         where
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let out0_policy = self.edges.0.policy();
 
@@ -1150,10 +1265,24 @@ pub mod concurrent_graph {
             let outputs: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.0).1];
 
-            let in_policies: [EdgePolicy; 0] = [];
+            let in_policies: [EdgePolicy; 0] = [/* empty */];
             let out_policies: [EdgePolicy; 1] = [out0_policy];
 
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+            let node_id: u32 = 0;
+            let in_edge_ids: [u32; 0] = [/* empty */];
+            let out_edge_ids: [u32; 1] = [0];
+
+            StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            )
         }
 
         #[inline]
@@ -1181,6 +1310,7 @@ pub mod concurrent_graph {
         where
             Self: GraphNodeAccess<0>,
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let node = self.nodes.0.as_mut().expect("node 0 moved");
             let out0_policy = self.edges.0.policy();
@@ -1189,11 +1319,24 @@ pub mod concurrent_graph {
             let outputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.0).1];
 
-            let in_policies: [EdgePolicy; 0] = [];
+            let in_policies: [EdgePolicy; 0] = [/* empty */];
             let out_policies: [EdgePolicy; 1] = [out0_policy];
 
-            let mut ctx =
-                StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+            let node_id: u32 = 0;
+            let in_edge_ids: [u32; 0] = [/* empty */];
+            let out_edge_ids: [u32; 1] = [0];
+
+            let mut ctx = StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            );
             f(node, &mut ctx)
         }
     }
@@ -1220,6 +1363,7 @@ pub mod concurrent_graph {
         >
         where
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let in0_policy = self.edges.0.policy();
             let out1_policy = self.edges.1.policy();
@@ -1232,7 +1376,21 @@ pub mod concurrent_graph {
             let in_policies: [EdgePolicy; 1] = [in0_policy];
             let out_policies: [EdgePolicy; 1] = [out1_policy];
 
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+            let node_id: u32 = 1;
+            let in_edge_ids: [u32; 1] = [0];
+            let out_edge_ids: [u32; 1] = [1];
+
+            StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            )
         }
 
         #[inline]
@@ -1260,6 +1418,7 @@ pub mod concurrent_graph {
         where
             Self: GraphNodeAccess<1>,
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let node = self.nodes.1.as_mut().expect("node 1 moved");
             let in0_policy = self.edges.0.policy();
@@ -1273,8 +1432,21 @@ pub mod concurrent_graph {
             let in_policies: [EdgePolicy; 1] = [in0_policy];
             let out_policies: [EdgePolicy; 1] = [out1_policy];
 
-            let mut ctx =
-                StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+            let node_id: u32 = 1;
+            let in_edge_ids: [u32; 1] = [0];
+            let out_edge_ids: [u32; 1] = [1];
+
+            let mut ctx = StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            );
             f(node, &mut ctx)
         }
     }
@@ -1301,6 +1473,7 @@ pub mod concurrent_graph {
         >
         where
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let in1_policy = self.edges.1.policy();
 
@@ -1309,9 +1482,23 @@ pub mod concurrent_graph {
             let outputs: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
 
             let in_policies: [EdgePolicy; 1] = [in1_policy];
-            let out_policies: [EdgePolicy; 0] = [];
+            let out_policies: [EdgePolicy; 0] = [/* empty */];
 
-            StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry)
+            let node_id: u32 = 2;
+            let in_edge_ids: [u32; 1] = [1];
+            let out_edge_ids: [u32; 0] = [/* empty */];
+
+            StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            )
         }
 
         #[inline]
@@ -1339,6 +1526,7 @@ pub mod concurrent_graph {
         where
             Self: GraphNodeAccess<2>,
             EdgePolicy: Copy,
+            T: Telemetry,
         {
             let node = self.nodes.2.as_mut().expect("node 2 moved");
             let in1_policy = self.edges.1.policy();
@@ -1348,10 +1536,23 @@ pub mod concurrent_graph {
             let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
 
             let in_policies: [EdgePolicy; 1] = [in1_policy];
-            let out_policies: [EdgePolicy; 0] = [];
+            let out_policies: [EdgePolicy; 0] = [/* empty */];
 
-            let mut ctx =
-                StepContext::new(inputs, outputs, in_policies, out_policies, clock, telemetry);
+            let node_id: u32 = 2;
+            let in_edge_ids: [u32; 1] = [1];
+            let out_edge_ids: [u32; 0] = [/* empty */];
+
+            let mut ctx = StepContext::new(
+                inputs,
+                outputs,
+                in_policies,
+                out_policies,
+                node_id,
+                in_edge_ids,
+                out_edge_ids,
+                clock,
+                telemetry,
+            );
             f(node, &mut ctx)
         }
     }

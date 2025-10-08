@@ -43,15 +43,19 @@ impl<const N: usize, const E: usize> GraphValidator for GraphDescBuf<N, E> {
     }
 }
 
-/// Validate port bounds and uniqueness (no allocation).
+/// Validates graph ports. TODO: UPDATE.
 pub fn validate_ports(
     nodes: &[NodeDescriptor],
     edges: &[EdgeDescriptor],
 ) -> Result<(), GraphError> {
     let n = nodes.len();
 
-    // Validate kind in/out constraints.
-    for nd in nodes {
+    // (A) Node id ↔ index must match exactly (0..N)
+    for (i, nd) in nodes.iter().enumerate() {
+        if nd.id.0 != i {
+            return Err(GraphError::IncompatiblePorts);
+        }
+        // Kind vs arity constraints (existing)
         match nd.kind {
             NodeKind::Source => {
                 if nd.in_ports != 0 {
@@ -77,24 +81,29 @@ pub fn validate_ports(
         }
     }
 
-    // Bounds for each edge.
-    for e in edges {
-        let f = e.upstream.node.0;
-        let t = e.downstream.node.0;
+    // (B) Edge ids must match position (0..E), endpoints in range, port bounds
+    for (i, ed) in edges.iter().enumerate() {
+        // strict id match
+        if ed.id.0 != i {
+            return Err(GraphError::IncompatiblePorts);
+        }
+
+        let f = ed.upstream.node.0;
+        let t = ed.downstream.node.0;
         if f >= n || t >= n {
             return Err(GraphError::IncompatiblePorts);
         }
         let nf = &nodes[f];
         let nt = &nodes[t];
-        if e.upstream.port.0 >= nf.out_ports as usize {
+        if ed.upstream.port.0 >= nf.out_ports as usize {
             return Err(GraphError::IncompatiblePorts);
         }
-        if e.downstream.port.0 >= nt.in_ports as usize {
+        if ed.downstream.port.0 >= nt.in_ports as usize {
             return Err(GraphError::IncompatiblePorts);
         }
     }
 
-    // Each (to, to_port) must be unique.
+    // (C) Each (to_node, to_port) must be unique (existing)
     for (i, ei) in edges.iter().enumerate() {
         for ej in edges.iter().skip(i + 1) {
             if ei.downstream.node.0 == ej.downstream.node.0

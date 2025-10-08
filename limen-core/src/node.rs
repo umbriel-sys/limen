@@ -6,13 +6,17 @@
 pub mod bench;
 pub mod link;
 
-use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};
+use crate::edge::{Edge, EdgeOccupancy};
 use crate::errors::{NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
 use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, EdgePolicy};
+use crate::prelude::{TelemetryKey, TelemetryKind};
 use crate::telemetry::Telemetry;
 use crate::types::Ticks;
+
+#[cfg(feature = "std")]
+use crate::edge::EnqueueResult;
 
 /// Categories of nodes used in graph descriptors and builders.
 ///
@@ -106,13 +110,21 @@ pub struct StepContext<
     OutP: Payload,
 {
     /// Arrays of inbound queues by input port index.
-    pub inputs: [&'graph mut InQ; IN],
+    inputs: [&'graph mut InQ; IN],
     /// Arrays of outbound queues by output port index.
-    pub outputs: [&'graph mut OutQ; OUT],
+    outputs: [&'graph mut OutQ; OUT],
     /// Edge policies for each input.
-    pub in_policies: [EdgePolicy; IN],
+    in_policies: [EdgePolicy; IN],
     /// Edge policies for each output.
     pub out_policies: [EdgePolicy; OUT],
+
+    /// Node identifier for automatic telemetry stamping.
+    node_id: u32,
+    /// Input edge identifiers for automatic telemetry stamping.
+    in_edge_ids: [u32; IN],
+    /// Output edge identifiers for automatic telemetry stamping.
+    out_edge_ids: [u32; OUT],
+
     /// Platform clock or timer services.
     pub clock: &'clock C,
     /// Telemetry sink for counters/histograms.
@@ -128,11 +140,15 @@ where
     OutP: Payload,
 {
     /// Create a new step context from queues, policies, and services.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inputs: [&'graph mut InQ; IN],
         outputs: [&'graph mut OutQ; OUT],
         in_policies: [EdgePolicy; IN],
         out_policies: [EdgePolicy; OUT],
+        node_id: u32,
+        in_edge_ids: [u32; IN],
+        out_edge_ids: [u32; OUT],
         clock: &'clock C,
         telemetry: &'telemetry mut T,
     ) -> Self {
@@ -141,6 +157,9 @@ where
             outputs,
             in_policies,
             out_policies,
+            node_id,
+            in_edge_ids,
+            out_edge_ids,
             clock,
             telemetry,
             _marker: core::marker::PhantomData,
@@ -155,40 +174,89 @@ where
     OutP: Payload,
     InQ: Edge<Item = Message<InP>>,
     OutQ: Edge<Item = Message<OutP>>,
+    T: Telemetry,
 {
     /// Attempt to pop an item from the specified input queue.
     #[inline]
     pub fn in_try_pop(&mut self, i: usize) -> Result<Message<InP>, QueueError> {
         debug_assert!(i < IN);
-        self.inputs[i].try_pop()
+        match self.inputs[i].try_pop() {
+            Ok(msg) => {
+                // Node ingress + input-edge processed counter.
+                self.telemetry.incr_counter(
+                    TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
+                    1,
+                );
+                self.telemetry.incr_counter(
+                    TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::Processed),
+                    1,
+                );
+                Ok(msg)
+            }
+            Err(e) => Err(e),
+        }
     }
 
-    /// Attempt to peek at the front item in the specifiend input queue without removing it.
+    /// Attempt to peek at the front item without removing it.
     #[inline]
     pub fn in_try_peek(&self, i: usize) -> Result<&Message<InP>, QueueError> {
         debug_assert!(i < IN);
         self.inputs[i].try_peek()
     }
 
-    /// Return a snapshot of occupancy of the specified input queue, used for telemetry and admission.
+    /// Return a snapshot of occupancy of the specified input queue.
     #[inline]
-    pub fn in_occupancy(&self, i: usize) -> EdgeOccupancy {
+    pub fn in_occupancy(&mut self, i: usize) -> EdgeOccupancy {
         debug_assert!(i < IN);
-        self.inputs[i].occupancy(&self.in_policies[i])
+        let occ = self.inputs[i].occupancy(&self.in_policies[i]);
+        // Update an edge QueueDepth gauge (optional but useful).
+        self.telemetry.set_gauge(
+            TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::QueueDepth),
+            occ.items as u64,
+        );
+        occ
     }
 
-    /// Attempt to ush an item to the specified output queue.
+    /// Attempt to push an item to the specified output queue.
     #[inline]
-    pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> EnqueueResult {
+    pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> crate::edge::EnqueueResult {
         debug_assert!(o < OUT);
-        self.outputs[o].try_push(m, &self.out_policies[o])
+        let res = self.outputs[o].try_push(m, &self.out_policies[o]);
+        match res {
+            crate::edge::EnqueueResult::Rejected => {
+                // Admission failed: count drops on both node and edge.
+                self.telemetry.incr_counter(
+                    TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::Dropped),
+                    1,
+                );
+                self.telemetry
+                    .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
+            }
+            _ => {
+                // Successful egress.
+                self.telemetry.incr_counter(
+                    TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
+                    1,
+                );
+                self.telemetry.incr_counter(
+                    TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::Processed),
+                    1,
+                );
+            }
+        }
+        res
     }
 
-    /// Return a snapshot of occupancy of the specified output queue, used for telemetry and admission.
+    /// Return a snapshot of occupancy of the specified output queue.
     #[inline]
-    pub fn out_occupancy(&self, o: usize) -> EdgeOccupancy {
+    pub fn out_occupancy(&mut self, o: usize) -> EdgeOccupancy {
         debug_assert!(o < OUT);
-        self.outputs[o].occupancy(&self.out_policies[o])
+        let occ = self.outputs[o].occupancy(&self.out_policies[o]);
+        self.telemetry.set_gauge(
+            TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
+            occ.items as u64,
+        );
+        occ
     }
 }
 
@@ -219,10 +287,14 @@ where
     fn node_kind(&self) -> NodeKind;
 
     /// Prepare internal state, acquire buffers, and register telemetry series.
-    fn initialize<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>;
+    fn initialize<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry;
 
     /// Optional warm-up (e.g., compile kernels, prime pools). Default: no-op.
-    fn start<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>;
+    fn start<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry;
 
     /// Execute one cooperative step using the provided context.
     ///
@@ -236,15 +308,20 @@ where
     ) -> Result<StepResult, NodeError>
     where
         InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>;
+        OutQ: Edge<Item = Message<OutP>>,
+        T: Telemetry;
 
     /// Handle watchdog timeouts by applying over-budget policy (degrade/default/skip).
     fn on_watchdog_timeout<C, T>(
         &mut self,
         _clock: &C,
         _telemetry: &mut T,
-    ) -> Result<StepResult, NodeError>;
+    ) -> Result<StepResult, NodeError>
+    where
+        T: Telemetry;
 
     /// Flush and release resources, if any. Default: no-op.
-    fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>;
+    fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    where
+        T: Telemetry;
 }

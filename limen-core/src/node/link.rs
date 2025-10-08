@@ -5,7 +5,8 @@ use crate::{
     errors::NodeError,
     memory::PlacementAcceptance,
     message::{payload::Payload, Message},
-    node::{Node, NodeCapabilities, NodeKind, NodePolicy, StepContext, StepResult},
+    node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult},
+    policy::NodePolicy,
     prelude::Telemetry,
     types::{NodeIndex, PortId, PortIndex},
 };

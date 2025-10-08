@@ -4,8 +4,8 @@ use crate::edge::EdgeOccupancy;
 use crate::graph::GraphApi;
 use crate::memory::PlacementAcceptance;
 use crate::message::{Message, MessageFlags};
-use crate::node::{NodeCapabilities, NodePolicy};
-use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, WatermarkState};
+use crate::node::NodeCapabilities;
+use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
 use crate::runtime::LimenRuntime;
 use crate::types::{QoSClass, SequenceNumber, Ticks, TraceId};
 
@@ -53,10 +53,14 @@ fn core_pipeline_runs_with_nostd_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],
@@ -69,10 +73,14 @@ fn core_pipeline_runs_with_nostd_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],
@@ -86,10 +94,14 @@ fn core_pipeline_runs_with_nostd_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],
@@ -165,10 +177,14 @@ fn std_pipeline_runs_with_std_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],
@@ -181,10 +197,14 @@ fn std_pipeline_runs_with_std_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],
@@ -198,10 +218,14 @@ fn std_pipeline_runs_with_std_runtime() {
                 fixed_n: None,
                 max_delta_t: None,
             },
-            budget: BudgetPolicy { tick_budget: None },
+            budget: BudgetPolicy {
+                tick_budget: None,
+                watchdog_ticks: None,
+            },
             deadline: DeadlinePolicy {
                 require_absolute_deadline: false,
                 slack_tolerance_ns: None,
+                default_deadline_ns: None,
             },
         },
         [PlacementAcceptance::default()],

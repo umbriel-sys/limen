@@ -62,6 +62,10 @@ pub trait Edge {
     fn try_pop(&mut self) -> Result<Self::Item, QueueError>;
 
     /// Return a snapshot of occupancy used for telemetry and admission.
+    ///
+    /// Implementations should avoid blocking. If a concurrent backend might fail
+    /// to sample (e.g., poisoned lock), provide a fallible path in the backend and
+    /// map that to `GraphError::OccupancySampleFailed` in your `GraphApi` impl.
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy;
 
     /// Return `true` if the queue is empty.

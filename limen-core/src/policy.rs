@@ -56,6 +56,11 @@ impl Default for BatchingPolicy {
 pub struct BudgetPolicy {
     /// Per-step tick budget; exceeding invokes over-budget action.
     pub tick_budget: Option<Ticks>,
+    /// *Hard* guardrail for a single step. If exceeded, the runtime may call
+    /// `Node::on_watchdog_timeout` and/or apply `OverBudgetAction`.
+    ///
+    /// Keep in no_std: only requires a monotonic clock; no OS timers.
+    pub watchdog_ticks: Option<Ticks>,
 }
 
 /// Deadline policy for messages processed by a node.
@@ -65,6 +70,9 @@ pub struct DeadlinePolicy {
     pub require_absolute_deadline: bool,
     /// Optional slack tolerance (ns) before defaulting/degrading.
     pub slack_tolerance_ns: Option<DeadlineNs>,
+    /// Synthesize a deadline when inputs have none: absolute_deadline = now + value.
+    /// Leave `None` to avoid synthesizing (strict mode or non-EDF).
+    pub default_deadline_ns: Option<DeadlineNs>,
 }
 
 /// Action to take when budgets or deadlines are breached.
@@ -81,6 +89,9 @@ pub enum OverBudgetAction {
 }
 
 /// Queue capacity and watermark configuration.
+///
+/// `soft_*` define backpressure **watermarks**; `max_*` define **hard caps**.
+/// Watermark state is derived from live occupancy snapshots and drives scheduling/backpressure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCaps {
     /// Maximum number of items permitted (hard cap).
@@ -152,6 +163,9 @@ pub enum AdmissionDecision {
 }
 
 /// Per-edge policy bundle.
+///
+/// `caps` → soft/hard watermarks; `admission` → behavior between soft/hard;
+/// `over_budget` → action when capacity/budget constraints are breached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgePolicy {
     /// Capacity and watermarks.
@@ -160,6 +174,23 @@ pub struct EdgePolicy {
     pub admission: AdmissionPolicy,
     /// Action to take on over-budget scenarios at this edge.
     pub over_budget: OverBudgetAction,
+}
+
+/// Policy bundle attached to a node.
+///
+/// Used by schedulers:
+/// - `batching.fixed_n`/`max_delta_t` guide batch formation.
+/// - `budget.tick_budget` (soft) and `budget.watchdog_ticks` (hard) guide time budgeting.
+/// - `deadline.default_deadline_ns` allows EDF synthesis when inputs have no deadlines,
+///   `deadline.slack_tolerance_ns` provides grace, and `require_absolute_deadline` enforces strictness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodePolicy {
+    /// Batch formation policy.
+    pub batching: BatchingPolicy,
+    /// Budget policy for execution steps.
+    pub budget: BudgetPolicy,
+    /// Deadline policy for inputs/outputs.
+    pub deadline: DeadlinePolicy,
 }
 
 impl EdgePolicy {

@@ -10,7 +10,7 @@ use crate::edge::{Edge, EdgeOccupancy};
 use crate::errors::{NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
-use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, EdgePolicy};
+use crate::policy::{EdgePolicy, NodePolicy};
 use crate::prelude::{TelemetryKey, TelemetryKind};
 use crate::telemetry::Telemetry;
 use crate::types::Ticks;
@@ -58,17 +58,6 @@ pub struct NodeCapabilities {
     pub device_streams: bool,
     /// Whether mixed-precision or degrade tiers are available.
     pub degrade_tiers: bool,
-}
-
-/// Policy bundle attached to a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct NodePolicy {
-    /// Batch formation policy.
-    pub batching: BatchingPolicy,
-    /// Budget policy for execution steps.
-    pub budget: BudgetPolicy,
-    /// Deadline policy for inputs/outputs.
-    pub deadline: DeadlinePolicy,
 }
 
 /// Result of a `step` call indicating progress and scheduling hints.

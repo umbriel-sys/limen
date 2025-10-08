@@ -16,8 +16,8 @@ use crate::{
     errors::{GraphError, NodeError},
     graph::validate::{GraphDescBuf, GraphValidator},
     message::{payload::Payload, Message},
-    node::{link::NodeDescriptor, NodePolicy, StepContext, StepResult},
-    policy::EdgePolicy,
+    node::{link::NodeDescriptor, StepContext, StepResult},
+    policy::{EdgePolicy, NodePolicy},
 };
 
 pub mod bench;
@@ -199,6 +199,19 @@ pub trait GraphNodeOwnedEndpointHandoff<const I: usize, const IN: usize, const O
 /// Exposes the minimal surface shared by all runtimes (P0, P1, P2, P2Concurrent).
 /// The `NODE_COUNT` and `EDGE_COUNT` const generics define the compile-time
 /// sizes for node and edge descriptor arrays and occupancy snapshots.
+///
+/// ## Occupancy buffer semantics
+///
+/// - `write_all_edge_occupancies` writes **current** occupancy for **every** edge
+///   into the slot whose index equals that edge’s `EdgeIndex.0`.
+///   It must not depend on pre-existing contents of `out`.
+///
+/// - `refresh_occupancies_for_node` is a **partial, in-place** refresh:
+///   it MUST update only entries for edges incident to node `I` (either upstream
+///   or downstream) and MUST NOT modify any other slots.
+///
+/// If sampling a particular edge fails, implementations should return
+/// `Err(GraphError::OccupancySampleFailed(edge_idx))`.
 pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
     // ----- Descriptors & validation -----
 
@@ -249,34 +262,27 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
     /// be sampled.
     fn edge_occupancy_for<const E: usize>(&self) -> Result<EdgeOccupancy, GraphError>;
 
-    /// Writes occupancy snapshots for **all** edges into `out`.
+    /// Write **current** occupancy for **all** edges into `out`.
     ///
-    /// This is the most efficient way to bulk-refresh edge depths for schedulers
-    /// or exporters that need a full graph view.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`GraphError`] if any edge occupancy cannot be sampled.
+    /// Contract:
+    /// - Must populate every `out[k]` with the current occupancy for the edge
+    ///   whose `EdgeIndex.0 == k`.
+    /// - Must not depend on prior `out` contents.
+    /// - On per-edge sampling failure, return
+    ///   `Err(GraphError::OccupancySampleFailed(edge_idx))`.
     fn write_all_edge_occupancies(
         &self,
         out: &mut [EdgeOccupancy; EDGE_COUNT],
     ) -> Result<(), GraphError>;
 
-    /// Refreshes occupancies only for edges incident to node `I`.
+    /// **Partial refresh**: update only entries for edges incident to node `I`.
     ///
-    /// This selectively updates `out` entries corresponding to the `IN` inputs
-    /// and `OUT` outputs of node `I`, leaving all other entries unchanged.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `I` — The compile-time node index in `0..NODE_COUNT`.
-    /// * `IN` — The node’s input arity.
-    /// * `OUT` — The node’s output arity.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`GraphError`] if `I` is out of range or the related edge
-    /// occupancies cannot be sampled.
+    /// Contract:
+    /// - MUST update `out[k]` iff edge `k` is upstream **or** downstream of node `I`.
+    /// - MUST NOT modify any other `out[k]`.
+    /// - If node `I` has no incident edges, this is a no-op that returns `Ok(())`.
+    /// - On sampling failure for any incident edge, return
+    ///   `Err(GraphError::OccupancySampleFailed(edge_idx))`.
     fn refresh_occupancies_for_node<const I: usize, const IN: usize, const OUT: usize>(
         &self,
         out: &mut [EdgeOccupancy; EDGE_COUNT],
@@ -403,3 +409,5 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
         EdgePolicy: Copy,
         T: Telemetry;
 }
+
+pub type EdgeOccupancyBuf<const E: usize> = [EdgeOccupancy; E];

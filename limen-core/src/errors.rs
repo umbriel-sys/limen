@@ -9,6 +9,8 @@ use core::fmt;
 #[cfg(feature = "std")]
 use std::error::Error;
 
+use crate::types::EdgeIndex;
+
 // **** Edge Errors *****
 
 /// Errors originating from queue operations.
@@ -219,6 +221,8 @@ pub enum GraphError {
     InvalidCapacity,
     /// Invalid graph index used.
     InvalidEdgeIndex,
+    /// Failed to sample occupancy for the given edge (e.g., poisoned lock or device error).
+    OccupancySampleFailed(EdgeIndex),
 }
 
 impl fmt::Display for GraphError {
@@ -232,6 +236,9 @@ impl fmt::Display for GraphError {
                 f.write_str("queue capacity or watermark configuration is invalid")
             }
             GraphError::InvalidEdgeIndex => f.write_str("edge index is invalid"),
+            GraphError::OccupancySampleFailed(ei) => {
+                write!(f, "failed to sample occupancy for edge {}", ei.0)
+            }
         }
     }
 }

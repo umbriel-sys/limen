@@ -31,7 +31,7 @@ use crate::{
     errors::{GraphError, NodeError},
     graph::{GraphApi, GraphEdgeAccess, GraphNodeAccess, GraphNodeContextBuilder, GraphNodeTypes},
     node::{
-        bench::{TestIdentityModelNodeU32, TestSinkNodeU32, TestSourceNodeU32},
+        bench::{TestIdentityModelNodeU32_2, TestSinkNodeU32, TestSourceNodeU32},
         Node as _, StepContext, StepResult,
     },
     policy::EdgePolicy,
@@ -40,6 +40,9 @@ use crate::{
 };
 
 type Q32 = crate::edge::bench::TestSpscRingBuf<crate::message::Message<u32>, 8>;
+
+const TEST_MAX_BATCH: usize = 32;
+type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
 
 const Q_32_POLICY: EdgePolicy = EdgePolicy {
     caps: crate::policy::QueueCaps {
@@ -58,7 +61,7 @@ pub struct TestPipeline {
     /// Nodes held in the graph.
     nodes: (
         NodeLink<TestSourceNodeU32, 0, 1, (), u32>,
-        NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>,
+        NodeLink<MapNode, 1, 1, u32, u32>,
         NodeLink<TestSinkNodeU32, 1, 0, u32, ()>,
     ),
     /// Edges held in the graph.
@@ -70,7 +73,7 @@ impl TestPipeline {
     #[inline]
     pub fn new(
         node_0: TestSourceNodeU32,
-        node_1: TestIdentityModelNodeU32,
+        node_1: MapNode,
         node_2: TestSinkNodeU32,
         q_0: Q32,
         q_1: Q32,
@@ -81,11 +84,7 @@ impl TestPipeline {
                 NodeIndex::from(0usize),
                 Some("src"),
             ),
-            NodeLink::<TestIdentityModelNodeU32, 1, 1, u32, u32>::new(
-                node_1,
-                NodeIndex::from(1usize),
-                Some("map"),
-            ),
+            NodeLink::<MapNode, 1, 1, u32, u32>::new(node_1, NodeIndex::from(1usize), Some("map")),
             NodeLink::<TestSinkNodeU32, 1, 0, u32, ()>::new(
                 node_2,
                 NodeIndex::from(2usize),
@@ -277,7 +276,7 @@ impl GraphNodeAccess<0> for TestPipeline {
     }
 }
 impl GraphNodeAccess<1> for TestPipeline {
-    type Node = NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>;
+    type Node = NodeLink<MapNode, 1, 1, u32, u32>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.1
@@ -722,7 +721,7 @@ pub mod concurrent_graph {
             GraphNodeOwnedEndpointHandoff, GraphNodeTypes,
         },
         node::{
-            bench::{TestIdentityModelNodeU32, TestSinkNodeU32, TestSourceNodeU32},
+            bench::{TestIdentityModelNodeU32_2, TestSinkNodeU32, TestSourceNodeU32},
             StepContext,
         },
         policy::EdgePolicy,
@@ -734,13 +733,16 @@ pub mod concurrent_graph {
     type InEpU32 = ConsumerEndpoint<u32, ConcurrentQueue<Q32>>;
     type OutEpU32 = ProducerEndpoint<u32, ConcurrentQueue<Q32>>;
 
+    const TEST_MAX_BATCH: usize = super::TEST_MAX_BATCH;
+    type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+
     /// concrete graph implementation (std / concurrent).
     #[allow(clippy::complexity)]
     pub struct TestPipelineStd {
         // Nodes. We keep them as Options to support "move-out" for owned handoff.
         nodes: (
             Option<NodeLink<TestSourceNodeU32, 0, 1, (), u32>>,
-            Option<NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>>,
+            Option<NodeLink<MapNode, 1, 1, u32, u32>>,
             Option<NodeLink<TestSinkNodeU32, 1, 0, u32, ()>>,
         ),
         // Edges: one Arc<Mutex<_>> each + metadata.
@@ -763,7 +765,7 @@ pub mod concurrent_graph {
         #[inline]
         pub fn new(
             node_0: TestSourceNodeU32,
-            node_1: TestIdentityModelNodeU32,
+            node_1: MapNode,
             node_2: TestSinkNodeU32,
             q_0: Q32,
             q_1: Q32,
@@ -775,7 +777,7 @@ pub mod concurrent_graph {
                     NodeIndex::from(0usize),
                     Some("src"),
                 )),
-                Some(NodeLink::<TestIdentityModelNodeU32, 1, 1, u32, u32>::new(
+                Some(NodeLink::<MapNode, 1, 1, u32, u32>::new(
                     node_1,
                     NodeIndex::from(1usize),
                     Some("map"),
@@ -861,8 +863,8 @@ pub mod concurrent_graph {
         },
         /// node 1: in=[e0.in], out=[e1.out]
         N1 {
-            /// The detached node link for node 1 (TestIdentityModelNodeU32).
-            node: NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>,
+            /// The detached node link for node 1 (TestIdentityModelNodeU32 alias).
+            node: NodeLink<MapNode, 1, 1, u32, u32>,
             /// Owned input endpoint for edge e0.in.
             in0: InEpU32,
             /// Owned output endpoint for edge e1.out.
@@ -1168,7 +1170,7 @@ pub mod concurrent_graph {
         }
     }
     impl GraphNodeAccess<1> for TestPipelineStd {
-        type Node = NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>;
+        type Node = NodeLink<MapNode, 1, 1, u32, u32>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             self.nodes.1.as_ref().expect("node 1 moved")
@@ -1612,7 +1614,7 @@ pub mod concurrent_graph {
     }
 
     impl GraphNodeOwnedEndpointHandoff<1, 1, 1> for TestPipelineStd {
-        type NodeOwned = NodeLink<TestIdentityModelNodeU32, 1, 1, u32, u32>;
+        type NodeOwned = NodeLink<MapNode, 1, 1, u32, u32>;
 
         fn take_node_and_endpoints(
             &mut self,

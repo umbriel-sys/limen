@@ -4,6 +4,7 @@ use crate::edge::EdgeOccupancy;
 use crate::graph::GraphApi;
 use crate::memory::PlacementAcceptance;
 use crate::message::{Message, MessageFlags};
+use crate::node::bench::TestU32Backend;
 use crate::node::NodeCapabilities;
 use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
 use crate::prelude::{NoopClock, NoopTelemetry};
@@ -13,13 +14,16 @@ use crate::types::{QoSClass, SequenceNumber, Ticks, TraceId};
 // Concrete queue type used by the test pipelines (matches your bench graphs)
 type Q32 = crate::edge::bench::TestSpscRingBuf<Message<u32>, 8>;
 
+const TEST_MAX_BATCH: usize = 32;
+type MapNode = crate::node::bench::TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+
 // -------------------------------------------------------------
 // core (no_std) pipeline + no_std test runtime (single-threaded)
 // -------------------------------------------------------------
 #[test]
 fn core_pipeline_runs_with_nostd_runtime() {
     use crate::graph::bench::TestPipeline;
-    use crate::node::bench::{TestIdentityModelNodeU32, TestSinkNodeU32, TestSourceNodeU32};
+    use crate::node::bench::{TestSinkNodeU32, TestSourceNodeU32};
     use crate::runtime::bench::TestNoStdRuntime;
 
     // Put this right before you construct `snk` in each test:
@@ -67,8 +71,9 @@ fn core_pipeline_runs_with_nostd_runtime() {
         [PlacementAcceptance::default()],
     );
 
-    let map = TestIdentityModelNodeU32::new(
-        NodeCapabilities::default(),
+    let map = MapNode::new(
+        TestU32Backend,
+        (),
         NodePolicy {
             batching: BatchingPolicy {
                 fixed_n: None,
@@ -84,9 +89,11 @@ fn core_pipeline_runs_with_nostd_runtime() {
                 default_deadline_ns: None,
             },
         },
+        NodeCapabilities::default(),
         [PlacementAcceptance::default()],
         [PlacementAcceptance::default()],
-    );
+    )
+    .unwrap();
 
     let snk = TestSinkNodeU32::new(
         NodeCapabilities::default(),
@@ -162,7 +169,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
 #[test]
 fn std_pipeline_runs_with_std_runtime() {
     use crate::graph::bench::concurrent_graph::TestPipelineStd;
-    use crate::node::bench::{TestIdentityModelNodeU32, TestSinkNodeU32, TestSourceNodeU32};
+    use crate::node::bench::{TestSinkNodeU32, TestSourceNodeU32};
     use crate::runtime::bench::concurrent_runtime::TestStdRuntime;
 
     // nodes
@@ -193,8 +200,9 @@ fn std_pipeline_runs_with_std_runtime() {
         [PlacementAcceptance::default()],
     );
 
-    let map = TestIdentityModelNodeU32::new(
-        NodeCapabilities::default(),
+    let map = MapNode::new(
+        TestU32Backend,
+        (),
         NodePolicy {
             batching: BatchingPolicy {
                 fixed_n: None,
@@ -210,9 +218,11 @@ fn std_pipeline_runs_with_std_runtime() {
                 default_deadline_ns: None,
             },
         },
+        NodeCapabilities::default(),
         [PlacementAcceptance::default()],
         [PlacementAcceptance::default()],
-    );
+    )
+    .unwrap();
 
     let snk = TestSinkNodeU32::new(
         NodeCapabilities::default(),

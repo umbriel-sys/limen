@@ -2,11 +2,13 @@
 
 use super::*;
 
+use crate::compute::{BackendCapabilities, ComputeBackend, ComputeModel, ModelMetadata};
 use crate::edge::Edge;
-use crate::errors::NodeError;
+use crate::errors::{InferenceError, InferenceErrorKind, NodeError};
 use crate::memory::{MemoryClass, PlacementAcceptance};
 use crate::message::Message;
 use crate::message::{MessageFlags, MessageHeader};
+use crate::node::model::InferenceModel;
 use crate::types::{DeadlineNs, QoSClass, SequenceNumber, Ticks, TraceId};
 
 use core::fmt::Write;
@@ -274,6 +276,115 @@ impl Node<1, 1, u32, u32> for TestIdentityModelNodeU32 {
 
     fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError> {
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Test backend + model for u32 → u32 identity, no alloc, no dyn, no unsafe.
+// -----------------------------------------------------------------------------
+
+/// ---------- Test model ----------
+pub struct TestU32Model;
+
+impl ComputeModel<u32, u32> for TestU32Model {
+    #[inline]
+    fn init(&mut self) -> Result<(), InferenceError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn infer_one(&mut self, inp: &u32, out: &mut u32) -> Result<(), InferenceError> {
+        *out = *inp;
+        Ok(())
+    }
+
+    #[inline]
+    fn infer_batch(&mut self, inputs: &[u32], outputs: &mut [u32]) -> Result<(), InferenceError> {
+        if outputs.len() < inputs.len() {
+            return Err(InferenceError::new(InferenceErrorKind::ExecutionFailed, 0));
+        }
+        // copy inputs → outputs (identity)
+        for (o, i) in outputs.iter_mut().zip(inputs.iter()) {
+            *o = *i;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn drain(&mut self) -> Result<(), InferenceError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn reset(&mut self) -> Result<(), InferenceError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn metadata(&self) -> ModelMetadata {
+        ModelMetadata {
+            preferred_input: MemoryClass::Host,
+            preferred_output: MemoryClass::Host,
+            max_input_bytes: None,
+            max_output_bytes: None,
+        }
+    }
+}
+
+/// ---------- Test backend ----------
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestU32Backend;
+
+impl ComputeBackend<u32, u32> for TestU32Backend {
+    type Model = TestU32Model;
+    type Error = InferenceError;
+
+    // Unit descriptor: no artifact needed for this test model.
+    type ModelDescriptor<'d> = ();
+
+    #[inline]
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            device_streams: false,
+            max_batch: Some(usize::MAX),
+            dtype_mask: 0,
+        }
+    }
+
+    #[inline]
+    fn load_model<'d>(&self, _desc: Self::ModelDescriptor<'d>) -> Result<Self::Model, Self::Error> {
+        Ok(TestU32Model)
+    }
+}
+
+/// Alias preserving the old test node name.
+pub type TestIdentityModelNodeU32_2<const MAX_BATCH: usize> =
+    InferenceModel<TestU32Backend, u32, u32, MAX_BATCH>;
+
+impl<const MAX_BATCH: usize> TestIdentityModelNodeU32_2<MAX_BATCH> {
+    /// Construct the identity test node with your policy/capability params.
+    #[inline]
+    pub fn new_identity(
+        node_capabilities: NodeCapabilities,
+        node_policy: NodePolicy,
+        input_placement_acceptance: [PlacementAcceptance; 1],
+        output_placement_acceptance: [PlacementAcceptance; 1],
+    ) -> Result<Self, InferenceError> {
+        let backend = TestU32Backend;
+        InferenceModel::new(
+            backend,
+            (),
+            node_policy,
+            node_capabilities,
+            input_placement_acceptance,
+            output_placement_acceptance,
+        )
+    }
+
+    /// Handy constant for tests.
+    #[inline]
+    pub fn kind() -> NodeKind {
+        NodeKind::Model
     }
 }
 

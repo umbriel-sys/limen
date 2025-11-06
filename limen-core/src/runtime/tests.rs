@@ -6,7 +6,7 @@ use crate::graph::GraphApi;
 use crate::memory::PlacementAcceptance;
 use crate::message::{Message, MessageFlags};
 use crate::node::bench::{
-    TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32, TestU32Backend,
+    TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
 };
 use crate::node::NodeCapabilities;
 use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
@@ -81,7 +81,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32::new(
+    let snk = TestSinkNodeU32_2::new(
         NodeCapabilities::default(),
         node_policy,
         [PlacementAcceptance::default()],
@@ -199,7 +199,7 @@ fn std_pipeline_runs_with_std_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32::new(
+    let snk = TestSinkNodeU32_2::new(
         NodeCapabilities::default(),
         NodePolicy {
             batching: BatchingPolicy {

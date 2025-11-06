@@ -9,6 +9,7 @@ use crate::memory::{MemoryClass, PlacementAcceptance};
 use crate::message::Message;
 use crate::message::{MessageFlags, MessageHeader};
 use crate::node::model::InferenceModel;
+use crate::node::sink::Sink;
 #[cfg(feature = "std")]
 use crate::node::source::probe::{SourceIngressProbe, SourceIngressUpdater};
 use crate::node::source::Source;
@@ -599,41 +600,41 @@ impl TestSinkNodeU32 {
     }
 }
 
-// simple fixed-size stack buffer implementing core::fmt::Write
-struct FixedBuf<const N: usize> {
-    buf: [u8; N],
-    len: usize,
-}
+// // simple fixed-size stack buffer implementing core::fmt::Write
+// struct FixedBuf<const N: usize> {
+//     buf: [u8; N],
+//     len: usize,
+// }
 
-impl<const N: usize> FixedBuf<N> {
-    #[inline]
-    const fn new() -> Self {
-        Self {
-            buf: [0; N],
-            len: 0,
-        }
-    }
-    #[inline]
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
-    }
-}
+// impl<const N: usize> FixedBuf<N> {
+//     #[inline]
+//     const fn new() -> Self {
+//         Self {
+//             buf: [0; N],
+//             len: 0,
+//         }
+//     }
+//     #[inline]
+//     fn as_str(&self) -> &str {
+//         core::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
+//     }
+// }
 
-impl<const N: usize> core::fmt::Write for FixedBuf<N> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let bytes = s.as_bytes();
-        let remaining = N.saturating_sub(self.len);
-        if bytes.len() > remaining {
-            return Err(core::fmt::Error);
-        }
-        let dst = &mut self.buf[self.len..self.len + bytes.len()];
-        for (d, b) in dst.iter_mut().zip(bytes.iter().copied()) {
-            *d = b;
-        }
-        self.len += bytes.len();
-        Ok(())
-    }
-}
+// impl<const N: usize> core::fmt::Write for FixedBuf<N> {
+//     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+//         let bytes = s.as_bytes();
+//         let remaining = N.saturating_sub(self.len);
+//         if bytes.len() > remaining {
+//             return Err(core::fmt::Error);
+//         }
+//         let dst = &mut self.buf[self.len..self.len + bytes.len()];
+//         for (d, b) in dst.iter_mut().zip(bytes.iter().copied()) {
+//             *d = b;
+//         }
+//         self.len += bytes.len();
+//         Ok(())
+//     }
+// }
 
 impl Node<1, 0, u32, ()> for TestSinkNodeU32 {
     fn describe_capabilities(&self) -> NodeCapabilities {
@@ -704,5 +705,109 @@ impl Node<1, 0, u32, ()> for TestSinkNodeU32 {
 
     fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError> {
         Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// TestSinkNodeU32: 1 input, 0 outputs, logs full Message<u32>
+// Implements `sink::Sink<u32, 1>` so it can be used via `SinkNode<_, u32, 1>`.
+// -----------------------------------------------------------------------------
+
+/// test sink
+pub struct TestSinkNodeU32_2 {
+    node_capabilities: NodeCapabilities,
+    node_policy: NodePolicy,
+    input_placement_acceptance: [PlacementAcceptance; 1],
+    printer: fn(&str),
+}
+
+impl TestSinkNodeU32_2 {
+    /// new
+    pub const fn new(
+        node_capabilities: NodeCapabilities,
+        node_policy: NodePolicy,
+        input_placement_acceptance: [PlacementAcceptance; 1],
+        printer: fn(&str),
+    ) -> Self {
+        Self {
+            node_capabilities,
+            node_policy,
+            input_placement_acceptance,
+            printer,
+        }
+    }
+}
+
+// simple fixed-size stack buffer implementing core::fmt::Write
+struct FixedBuf<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> FixedBuf<N> {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            buf: [0; N],
+            len: 0,
+        }
+    }
+    #[inline]
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
+    }
+}
+
+impl<const N: usize> core::fmt::Write for FixedBuf<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let remaining = N.saturating_sub(self.len);
+        if bytes.len() > remaining {
+            return Err(core::fmt::Error);
+        }
+        let dst = &mut self.buf[self.len..self.len + bytes.len()];
+        for (d, b) in dst.iter_mut().zip(bytes.iter().copied()) {
+            *d = b;
+        }
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
+impl Sink<u32, 1> for TestSinkNodeU32_2 {
+    type Error = core::convert::Infallible;
+
+    #[inline]
+    fn open(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    #[inline]
+    fn consume(&mut self, _port: usize, msg: Message<u32>) -> Result<(), Self::Error> {
+        #[cfg(feature = "std")]
+        {
+            println!("--- [snk::consume] --- received on in0: {:?}", msg);
+        }
+
+        let mut buf: FixedBuf<256> = FixedBuf::new();
+        let _ = core::write!(&mut buf, "{:?}", msg);
+        (self.printer)(buf.as_str());
+
+        Ok(())
+    }
+
+    #[inline]
+    fn input_acceptance(&self) -> [PlacementAcceptance; 1] {
+        self.input_placement_acceptance
+    }
+
+    #[inline]
+    fn capabilities(&self) -> NodeCapabilities {
+        self.node_capabilities
+    }
+
+    #[inline]
+    fn policy(&self) -> NodePolicy {
+        self.node_policy
     }
 }

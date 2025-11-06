@@ -557,6 +557,21 @@ pub mod probe {
         (p.clone(), SourceIngressUpdater::new(p))
     }
 
+    /// Link wrapper for a concurrent ingress **monitor edge** (std-only).
+    ///
+    /// `ConcurrentIngressEdgeLink<OutP>` wraps a typed [`SourceIngressProbeEdge<OutP>`]
+    /// together with the metadata needed by the graph (edge id, endpoints, and policy),
+    /// so runtimes can treat the source’s *ingress pressure* like any other edge.
+    ///
+    /// Characteristics:
+    /// - **No buffering**: `try_push`/`try_pop` always reject; only `occupancy()` is meaningful.
+    /// - **Cross-thread safe**: the paired [`SourceIngressUpdater`] (held by the worker thread)
+    ///   updates atomics that this link reads via the inner probe edge.
+    /// - **Typed** by `OutP` so the graph can keep payload-typed edge inventories.
+    ///
+    /// Typical use: expose a synthetic “ingress0” edge (often edge id 0) whose occupancy
+    /// reflects upstream device/FIFO depth for scheduling and diagnostics, without changing
+    /// queue contracts elsewhere in the system.
     #[derive(Debug)]
     pub struct ConcurrentIngressEdgeLink<OutP: Payload> {
         edge: SourceIngressProbeEdge<OutP>,

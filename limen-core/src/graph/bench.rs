@@ -31,7 +31,8 @@ use crate::{
     errors::{GraphError, NodeError},
     graph::{GraphApi, GraphEdgeAccess, GraphNodeAccess, GraphNodeContextBuilder, GraphNodeTypes},
     node::{
-        bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32},
+        bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2},
+        sink::SinkNode,
         source::{Source as _, SourceNode, EXTERNAL_INGRESS_NODE},
         Node as _, StepContext, StepResult,
     },
@@ -61,6 +62,9 @@ const INGRESS_POLICY: EdgePolicy = Q_32_POLICY;
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
 
+// Test sink node types.
+type SnkNode = SinkNode<TestSinkNodeU32_2, u32, 1>;
+
 /// concrete graph implementation used for testing.
 #[allow(clippy::complexity)]
 pub struct TestPipeline {
@@ -68,7 +72,7 @@ pub struct TestPipeline {
     nodes: (
         NodeLink<SrcNode, 0, 1, (), u32>,
         NodeLink<MapNode, 1, 1, u32, u32>,
-        NodeLink<TestSinkNodeU32, 1, 0, u32, ()>,
+        NodeLink<SnkNode, 1, 0, u32, ()>,
     ),
     /// Edges held in the graph.
     edges: (EdgeLink<Q32, u32>, EdgeLink<Q32, u32>),
@@ -80,20 +84,17 @@ impl TestPipeline {
     pub fn new(
         node_0: impl Into<SrcNode>,
         node_1: MapNode,
-        node_2: TestSinkNodeU32,
+        node_2: impl Into<SnkNode>,
         q_0: Q32,
         q_1: Q32,
     ) -> Self {
         let node_0: SrcNode = node_0.into();
+        let node_2: SnkNode = node_2.into();
 
         let nodes = (
             NodeLink::<SrcNode, 0, 1, (), u32>::new(node_0, NodeIndex::from(0usize), Some("src")),
             NodeLink::<MapNode, 1, 1, u32, u32>::new(node_1, NodeIndex::from(1usize), Some("map")),
-            NodeLink::<TestSinkNodeU32, 1, 0, u32, ()>::new(
-                node_2,
-                NodeIndex::from(2usize),
-                Some("snk"),
-            ),
+            NodeLink::<SnkNode, 1, 0, u32, ()>::new(node_2, NodeIndex::from(2usize), Some("snk")),
         );
 
         let edges = (
@@ -314,7 +315,7 @@ impl GraphNodeAccess<1> for TestPipeline {
     }
 }
 impl GraphNodeAccess<2> for TestPipeline {
-    type Node = NodeLink<TestSinkNodeU32, 1, 0, u32, ()>;
+    type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.2
@@ -749,7 +750,7 @@ pub mod concurrent_graph {
             GraphNodeOwnedEndpointHandoff, GraphNodeTypes,
         },
         node::{
-            bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32},
+            bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2},
             source::{
                 probe::{new_probe_edge_pair, ConcurrentIngressEdgeLink, SourceIngressUpdater},
                 SourceNode,
@@ -773,6 +774,9 @@ pub mod concurrent_graph {
     const TEST_MAX_BATCH: usize = 32;
     type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
 
+    // Test sink node types.
+    type SnkNode = SinkNode<TestSinkNodeU32_2, u32, 1>;
+
     /// concrete graph implementation (std / concurrent).
     #[allow(clippy::complexity)]
     pub struct TestPipelineStd {
@@ -780,7 +784,7 @@ pub mod concurrent_graph {
         nodes: (
             Option<NodeLink<SrcNode, 0, 1, (), u32>>,
             Option<NodeLink<MapNode, 1, 1, u32, u32>>,
-            Option<NodeLink<TestSinkNodeU32, 1, 0, u32, ()>>,
+            Option<NodeLink<SnkNode, 1, 0, u32, ()>>,
         ),
         // Edges: one Arc<Mutex<_>> each + metadata.
         edges: (
@@ -807,12 +811,13 @@ pub mod concurrent_graph {
         pub fn new(
             node_0: impl Into<SrcNode>,
             node_1: MapNode,
-            node_2: TestSinkNodeU32,
+            node_2: impl Into<SnkNode>,
             q_0: Q32,
             q_1: Q32,
         ) -> Self {
             // Build nodes
             let node_0: SrcNode = node_0.into();
+            let node_2: SnkNode = node_2.into();
 
             let nodes = (
                 Some(NodeLink::<SrcNode, 0, 1, (), u32>::new(
@@ -825,7 +830,7 @@ pub mod concurrent_graph {
                     NodeIndex::from(1usize),
                     Some("map"),
                 )),
-                Some(NodeLink::<TestSinkNodeU32, 1, 0, u32, ()>::new(
+                Some(NodeLink::<SnkNode, 1, 0, u32, ()>::new(
                     node_2,
                     NodeIndex::from(2usize),
                     Some("snk"),
@@ -941,7 +946,7 @@ pub mod concurrent_graph {
         /// node 2: in=[e2.in]
         N2 {
             /// The detached node link for node 2 (TestSinkNodeU32).
-            node: NodeLink<TestSinkNodeU32, 1, 0, u32, ()>,
+            node: NodeLink<SnkNode, 1, 0, u32, ()>,
             /// Owned input endpoint for edge e1.in.
             in1: InEpU32,
             /// Static edge policy for in1 (e1).
@@ -1267,7 +1272,7 @@ pub mod concurrent_graph {
         }
     }
     impl GraphNodeAccess<2> for TestPipelineStd {
-        type Node = NodeLink<TestSinkNodeU32, 1, 0, u32, ()>;
+        type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             self.nodes.2.as_ref().expect("node 2 moved")
@@ -1739,7 +1744,7 @@ pub mod concurrent_graph {
     }
 
     impl GraphNodeOwnedEndpointHandoff<2, 1, 0> for TestPipelineStd {
-        type NodeOwned = NodeLink<TestSinkNodeU32, 1, 0, u32, ()>;
+        type NodeOwned = NodeLink<SnkNode, 1, 0, u32, ()>;
 
         fn take_node_and_endpoints(
             &mut self,

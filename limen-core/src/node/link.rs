@@ -14,11 +14,10 @@ use crate::{
 /// A lightweight descriptor that **links to** a concrete node instance and records its
 /// static topology and policy metadata.
 ///
-/// Unlike a standalone descriptor value, `NodeDescLink` borrows (`&'a`) the actual
-/// node implementation (`N`). This makes the descriptor a *view* over a live node:
-/// it does not own runtime state, but it exposes the node’s identity, kind, port
-/// counts, scheduling policy, and optional name for graph construction, scheduling,
-/// diagnostics, and tooling.
+/// Unlike a pure descriptor, `NodeLink` **owns** the concrete node instance (`N`)
+/// and records its identity, kind, port counts, policy, and optional name for graph
+/// construction, scheduling, diagnostics, and tooling. It exposes `&N` and `&mut N`
+/// accessors so runtimes can operate on the live node.
 ///
 /// # Type Parameters
 /// - `'a`: Lifetime of the borrowed node reference. The descriptor cannot outlive the node.
@@ -38,10 +37,7 @@ where
     OutP: Payload,
     N: Node<IN, OUT, InP, OutP>,
 {
-    /// Borrowed handle to the concrete node instance.
-    ///
-    /// The descriptor does not own the node; the `'a` lifetime ties this reference
-    /// to the node’s lifetime.
+    /// Owned handle to the concrete node instance.
     node: N,
 
     /// Unique identifier of this node within the graph.

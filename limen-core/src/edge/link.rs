@@ -128,7 +128,7 @@ where
 
 impl<Q, P> Edge for EdgeLink<Q, P>
 where
-    P: Payload + Clone,
+    P: Payload,
     Q: Edge<Item = Message<P>>,
 {
     type Item = Message<P>;

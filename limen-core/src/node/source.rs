@@ -90,6 +90,9 @@ where
     {
         SourceNode::new(self, policy)
     }
+
+    /// Provide the node policy bundle (batching/budget/deadlines).
+    fn policy(&self) -> NodePolicy;
 }
 
 /// A thin adapter that exposes a `Source` as a `Node<0, OUT, (), OutP>`.
@@ -108,6 +111,19 @@ where
     policy: NodePolicy,
     /// Phantom to bind the `OutP` generic.
     _pd: PhantomData<OutP>,
+}
+
+/// Allow graphs to accept any `Source` and convert implicitly.
+impl<S, OutP, const OUT: usize> From<S> for SourceNode<S, OutP, OUT>
+where
+    S: Source<OutP, OUT>,
+    OutP: Payload,
+{
+    #[inline]
+    fn from(src: S) -> Self {
+        let policy = src.policy();
+        SourceNode::new(src, policy)
+    }
 }
 
 impl<S, OutP, const OUT: usize> SourceNode<S, OutP, OUT>

@@ -185,6 +185,7 @@ pub struct TestCounterSourceU32_2 {
 
     // Static properties:
     node_capabilities: NodeCapabilities,
+    node_policy: NodePolicy,
     output_placement_acceptance: [PlacementAcceptance; 1],
 
     // ---- Upstream pressure modelling ----
@@ -211,6 +212,7 @@ impl TestCounterSourceU32_2 {
         qos: QoSClass,
         flags: MessageFlags,
         node_capabilities: NodeCapabilities,
+        node_policy: NodePolicy,
         output_placement_acceptance: [PlacementAcceptance; 1],
     ) -> Self {
         Self {
@@ -222,6 +224,7 @@ impl TestCounterSourceU32_2 {
             qos,
             flags,
             node_capabilities,
+            node_policy,
             output_placement_acceptance,
             backlog_items: 0,
             backlog_bytes: 0,
@@ -336,6 +339,11 @@ impl Source<u32, 1> for TestCounterSourceU32_2 {
     #[inline]
     fn capabilities(&self) -> NodeCapabilities {
         self.node_capabilities
+    }
+
+    #[inline]
+    fn policy(&self) -> NodePolicy {
+        self.node_policy
     }
 }
 

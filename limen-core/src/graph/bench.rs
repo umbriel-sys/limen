@@ -78,12 +78,14 @@ impl TestPipeline {
     /// Returns a TestPipeline graph given the nodes and edges.
     #[inline]
     pub fn new(
-        node_0: SrcNode,
+        node_0: impl Into<SrcNode>,
         node_1: MapNode,
         node_2: TestSinkNodeU32,
         q_0: Q32,
         q_1: Q32,
     ) -> Self {
+        let node_0: SrcNode = node_0.into();
+
         let nodes = (
             NodeLink::<SrcNode, 0, 1, (), u32>::new(node_0, NodeIndex::from(0usize), Some("src")),
             NodeLink::<MapNode, 1, 1, u32, u32>::new(node_1, NodeIndex::from(1usize), Some("map")),
@@ -803,13 +805,15 @@ pub mod concurrent_graph {
         /// Build the std graph from nodes and concrete queues.
         #[inline]
         pub fn new(
-            node_0: SrcNode,
+            node_0: impl Into<SrcNode>,
             node_1: MapNode,
             node_2: TestSinkNodeU32,
             q_0: Q32,
             q_1: Q32,
         ) -> Self {
             // Build nodes
+            let node_0: SrcNode = node_0.into();
+
             let nodes = (
                 Some(NodeLink::<SrcNode, 0, 1, (), u32>::new(
                     node_0,

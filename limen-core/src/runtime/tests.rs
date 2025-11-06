@@ -8,7 +8,6 @@ use crate::message::{Message, MessageFlags};
 use crate::node::bench::{
     TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32, TestU32Backend,
 };
-use crate::node::source::{Source as _, SourceNode};
 use crate::node::NodeCapabilities;
 use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
 use crate::prelude::{NoopClock, NoopTelemetry};
@@ -59,18 +58,18 @@ fn core_pipeline_runs_with_nostd_runtime() {
     };
 
     // nodes
-    let src_impl = TestCounterSourceU32_2::new(
-        0,                                // starting_value_inclusive
-        TraceId(0u64),                    // trace_id
-        SequenceNumber(0u64),             // starting_sequence
-        Ticks(0u64),                      // starting_tick
-        None,                             // deadline_ns
-        QoSClass::BestEffort,             // qos
-        MessageFlags::empty(),            // flags
-        NodeCapabilities::default(),      // node_capabilities
-        [PlacementAcceptance::default()], // output_placement_acceptance
+    let src = TestCounterSourceU32_2::new(
+        0,
+        TraceId(0u64),
+        SequenceNumber(0u64),
+        Ticks(0u64),
+        None,
+        QoSClass::BestEffort,
+        MessageFlags::empty(),
+        NodeCapabilities::default(),
+        node_policy,
+        [PlacementAcceptance::default()],
     );
-    let src: SourceNode<TestCounterSourceU32_2, u32, 1> = src_impl.into_sourcenode(node_policy);
 
     let map = MapNode::new(
         TestU32Backend,
@@ -163,7 +162,7 @@ fn std_pipeline_runs_with_std_runtime() {
     };
 
     // nodes
-    let src_impl = TestCounterSourceU32_2::new(
+    let src = TestCounterSourceU32_2::new(
         0,
         TraceId(0u64),
         SequenceNumber(0u64),
@@ -172,9 +171,9 @@ fn std_pipeline_runs_with_std_runtime() {
         QoSClass::BestEffort,
         MessageFlags::empty(),
         NodeCapabilities::default(),
+        node_policy,
         [PlacementAcceptance::default()],
     );
-    let src: SourceNode<TestCounterSourceU32_2, u32, 1> = src_impl.into_sourcenode(node_policy);
 
     let map = MapNode::new(
         TestU32Backend,

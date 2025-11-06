@@ -199,7 +199,7 @@ impl GraphApi<3, 3> for TestPipeline {
         // Iterate *all* edges; update those where this node is upstream OR downstream.
         for ed in self.get_edge_descriptors().iter() {
             if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
-                let ei = (ed.id).0; // EdgeIndex(pub usize)
+                let ei = (ed.id).as_usize();
                 match ei {
                     0 => {
                         out[0] = self.edge_occupancy_for::<0>()?;
@@ -1008,7 +1008,7 @@ pub mod concurrent_graph {
             let node_idx = NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
                 if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
-                    match (ed.id).0 {
+                    match (ed.id).as_usize() {
                         0 => out[0] = self.edge_occupancy_for::<0>()?,
                         1 => out[1] = self.edge_occupancy_for::<1>()?,
                         2 => out[2] = self.edge_occupancy_for::<2>()?,

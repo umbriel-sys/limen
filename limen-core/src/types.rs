@@ -6,9 +6,23 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TraceId(pub u64);
 
+impl TraceId {
+    /// Return the inner u64.
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
 /// A 64-bit sequence number assigned by sources or routers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SequenceNumber(pub u64);
+
+impl SequenceNumber {
+    /// Return the inner u64.
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
 
 // ***** Timing *****
 
@@ -42,11 +56,23 @@ impl Ticks {
     pub const fn saturating_sub(self, rhs: Ticks) -> Ticks {
         Ticks(self.0.saturating_sub(rhs.0))
     }
+
+    /// Return the inner u64.
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
 }
 
 /// Absolute deadline in nanoseconds since platform boot (or epoch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeadlineNs(pub u64);
+
+impl DeadlineNs {
+    /// Return the inner u64.
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
 
 // ***** Policy *****
 
@@ -72,6 +98,18 @@ pub struct PortId {
     pub port: PortIndex,
 }
 
+impl PortId {
+    /// Return the node index.
+    pub fn node(&self) -> NodeIndex {
+        self.node
+    }
+
+    /// Return the port index.
+    pub fn port(&self) -> PortIndex {
+        self.port
+    }
+}
+
 /// A logical index for input or output ports on a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PortIndex(pub usize);
@@ -80,6 +118,14 @@ impl core::convert::From<usize> for PortIndex {
     #[inline]
     fn from(value: usize) -> Self {
         PortIndex(value)
+    }
+}
+
+impl PortIndex {
+    /// Return the inner usize held.
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0
     }
 }
 
@@ -94,6 +140,14 @@ impl core::convert::From<usize> for NodeIndex {
     }
 }
 
+impl NodeIndex {
+    /// Return the inner usize held.
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
 /// A logical index of an edge in a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EdgeIndex(pub usize);
@@ -102,6 +156,14 @@ impl core::convert::From<usize> for EdgeIndex {
     #[inline]
     fn from(value: usize) -> Self {
         EdgeIndex(value)
+    }
+}
+
+impl EdgeIndex {
+    /// Return the inner usize held.
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0
     }
 }
 

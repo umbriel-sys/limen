@@ -18,9 +18,6 @@ use crate::prelude::{PlatformClock, TelemetryKey, TelemetryKind};
 use crate::telemetry::Telemetry;
 use crate::types::Ticks;
 
-#[cfg(feature = "std")]
-use crate::edge::EnqueueResult;
-
 /// Categories of nodes used in graph descriptors and builders.
 ///
 /// These capture the high-level role of a node in the dataflow graph.

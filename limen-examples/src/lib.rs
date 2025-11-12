@@ -12,6 +12,10 @@ pub mod build_graphs {
     use limen_core::node::source::Source;
     use limen_core::node::Node;
 
-    // Each file contains both flavors (non-std and cfg(std) concurrent_graph)
-    include!(concat!(env!("OUT_DIR"), "/generated/build_graph.rs"));
+    /// Graph A:
+    pub mod graph_a {
+        use super::*;
+        // Each file contains both flavors (non-std and cfg(std) concurrent_graph)
+        include!(concat!(env!("OUT_DIR"), "/generated/build_graph_a.rs"));
+    }
 }

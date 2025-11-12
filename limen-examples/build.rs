@@ -20,7 +20,7 @@ fn main() {
     };
 
     // Build a typed AST for the graph
-    let ast = GraphBuilder::new(parse_quote!(pub), parse_quote!(BuildGraph))
+    let ast = GraphBuilder::new(parse_quote!(pub), parse_quote!(BuildGraphA))
         .node(
             Node::new(0)
                 .ty(parse_quote!(
@@ -81,9 +81,9 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest_dir = std::path::Path::new(&out_dir).join("generated");
     std::fs::create_dir_all(&dest_dir).expect("create $OUT_DIR/generated");
-    let dest = dest_dir.join("build_graph.rs");
+    let dest = dest_dir.join("build_graph_a.rs");
     limen_codegen::expand_ast_to_file(ast, &dest).expect("codegen failed");
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:warning=generated graph -> {}", dest.display());
+    println!("cargo:warning=generated graph A -> {}", dest.display());
 }

@@ -983,27 +983,48 @@ impl<'a> Std<'a> {
     /// The tuple type that holds probe-based ingress edge links, one per source.
     /// This tuple is heterogeneous because each source has its own payload type.
     fn ingress_edges_tuple_ty(&self) -> TokenStream2 {
-        // Heterogeneous tuple: one per source node, payload typed on the source's out_payload.
-        let parts = self.ingress_nodes.iter().map(|&nidx| {
-            let out_p = &self.g.nodes[nidx].out_payload;
-            quote! { limen_core::node::source::probe::ConcurrentIngressEdgeLink<#out_p> }
-        });
-        if parts.len() == 0 {
+        let count = self.ingress_nodes.len();
+        if count == 0 {
             quote! { () }
+        } else if count == 1 {
+            let nidx = self.ingress_nodes[0];
+            let out_p = &self.g.nodes[nidx].out_payload;
+            quote! {
+                (
+                    limen_core::node::source::probe::ConcurrentIngressEdgeLink<#out_p>,
+                )
+            }
         } else {
+            // Heterogeneous tuple: one per source node, payload typed on the source's out_payload.
+            let parts = self.ingress_nodes.iter().map(|&nidx| {
+                let out_p = &self.g.nodes[nidx].out_payload;
+                quote! { limen_core::node::source::probe::ConcurrentIngressEdgeLink<#out_p> }
+            });
             quote! { ( #( #parts ),* ) }
         }
     }
 
     /// The tuple type that holds `Option<SourceIngressUpdater>` for each source.
     fn ingress_updaters_tuple_ty(&self) -> TokenStream2 {
-        // Homogeneous updater type; tuple of Options, one per source.
-        let t =
-            quote! { core::option::Option<limen_core::node::source::probe::SourceIngressUpdater> };
-        let parts = self.ingress_nodes.iter().map(|_| quote! { #t });
-        if self.ingress_nodes.is_empty() {
+        let count = self.ingress_nodes.len();
+        if count == 0 {
             quote! { () }
+        } else if count == 1 {
+            quote! {
+                (
+                    core::option::Option<
+                        limen_core::node::source::probe::SourceIngressUpdater
+                    >,
+                )
+            }
         } else {
+            // Homogeneous updater type; tuple of Options, one per source.
+            let t = quote! {
+                core::option::Option<
+                    limen_core::node::source::probe::SourceIngressUpdater
+                >
+            };
+            let parts = self.ingress_nodes.iter().map(|_| quote! { #t });
             quote! { ( #( #parts ),* ) }
         }
     }
@@ -1161,42 +1182,72 @@ impl<'a> Std<'a> {
         });
 
         let edges_tuple = {
-            let elems = self.ingress_nodes.iter().enumerate().map(|(k, &nidx)| {
+            let count = self.ingress_nodes.len();
+            if count == 0 {
+                quote! { () }
+            } else if count == 1 {
+                let k = 0usize;
+                let nidx = self.ingress_nodes[0];
                 let e_var = format_ident!("ing_e_{}", k);
                 let dn = nidx;
                 let name = format!("ingress{}", k);
                 quote! {
-                    limen_core::node::source::probe::ConcurrentIngressEdgeLink::from_probe(
-                        #e_var,
-                        limen_core::types::EdgeIndex::from(#k as usize),
-                        limen_core::types::PortId {
-                            node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
-                            port: limen_core::types::PortIndex(0),
-                        },
-                        limen_core::types::PortId {
-                            node: limen_core::types::NodeIndex::from(#dn as usize),
-                            port: limen_core::types::PortIndex(0),
-                        },
-                        INGRESS_POLICIES[#k],
-                        Some(#name),
+                    (
+                        limen_core::node::source::probe::ConcurrentIngressEdgeLink::from_probe(
+                            #e_var,
+                            limen_core::types::EdgeIndex::from(#k as usize),
+                            limen_core::types::PortId {
+                                node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
+                                port: limen_core::types::PortIndex(0),
+                            },
+                            limen_core::types::PortId {
+                                node: limen_core::types::NodeIndex::from(#dn as usize),
+                                port: limen_core::types::PortIndex(0),
+                            },
+                            INGRESS_POLICIES[#k],
+                            Some(#name),
+                        ),
                     )
                 }
-            });
-            if self.ingress_nodes.is_empty() {
-                quote! { () }
             } else {
+                let elems = self.ingress_nodes.iter().enumerate().map(|(k, &nidx)| {
+                    let e_var = format_ident!("ing_e_{}", k);
+                    let dn = nidx;
+                    let name = format!("ingress{}", k);
+                    quote! {
+                        limen_core::node::source::probe::ConcurrentIngressEdgeLink::from_probe(
+                            #e_var,
+                            limen_core::types::EdgeIndex::from(#k as usize),
+                            limen_core::types::PortId {
+                                node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
+                                port: limen_core::types::PortIndex(0),
+                            },
+                            limen_core::types::PortId {
+                                node: limen_core::types::NodeIndex::from(#dn as usize),
+                                port: limen_core::types::PortIndex(0),
+                            },
+                            INGRESS_POLICIES[#k],
+                            Some(#name),
+                        )
+                    }
+                });
                 quote! { ( #( #elems ),* ) }
             }
         };
 
         let updaters_tuple = {
-            let elems = self.ingress_nodes.iter().enumerate().map(|(k, _)| {
-                let u_var = format_ident!("ing_u_{}", k);
-                quote! { core::option::Option::Some(#u_var) }
-            });
-            if self.ingress_nodes.is_empty() {
+            let count = self.ingress_nodes.len();
+            if count == 0 {
                 quote! { () }
+            } else if count == 1 {
+                let k = 0usize;
+                let u_var = format_ident!("ing_u_{}", k);
+                quote! { ( core::option::Option::Some(#u_var), ) }
             } else {
+                let elems = self.ingress_nodes.iter().enumerate().map(|(k, _)| {
+                    let u_var = format_ident!("ing_u_{}", k);
+                    quote! { core::option::Option::Some(#u_var) }
+                });
                 quote! { ( #( #elems ),* ) }
             }
         };
@@ -1790,8 +1841,8 @@ impl<'a> Std<'a> {
                     let mut ctx = limen_core::node::StepContext::new(
                         inputs,
                         outputs,
-                        in_policies,
-                        out_policies,
+                        *in_policies,
+                        *out_policies,
                         node_id,
                         in_edge_ids,
                         out_edge_ids,
@@ -1895,6 +1946,16 @@ impl<'a> Std<'a> {
             };
 
             let iidx = Index::from(i);
+            let inputs_ident = if in_ports == 0 {
+                format_ident!("_inputs")
+            } else {
+                format_ident!("inputs")
+            };
+            let outputs_ident = if out_ports == 0 {
+                format_ident!("_outputs")
+            } else {
+                format_ident!("outputs")
+            };
 
             quote! {
                 impl limen_core::graph::GraphNodeOwnedEndpointHandoff<#i, #in_ports, #out_ports> for #gname {
@@ -1914,8 +1975,8 @@ impl<'a> Std<'a> {
                     fn put_node_and_endpoints(
                         &mut self,
                         node: Self::NodeOwned,
-                        inputs: [<Self as limen_core::graph::GraphNodeTypes<#i, #in_ports, #out_ports>>::InQ; #in_ports],
-                        outputs: [<Self as limen_core::graph::GraphNodeTypes<#i, #in_ports, #out_ports>>::OutQ; #out_ports],
+                        #inputs_ident: [<Self as limen_core::graph::GraphNodeTypes<#i, #in_ports, #out_ports>>::InQ; #in_ports],
+                        #outputs_ident: [<Self as limen_core::graph::GraphNodeTypes<#i, #in_ports, #out_ports>>::OutQ; #out_ports],
                     ) {
                         assert!(self.nodes.#iidx.is_none(), "node already present");
                         self.nodes.#iidx = core::option::Option::Some(node);
@@ -2019,8 +2080,8 @@ impl<'a> Std<'a> {
 
                         // build edges (let-bindings), tuple, endpoints from arc
                         #edges_let_decls
-                        let edges: #edges_ty = #edges_tuple;
                         let endpoints: #endpoints_ty = #endpoints_init;
+                        let edges: #edges_ty = #edges_tuple;
 
                         // ingress probes and updaters
                         #ingress_decl

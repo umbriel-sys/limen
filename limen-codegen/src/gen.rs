@@ -348,6 +348,7 @@ impl<'a> NonStd<'a> {
         } else {
             let elems = self.ingress_policies.iter();
             quote! {
+                #[allow(dead_code)]
                 const INGRESS_POLICIES: [limen_core::policy::EdgePolicy; #cnt] = [ #( #elems ),* ];
             }
         }
@@ -748,6 +749,7 @@ impl<'a> NonStd<'a> {
             /// (one per source node) and are not stored; their occupancy is obtained
             /// from the owning source node at runtime.
             #[allow(clippy::complexity)]
+            #[allow(dead_code)]
             #vis struct #name {
                 /// Node links for all nodes in declaration order.
                 nodes: #node_tuple_ty,
@@ -770,6 +772,7 @@ impl<'a> NonStd<'a> {
                 /// edges (for sources) are not stored; their occupancy is computed
                 /// on demand via the source node.
                 #[inline]
+                #[allow(dead_code)]
                 pub fn new( #ctor_args ) -> Self {
                     let nodes = #node_tuple_init;
                     let edges = #edge_tuple_init;
@@ -1162,6 +1165,7 @@ impl<'a> Std<'a> {
         } else {
             let elems = self.ingress_policies.iter();
             quote! {
+                #[allow(dead_code)]
                 const INGRESS_POLICIES: [limen_core::policy::EdgePolicy; #cnt] = [ #( #elems ),* ];
             }
         }
@@ -1653,6 +1657,7 @@ impl<'a> Std<'a> {
         });
 
         quote! {
+            #[allow(dead_code)]
             pub enum #enum_name {
                 #( #variants ),*
             }
@@ -1769,11 +1774,41 @@ impl<'a> Std<'a> {
                 quote! {}
             };
 
-            // Variant pattern with optional ingress_updater
-            let pat = if self.source_pos_by_node[i].is_some() {
-                quote! { #enum_name::#variant { node, ins, outs, in_policies: _, out_policies: _, ingress_updater } }
+            // Variant pattern with optional ingress_updater.
+            // For zero-port nodes, ignore `ins` / `outs` entirely so there are
+            // no unused-variable warnings.
+            let ins_pat = if in_ports == 0 {
+                quote! { ins: _ }
             } else {
-                quote! { #enum_name::#variant { node, ins, outs, in_policies: _, out_policies: _ } }
+                quote! { ins }
+            };
+            let outs_pat = if out_ports == 0 {
+                quote! { outs: _ }
+            } else {
+                quote! { outs }
+            };
+
+            let pat = if self.source_pos_by_node[i].is_some() {
+                quote! {
+                    #enum_name::#variant {
+                        node,
+                        #ins_pat,
+                        #outs_pat,
+                        in_policies: _,
+                        out_policies: _,
+                        ingress_updater,
+                    }
+                }
+            } else {
+                quote! {
+                    #enum_name::#variant {
+                        node,
+                        #ins_pat,
+                        #outs_pat,
+                        in_policies: _,
+                        out_policies: _,
+                    }
+                }
             };
 
             quote! {
@@ -1810,11 +1845,21 @@ impl<'a> Std<'a> {
             }
 
             let ingress_count = self.ingress_count();
-            let in_ids: Vec<usize> = if in_ports == 0 { vec![] } else {
-                self.in_edges_by_node[i].iter().map(|&eidx| eidx + ingress_count).collect()
+            let in_ids: Vec<usize> = if in_ports == 0 {
+                vec![]
+            } else {
+                self.in_edges_by_node[i]
+                    .iter()
+                    .map(|&eidx| eidx + ingress_count)
+                    .collect()
             };
-            let out_ids: Vec<usize> = if out_ports == 0 { vec![] } else {
-                self.out_edges_by_node[i].iter().map(|&eidx| eidx + ingress_count).collect()
+            let out_ids: Vec<usize> = if out_ports == 0 {
+                vec![]
+            } else {
+                self.out_edges_by_node[i]
+                    .iter()
+                    .map(|&eidx| eidx + ingress_count)
+                    .collect()
             };
 
             let maybe_ing_update = if let Some(k) = self.source_pos_by_node[i] {
@@ -1822,12 +1867,44 @@ impl<'a> Std<'a> {
                     let occ = node.node().source_ref().ingress_occupancy(&INGRESS_POLICIES[#k]);
                     ingress_updater.update(occ.items, occ.bytes);
                 }
-            } else { quote! {} };
+            } else {
+                quote! {}
+            };
+
+            // Bind `ins` / `outs` only when there are ports; otherwise ignore them
+            // to avoid unused-variable warnings for zero-port nodes.
+            let ins_pat = if in_ports == 0 {
+                quote! { ins: _ }
+            } else {
+                quote! { ins }
+            };
+            let outs_pat = if out_ports == 0 {
+                quote! { outs: _ }
+            } else {
+                quote! { outs }
+            };
 
             let pat = if self.source_pos_by_node[i].is_some() {
-                quote! { #enum_name::#variant { node, ins, outs, in_policies, out_policies, ingress_updater } }
+                quote! {
+                    #enum_name::#variant {
+                        node,
+                        #ins_pat,
+                        #outs_pat,
+                        in_policies,
+                        out_policies,
+                        ingress_updater,
+                    }
+                }
             } else {
-                quote! { #enum_name::#variant { node, ins, outs, in_policies, out_policies } }
+                quote! {
+                    #enum_name::#variant {
+                        node,
+                        #ins_pat,
+                        #outs_pat,
+                        in_policies,
+                        out_policies,
+                    }
+                }
             };
 
             quote! {

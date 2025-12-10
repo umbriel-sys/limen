@@ -181,10 +181,7 @@ where
                         TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
                         1,
                     );
-                    self.telemetry.incr_counter(
-                        TelemetryKey::node(self.node_id, TelemetryKind::Processed),
-                        1,
-                    );
+                    let _ = self.in_occupancy(i);
                 }
                 Ok(msg)
             }
@@ -227,15 +224,16 @@ where
         let res = self.outputs[o].try_push(m, &self.out_policies[o]);
         if T::METRICS_ENABLED {
             match res {
-                crate::edge::EnqueueResult::Rejected => {
-                    self.telemetry
-                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
-                }
-                _ => {
+                crate::edge::EnqueueResult::Enqueued => {
                     self.telemetry.incr_counter(
                         TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
                         1,
                     );
+                    let _ = self.out_occupancy(o);
+                }
+                _ => {
+                    self.telemetry
+                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
                 }
             }
         }

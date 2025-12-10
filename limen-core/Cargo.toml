@@ -15,3 +15,4 @@ spsc_raw   = ["std"]                # enables SpscAtomicRing (unsafe)
 [dependencies]
 heapless = { version = "0.8", default-features = false }
 ringbuf = { version = "0.4.8", optional = true }
+libc = { version = "0.2", default-features = false }

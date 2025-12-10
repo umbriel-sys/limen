@@ -1,15 +1,12 @@
 //! (Work)bench [test] Runtime implementation.
 
 use crate::edge::EdgeOccupancy;
-use crate::errors::{NodeErrorKind, RuntimeError};
+use crate::errors::{NodeErrorKind, RuntimeError, RuntimeInvariantError};
+use crate::event_message;
 use crate::graph::GraphApi;
 use crate::node::StepResult;
 use crate::policy::{BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
-use crate::prelude::{
-    NodeStepError, NodeStepTelemetry, PlatformClock, Telemetry, TelemetryEvent, TelemetryKey,
-    TelemetryKind,
-};
-use crate::types::NodeIndex;
+use crate::prelude::{PlatformClock, Telemetry};
 
 use super::LimenRuntime;
 
@@ -93,13 +90,6 @@ where
         clock.ticks_to_nanos(ticks)
     }
 
-    /// Returns a reference the referenced node's chached policy.
-    #[inline]
-    fn node_policy(&self, node_index: usize) -> &NodePolicy {
-        debug_assert!(node_index < NODE_COUNT);
-        &self.node_policies[node_index]
-    }
-
     /// Hot-path inner step: requires `&mut self`, `&C`, and `&mut T`.
     #[inline]
     fn step_inner<Graph>(
@@ -111,8 +101,6 @@ where
     where
         Graph: GraphApi<NODE_COUNT, EDGE_COUNT>,
     {
-        const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
-
         // Try each node once, starting from `self.next` (round-robin).
         let start = self.next;
         let mut tried = 0usize;
@@ -120,130 +108,22 @@ where
         while tried < NODE_COUNT {
             let node_index = (start + tried) % NODE_COUNT;
 
-            // Execute the node step, with telemetry optionally wrapped around it.
-            let result = if T::METRICS_ENABLED {
-                // Cached static policy for this node (copy, NodePolicy: Copy).
-                let policy = *self.node_policy(node_index);
-                let budget_policy = policy.budget;
-                let deadline_policy = policy.deadline;
-
-                // ---- Execute node step + measure latency ----
-                let timestamp_start_ns = Self::now_nanos(clock);
-                let result = graph.step_node_by_index(node_index, clock, telemetry);
-                let timestamp_end_ns = Self::now_nanos(clock);
-                let duration_ns = timestamp_end_ns.saturating_sub(timestamp_start_ns);
-
-                // Latency metric (always on for metrics-enabled telemetry).
-                telemetry.record_latency_ns(
-                    TelemetryKey::node(node_index as u32, TelemetryKind::Latency),
-                    duration_ns,
-                );
-
-                // ---- Deadline budget check (per-step duration based) ----
-                //
-                // We interpret:
-                // - `default_deadline_ns` as a per-step time budget in nanoseconds.
-                // - If not set, fall back to `budget.tick_budget` converted to ns.
-                // We then compare the *duration* against budget + slack.
-                //
-                // We still emit an absolute `deadline_ns` in the event
-                // as `timestamp_start_ns + budget_ns`, but the miss condition
-                // is purely duration-based.
-
-                let mut budget_ns_opt: Option<u64> = None;
-
-                if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns {
-                    budget_ns_opt = Some(default_deadline_ns.0);
-                } else if let Some(tick_budget) = budget_policy.tick_budget {
-                    let budget_ns = clock.ticks_to_nanos(tick_budget);
-                    budget_ns_opt = Some(budget_ns);
-                }
-
-                let slack_ns: u64 = match deadline_policy.slack_tolerance_ns {
-                    Some(slack) => slack.0,
-                    None => 0,
-                };
-
-                let mut deadline_ns: Option<u64> = None;
-                let mut deadline_missed = false;
-
-                if let Some(budget_ns) = budget_ns_opt {
-                    // Represent this as an absolute deadline in the event.
-                    deadline_ns = Some(timestamp_start_ns.saturating_add(budget_ns));
-
-                    // Pure duration-based miss check.
-                    if duration_ns > budget_ns.saturating_add(slack_ns) {
-                        deadline_missed = true;
-                        telemetry.incr_counter(
-                            TelemetryKey::node(node_index as u32, TelemetryKind::DeadlineMiss),
-                            1,
-                        );
-                    }
-                }
-
-                // ---- Optional NodeStep structured event ----
-                if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
-                    let error_kind = match &result {
-                        Ok(step_result) => {
-                            use crate::node::StepResult::*;
-                            match step_result {
-                                NoInput => Some(NodeStepError::NoInput),
-                                Backpressured => Some(NodeStepError::Backpressured),
-                                WaitingOnExternal => Some(NodeStepError::ExternalUnavailable),
-                                // For progress/terminal/yield, only flag OverBudget if we
-                                // actually missed the duration-based deadline.
-                                MadeProgress | Terminal | YieldUntil(_) => {
-                                    if deadline_missed {
-                                        Some(NodeStepError::OverBudget)
-                                    } else {
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            Some(match err.kind {
-                                NodeErrorKind::NoInput => NodeStepError::NoInput,
-                                NodeErrorKind::Backpressured => NodeStepError::Backpressured,
-                                // Any other error kind is treated as a generic execution failure.
-                                _ => NodeStepError::ExecutionFailed,
-                            })
-                        }
-                    };
-
-                    let event = TelemetryEvent::NodeStep(NodeStepTelemetry {
-                        graph_id: GRAPH_ID,
-                        node_index: NodeIndex(node_index),
-                        node_name: None,
-                        timestamp_start_ns,
-                        timestamp_end_ns,
-                        duration_ns,
-                        deadline_ns,
-                        deadline_missed,
-                        error_kind,
-                    });
-
-                    telemetry.push_event(event);
-                }
-
-                result
-            } else {
-                // Metrics fully disabled for this telemetry type:
-                // just execute the node step with no timing or counters.
-                graph.step_node_by_index(node_index, clock, telemetry)
-            };
+            // Execute the node step. All node-level telemetry (latency, processed,
+            // deadline, NodeStep events) is now handled in NodeLink::step via
+            // the graph implementation, not here.
+            let result = graph.step_node_by_index(node_index, clock, telemetry);
 
             // ---- Scheduler logic (unchanged) ----
             match result {
-                Ok(sr) => {
-                    if Self::made_progress(&sr) {
-                        // For now, refresh all edge occupancies; this keeps the
-                        // implementation simple and correct. If you want to
-                        // optimize further later, you can add a graph hook that
-                        // refreshes only the edges incident to `node_index`.
+                Ok(step_result) => {
+                    if Self::made_progress(&step_result) {
+                        // Keep this as the canonical place where the runtime refreshes the
+                        // occupancy buffer for scheduling. This remains separate from
+                        // telemetry, which is handled in StepContext/NodeLink.
                         graph
                             .write_all_edge_occupancies(&mut self.occ)
                             .map_err(RuntimeError::from)?;
+
                         self.next = (node_index + 1) % NODE_COUNT;
                         return Ok(true);
                     } else {
@@ -251,18 +131,38 @@ where
                         continue;
                     }
                 }
-                Err(e) => match e.kind {
+                Err(error) => match error.kind {
                     NodeErrorKind::NoInput | NodeErrorKind::Backpressured => {
                         tried += 1;
                         continue;
                     }
-                    _ => return Err(RuntimeError::from(e)),
+                    _ => return Err(RuntimeError::from(error)),
                 },
             }
         }
 
         // We tried all nodes and none made progress.
         Ok(false)
+    }
+
+    /// Safely access telemetry by mutable reference, if it is present.
+    ///
+    /// Returns:
+    /// - `Ok(Some(r))` if telemetry is present and `f` ran.
+    /// - `Ok(None)` if telemetry is currently absent (e.g. not yet initialized).
+    ///
+    /// This never panics and never moves telemetry out of the runtime.
+    #[inline]
+    pub fn with_telemetry<F, R>(&mut self, f: F) -> Result<Option<R>, RuntimeError>
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        if let Some(t) = self.telemetry.as_mut() {
+            let r = f(t);
+            Ok(Some(r))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -321,11 +221,29 @@ where
 
     #[inline]
     fn reset(&mut self, graph: &Graph) -> Result<(), Self::Error> {
+        const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
+
         self.stop = false;
         self.next = 0;
         graph
             .write_all_edge_occupancies(&mut self.occ)
             .map_err(RuntimeError::from)?;
+
+        if let (Some(ref clock), Some(telemetry)) = (&self.clock, self.telemetry.as_mut()) {
+            if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
+                let timestamp_ns = Self::now_nanos(clock);
+                let event = crate::telemetry::TelemetryEvent::Runtime(
+                    crate::telemetry::RuntimeTelemetryEvent {
+                        graph_id: GRAPH_ID,
+                        timestamp_ns,
+                        event_kind: crate::telemetry::RuntimeTelemetryEventKind::GraphStarted,
+                        message: Some(event_message!("graph reset")),
+                    },
+                );
+                telemetry.push_event(event);
+            }
+        }
+
         Ok(())
     }
 
@@ -367,16 +285,26 @@ where
             return Ok(false);
         }
 
-        let clock = self
-            .clock
-            .take()
-            .expect("TestNoStdRuntime used before init()");
+        // Safely take the clock; error if missing.
+        let clock = match self.clock.take() {
+            Some(c) => c,
+            None => {
+                return Err(RuntimeError::RuntimeInvariant(
+                    RuntimeInvariantError::UninitializedClock,
+                ))
+            }
+        };
 
-        // Move telemetry out so we can use `&mut self` freely in step_inner.
-        let mut telemetry = self
-            .telemetry
-            .take()
-            .expect("TestNoStdRuntime used before init()");
+        // Safely take telemetry; if missing, put clock back before returning.
+        let mut telemetry = match self.telemetry.take() {
+            Some(t) => t,
+            None => {
+                self.clock = Some(clock);
+                return Err(RuntimeError::RuntimeInvariant(
+                    RuntimeInvariantError::UninitializedTelemetry,
+                ));
+            }
+        };
 
         let result = self.step_inner(graph, &clock, &mut telemetry);
 

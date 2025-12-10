@@ -58,6 +58,12 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize, Writer: TelemetrySink>
         (id as usize) < MAX_EDGES
     }
 
+    /// Access the underlying metrics record.
+    #[inline]
+    pub fn metrics(&self) -> &GraphMetrics<MAX_NODES, MAX_EDGES> {
+        &self.metrics
+    }
+
     /// Access the full array of node metrics.
     #[inline]
     pub fn nodes(&self) -> &[NodeMetrics; MAX_NODES] {
@@ -68,6 +74,12 @@ impl<const MAX_NODES: usize, const MAX_EDGES: usize, Writer: TelemetrySink>
     #[inline]
     pub fn edges(&self) -> &[EdgeMetrics; MAX_EDGES] {
         &self.metrics.edges
+    }
+
+    /// Access the underlying event writer.
+    #[inline]
+    pub fn writer(&self) -> &Writer {
+        &self.writer
     }
 
     /// Merge metrics from another fixed size collector into this one.

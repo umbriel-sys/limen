@@ -24,14 +24,19 @@ use core::fmt::Write;
 /// A test source that:
 /// - Produces an incrementing `u32` on each `try_produce()`.
 /// - Exposes *ingress* pressure via either an internal backlog or a std probe.
-pub struct TestCounterSourceU32_2 {
+pub struct TestCounterSourceU32_2<Clock>
+where
+    Clock: PlatformClock,
+{
+    /// Monotonic platform clock used to stamp creation ticks.
+    clock: Clock,
+
     // Next value to emit.
     next_value_to_emit: u32,
 
     // Header template fields:
     trace_id: TraceId,
     next_sequence: SequenceNumber,
-    next_creation_tick: Ticks,
     deadline_ns: Option<DeadlineNs>,
     qos: QoSClass,
     flags: MessageFlags,
@@ -53,14 +58,17 @@ pub struct TestCounterSourceU32_2 {
     ingress_updater: Option<SourceIngressUpdater>,
 }
 
-impl TestCounterSourceU32_2 {
+impl<Clock> TestCounterSourceU32_2<Clock>
+where
+    Clock: PlatformClock,
+{
     /// Create a new TestCounterSourceU32_2.
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
+        clock: Clock,
         starting_value_inclusive: u32,
         trace_id: TraceId,
         starting_sequence: SequenceNumber,
-        starting_tick: Ticks,
         deadline_ns: Option<DeadlineNs>,
         qos: QoSClass,
         flags: MessageFlags,
@@ -69,10 +77,10 @@ impl TestCounterSourceU32_2 {
         output_placement_acceptance: [PlacementAcceptance; 1],
     ) -> Self {
         Self {
+            clock,
             next_value_to_emit: starting_value_inclusive,
             trace_id,
             next_sequence: starting_sequence,
-            next_creation_tick: starting_tick,
             deadline_ns,
             qos,
             flags,
@@ -110,10 +118,12 @@ impl TestCounterSourceU32_2 {
 
     #[inline]
     fn make_header(&self) -> MessageHeader {
+        let creation_tick: Ticks = self.clock.now_ticks();
+
         MessageHeader::new(
             self.trace_id,
             self.next_sequence,
-            self.next_creation_tick,
+            creation_tick,
             self.deadline_ns,
             self.qos,
             0,
@@ -127,7 +137,6 @@ impl TestCounterSourceU32_2 {
         // Wrapping increments are fine for a test source.
         self.next_value_to_emit = self.next_value_to_emit.wrapping_add(1);
         self.next_sequence = SequenceNumber((self.next_sequence).0.wrapping_add(1));
-        self.next_creation_tick = Ticks((self.next_creation_tick).0.wrapping_add(1));
     }
 
     /// Consume one unit from the software backlog when we successfully produce.
@@ -145,7 +154,10 @@ impl TestCounterSourceU32_2 {
     }
 }
 
-impl Source<u32, 1> for TestCounterSourceU32_2 {
+impl<Clock> Source<u32, 1> for TestCounterSourceU32_2<Clock>
+where
+    Clock: PlatformClock,
+{
     type Error = core::convert::Infallible;
 
     #[inline]
@@ -385,11 +397,6 @@ impl Sink<u32, 1> for TestSinkNodeU32_2 {
 
     #[inline]
     fn consume(&mut self, _port: usize, msg: Message<u32>) -> Result<(), Self::Error> {
-        #[cfg(feature = "std")]
-        {
-            println!("--- [snk::consume] --- received on in0: {:?}", msg);
-        }
-
         let mut buf: FixedBuf<256> = FixedBuf::new();
         let _ = core::write!(&mut buf, "{:?}", msg);
         (self.printer)(buf.as_str());

@@ -362,6 +362,24 @@ impl Error for OutputError {}
 
 // ***** Runtime Errors *****
 
+/// Runtime invariants that were violated (programmer errors).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInvariantError {
+    /// `step` was called before `init` installed a clock.
+    UninitializedClock,
+    /// `step` was called before `init` installed telemetry.
+    UninitializedTelemetry,
+}
+
+impl fmt::Display for RuntimeInvariantError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RuntimeInvariantError::UninitializedClock => f.write_str("clock not present"),
+            RuntimeInvariantError::UninitializedTelemetry => f.write_str("telemetry not present"),
+        }
+    }
+}
+
 /// Error surface for runtimes: can wrap graph- and node-level errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -369,6 +387,8 @@ pub enum RuntimeError {
     Graph(GraphError),
     /// Node errors
     Node(NodeError),
+    /// Internal runtime invariants that were violated.
+    RuntimeInvariant(RuntimeInvariantError),
 }
 
 impl From<GraphError> for RuntimeError {
@@ -385,11 +405,19 @@ impl From<NodeError> for RuntimeError {
     }
 }
 
+impl From<RuntimeInvariantError> for RuntimeError {
+    #[inline]
+    fn from(e: RuntimeInvariantError) -> Self {
+        RuntimeError::RuntimeInvariant(e)
+    }
+}
+
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RuntimeError::Graph(e) => write!(f, "runtime graph error: {e}"),
             RuntimeError::Node(e) => write!(f, "runtime node error: {e}"),
+            RuntimeError::RuntimeInvariant(e) => write!(f, "runtime invariant error: {e}"),
         }
     }
 }

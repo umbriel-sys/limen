@@ -92,7 +92,7 @@ pub fn write_u64<W: fmt::Write>(writer: &mut W, mut value: u64) -> fmt::Result {
 pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
     match e {
         TelemetryEvent::Runtime(ev) => {
-            w.write_str("runtime g=")?;
+            w.write_str("runtime id=")?;
             write_u64(w, ev.graph_id as u64)?;
             w.write_str(" ts=")?;
             write_u64(w, ev.timestamp_ns)?;
@@ -119,13 +119,13 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
             w.write_str("\n")
         }
         TelemetryEvent::NodeStep(ev) => {
-            w.write_str("node-step g=")?;
+            w.write_str("node-step gid=")?;
             write_u64(w, ev.graph_id as u64)?;
-            w.write_str(" n=")?;
+            w.write_str(" nin=")?;
             write_u64(w, ev.node_index.0 as u64)?;
-            w.write_str(" t0=")?;
+            w.write_str(" ts_start=")?;
             write_u64(w, ev.timestamp_start_ns)?;
-            w.write_str(" t1=")?;
+            w.write_str(" ts_end=")?;
             write_u64(w, ev.timestamp_end_ns)?;
             w.write_str(" dur=")?;
             write_u64(w, ev.duration_ns)?;
@@ -152,9 +152,9 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
             w.write_str("\n")
         }
         TelemetryEvent::EdgeSnapshot(ev) => {
-            w.write_str("edge-snap g=")?;
+            w.write_str("edge-snap gid=")?;
             write_u64(w, ev.graph_id as u64)?;
-            w.write_str(" e=")?;
+            w.write_str(" eid=")?;
             write_u64(w, ev.edge_index.0 as u64)?;
             w.write_str(" ts=")?;
             write_u64(w, ev.timestamp_ns)?;
@@ -182,6 +182,12 @@ impl<W: fmt::Write> FmtLineWriter<W> {
     /// Create a new line based event writer around the given writer.
     pub fn new(writer: W) -> Self {
         Self { inner: writer }
+    }
+
+    /// Access the inner `fmt::Write` target.
+    #[inline]
+    pub fn inner(&self) -> &W {
+        &self.inner
     }
 }
 
@@ -213,6 +219,7 @@ impl<W: fmt::Write + Clone> Clone for FmtLineWriter<W> {
 /// - Completely no_std and allocation-free.
 /// - Capacity is a const generic `N`.
 /// - On overflow, `write_str` returns `Err(fmt::Error)` (no partial writes).
+#[derive(Clone, Copy)]
 pub struct FixedBuffer<const N: usize> {
     buffer: [u8; N],
     length: usize,

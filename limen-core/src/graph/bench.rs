@@ -49,7 +49,8 @@ const Q_32_POLICY: EdgePolicy = EdgePolicy {
 };
 
 // Test source node types.
-type SrcNode = SourceNode<TestCounterSourceU32_2, u32, 1>;
+#[allow(type_alias_bounds)]
+type SrcNode<SrcClk: PlatformClock> = SourceNode<TestCounterSourceU32_2<SrcClk>, u32, 1>;
 const INGRESS_POLICY: EdgePolicy = Q_32_POLICY;
 
 // Test model node types.
@@ -61,10 +62,10 @@ type SnkNode = SinkNode<TestSinkNodeU32_2, u32, 1>;
 
 /// concrete graph implementation used for testing.
 #[allow(clippy::complexity)]
-pub struct TestPipeline {
+pub struct TestPipeline<SrcClk: PlatformClock> {
     /// Nodes held in the graph.
     nodes: (
-        NodeLink<SrcNode, 0, 1, (), u32>,
+        NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>,
         NodeLink<MapNode, 1, 1, u32, u32>,
         NodeLink<SnkNode, 1, 0, u32, ()>,
     ),
@@ -72,21 +73,25 @@ pub struct TestPipeline {
     edges: (EdgeLink<Q32, u32>, EdgeLink<Q32, u32>),
 }
 
-impl TestPipeline {
+impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
     /// Returns a TestPipeline graph given the nodes and edges.
     #[inline]
     pub fn new(
-        node_0: impl Into<SrcNode>,
+        node_0: impl Into<SrcNode<SrcClk>>,
         node_1: MapNode,
         node_2: impl Into<SnkNode>,
         q_0: Q32,
         q_1: Q32,
     ) -> Self {
-        let node_0: SrcNode = node_0.into();
+        let node_0: SrcNode<SrcClk> = node_0.into();
         let node_2: SnkNode = node_2.into();
 
         let nodes = (
-            NodeLink::<SrcNode, 0, 1, (), u32>::new(node_0, NodeIndex::from(0usize), Some("src")),
+            NodeLink::<SrcNode<SrcClk>, 0, 1, (), u32>::new(
+                node_0,
+                NodeIndex::from(0usize),
+                Some("src"),
+            ),
             NodeLink::<MapNode, 1, 1, u32, u32>::new(node_1, NodeIndex::from(1usize), Some("map")),
             NodeLink::<SnkNode, 1, 0, u32, ()>::new(node_2, NodeIndex::from(2usize), Some("snk")),
         );
@@ -127,7 +132,7 @@ impl TestPipeline {
 }
 
 // ===== GraphApi<3,3> =====
-impl GraphApi<3, 3> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphApi<3, 3> for TestPipeline<SrcClk> {
     #[inline]
     fn get_node_descriptors(&self) -> [NodeDescriptor; 3] {
         [
@@ -300,8 +305,8 @@ impl GraphApi<3, 3> for TestPipeline {
 }
 
 // ===== GraphNodeAccess<I> =====
-impl GraphNodeAccess<0> for TestPipeline {
-    type Node = NodeLink<SrcNode, 0, 1, (), u32>;
+impl<SrcClk: PlatformClock> GraphNodeAccess<0> for TestPipeline<SrcClk> {
+    type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.0
@@ -311,7 +316,7 @@ impl GraphNodeAccess<0> for TestPipeline {
         &mut self.nodes.0
     }
 }
-impl GraphNodeAccess<1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeAccess<1> for TestPipeline<SrcClk> {
     type Node = NodeLink<MapNode, 1, 1, u32, u32>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
@@ -322,7 +327,7 @@ impl GraphNodeAccess<1> for TestPipeline {
         &mut self.nodes.1
     }
 }
-impl GraphNodeAccess<2> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeAccess<2> for TestPipeline<SrcClk> {
     type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
@@ -335,7 +340,7 @@ impl GraphNodeAccess<2> for TestPipeline {
 }
 
 // ===== GraphEdgeAccess<E> =====
-impl GraphEdgeAccess<1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphEdgeAccess<1> for TestPipeline<SrcClk> {
     type Edge = EdgeLink<Q32, u32>;
     #[inline]
     fn edge_ref(&self) -> &Self::Edge {
@@ -346,7 +351,7 @@ impl GraphEdgeAccess<1> for TestPipeline {
         &mut self.edges.0
     }
 }
-impl GraphEdgeAccess<2> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphEdgeAccess<2> for TestPipeline<SrcClk> {
     type Edge = EdgeLink<Q32, u32>;
     #[inline]
     fn edge_ref(&self) -> &Self::Edge {
@@ -360,21 +365,21 @@ impl GraphEdgeAccess<2> for TestPipeline {
 
 // ===== GraphNodeTypes<I, IN, OUT> =====
 // node 0: IN=0, OUT=1
-impl GraphNodeTypes<0, 0, 1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeTypes<0, 0, 1> for TestPipeline<SrcClk> {
     type InP = ();
     type OutP = u32;
     type InQ = NoQueue<()>;
     type OutQ = Q32;
 }
 // node 1: IN=1, OUT=1
-impl GraphNodeTypes<1, 1, 1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeTypes<1, 1, 1> for TestPipeline<SrcClk> {
     type InP = u32;
     type OutP = u32;
     type InQ = Q32;
     type OutQ = Q32;
 }
 // node 2: IN=1, OUT=0
-impl GraphNodeTypes<2, 1, 0> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeTypes<2, 1, 0> for TestPipeline<SrcClk> {
     type InP = u32;
     type OutP = ();
     type InQ = Q32;
@@ -383,7 +388,10 @@ impl GraphNodeTypes<2, 1, 0> for TestPipeline {
 
 // ===== GraphNodeContextBuilder<I, IN, OUT> =====
 // node 0: in=[], out=[edge id 1]
-impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeContextBuilder<0, 0, 1> for TestPipeline<SrcClk>
+where
+    Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>>,
+{
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
         &'graph mut self,
@@ -503,7 +511,10 @@ impl GraphNodeContextBuilder<0, 0, 1> for TestPipeline {
 }
 
 // node 1: in=[edge id 1], out=[edge id 2]
-impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeContextBuilder<1, 1, 1> for TestPipeline<SrcClk>
+where
+    Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, u32, u32>>,
+{
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
         &'graph mut self,
@@ -624,7 +635,10 @@ impl GraphNodeContextBuilder<1, 1, 1> for TestPipeline {
 }
 
 // node 2: in=[edge id 2], out=[]
-impl GraphNodeContextBuilder<2, 1, 0> for TestPipeline {
+impl<SrcClk: PlatformClock> GraphNodeContextBuilder<2, 1, 0> for TestPipeline<SrcClk>
+where
+    Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, u32, ()>>,
+{
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
         &'graph mut self,
@@ -775,7 +789,9 @@ pub mod concurrent_graph {
     type OutEpU32 = ProducerEndpoint<u32, ConcurrentQueue<Q32>>;
 
     // Test source node types.
-    type SrcNode = SourceNode<TestCounterSourceU32_2, u32, 1>;
+    #[allow(type_alias_bounds)]
+    type SrcNode<SrcClk: PlatformClock + std::marker::Send + 'static> =
+        SourceNode<TestCounterSourceU32_2<SrcClk>, u32, 1>;
     // Per-source ingress policies (S = 1 in this graph). No global default.
     const INGRESS_POLICIES: [EdgePolicy; 1] = [Q_32_POLICY];
 
@@ -788,10 +804,10 @@ pub mod concurrent_graph {
 
     /// concrete graph implementation (std / concurrent).
     #[allow(clippy::complexity)]
-    pub struct TestPipelineStd {
+    pub struct TestPipelineStd<SrcClk: PlatformClock + std::marker::Send + 'static> {
         // Nodes. We keep them as Options to support "move-out" for owned handoff.
         nodes: (
-            Option<NodeLink<SrcNode, 0, 1, (), u32>>,
+            Option<NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>>,
             Option<NodeLink<MapNode, 1, 1, u32, u32>>,
             Option<NodeLink<SnkNode, 1, 0, u32, ()>>,
         ),
@@ -816,21 +832,21 @@ pub mod concurrent_graph {
         node_policies: [NodePolicy; 3],
     }
 
-    impl TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> TestPipelineStd<SrcClk> {
         /// Build the std graph from nodes and concrete queues.
         #[inline]
         pub fn new(
-            node_0: impl Into<SrcNode>,
+            node_0: impl Into<SrcNode<SrcClk>>,
             node_1: MapNode,
             node_2: impl Into<SnkNode>,
             q_0: Q32,
             q_1: Q32,
         ) -> Self {
             // Build nodes
-            let node_0: SrcNode = node_0.into();
+            let node_0: SrcNode<SrcClk> = node_0.into();
             let node_2: SnkNode = node_2.into();
 
-            let node_0_link = NodeLink::<SrcNode, 0, 1, (), u32>::new(
+            let node_0_link = NodeLink::<SrcNode<SrcClk>, 0, 1, (), u32>::new(
                 node_0,
                 NodeIndex::from(0usize),
                 Some("src"),
@@ -937,11 +953,11 @@ pub mod concurrent_graph {
     }
 
     /// ===== std-only opaque owned-bundle used by GraphApi take/put =====
-    pub enum TestPipelineStdOwnedBundle {
+    pub enum TestPipelineStdOwnedBundle<SrcClk: PlatformClock + std::marker::Send + 'static> {
         /// node 0: out=[e1.out] + ingress updater.
         N0 {
             /// The detached node link for node 0 (TestSourceNodeU32).
-            node: NodeLink<SrcNode, 0, 1, (), u32>,
+            node: NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>,
             /// Owned output endpoint for edge e0.out.
             out0: OutEpU32,
             /// Static edge policy for out0 (e0).
@@ -974,7 +990,9 @@ pub mod concurrent_graph {
     }
 
     // ===== GraphApi<3,3> =====
-    impl GraphApi<3, 3> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphApi<3, 3>
+        for TestPipelineStd<SrcClk>
+    {
         #[inline]
         fn get_node_descriptors(&self) -> [NodeDescriptor; 3] {
             self.node_descs.clone()
@@ -1088,7 +1106,7 @@ pub mod concurrent_graph {
             }
         }
 
-        type OwnedBundle = TestPipelineStdOwnedBundle;
+        type OwnedBundle = TestPipelineStdOwnedBundle<SrcClk>;
 
         #[cfg(feature = "std")]
         fn take_owned_bundle_by_index(
@@ -1285,8 +1303,10 @@ pub mod concurrent_graph {
     }
 
     // ===== GraphNodeAccess<I> =====
-    impl GraphNodeAccess<0> for TestPipelineStd {
-        type Node = NodeLink<SrcNode, 0, 1, (), u32>;
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeAccess<0>
+        for TestPipelineStd<SrcClk>
+    {
+        type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             self.nodes.0.as_ref().expect("node 0 moved")
@@ -1296,7 +1316,9 @@ pub mod concurrent_graph {
             self.nodes.0.as_mut().expect("node 0 moved")
         }
     }
-    impl GraphNodeAccess<1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeAccess<1>
+        for TestPipelineStd<SrcClk>
+    {
         type Node = NodeLink<MapNode, 1, 1, u32, u32>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
@@ -1307,7 +1329,9 @@ pub mod concurrent_graph {
             self.nodes.1.as_mut().expect("node 1 moved")
         }
     }
-    impl GraphNodeAccess<2> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeAccess<2>
+        for TestPipelineStd<SrcClk>
+    {
         type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
@@ -1321,7 +1345,9 @@ pub mod concurrent_graph {
 
     // ===== GraphEdgeAccess<E> =====
     // We expose our StdEdge; runtimes/tooling can still read descriptors/policies.
-    impl GraphEdgeAccess<1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphEdgeAccess<1>
+        for TestPipelineStd<SrcClk>
+    {
         type Edge = ConcurrentEdgeLink<Q32, u32>;
         #[inline]
         fn edge_ref(&self) -> &Self::Edge {
@@ -1332,7 +1358,9 @@ pub mod concurrent_graph {
             &mut self.edges.0
         }
     }
-    impl GraphEdgeAccess<2> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphEdgeAccess<2>
+        for TestPipelineStd<SrcClk>
+    {
         type Edge = ConcurrentEdgeLink<Q32, u32>;
         #[inline]
         fn edge_ref(&self) -> &Self::Edge {
@@ -1346,21 +1374,27 @@ pub mod concurrent_graph {
 
     // ===== GraphNodeTypes<I, IN, OUT> =====
     // node 0: IN=0, OUT=1  (src)
-    impl GraphNodeTypes<0, 0, 1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeTypes<0, 0, 1>
+        for TestPipelineStd<SrcClk>
+    {
         type InP = ();
         type OutP = u32;
         type InQ = NoQueue<()>;
         type OutQ = OutEpU32;
     }
     // node 1: IN=1, OUT=1  (map)
-    impl GraphNodeTypes<1, 1, 1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeTypes<1, 1, 1>
+        for TestPipelineStd<SrcClk>
+    {
         type InP = u32;
         type OutP = u32;
         type InQ = InEpU32;
         type OutQ = OutEpU32;
     }
     // node 2: IN=1, OUT=0  (snk)
-    impl GraphNodeTypes<2, 1, 0> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeTypes<2, 1, 0>
+        for TestPipelineStd<SrcClk>
+    {
         type InP = u32;
         type OutP = ();
         type InQ = InEpU32;
@@ -1374,7 +1408,11 @@ pub mod concurrent_graph {
     // these same endpoint fields; the borrowed method is the key to avoid borrow overlap.
 
     // node 0: in=[], out=[edge id 1]
-    impl GraphNodeContextBuilder<0, 0, 1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeContextBuilder<0, 0, 1>
+        for TestPipelineStd<SrcClk>
+    where
+        Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>>,
+    {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
             &'graph mut self,
@@ -1482,7 +1520,11 @@ pub mod concurrent_graph {
     }
 
     // node 1: in=[edge id 1], out=[edge id 2]
-    impl GraphNodeContextBuilder<1, 1, 1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeContextBuilder<1, 1, 1>
+        for TestPipelineStd<SrcClk>
+    where
+        Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, u32, u32>>,
+    {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
             &'graph mut self,
@@ -1594,7 +1636,11 @@ pub mod concurrent_graph {
     }
 
     // node 2: in=[edge id 2], out=[]
-    impl GraphNodeContextBuilder<2, 1, 0> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeContextBuilder<2, 1, 0>
+        for TestPipelineStd<SrcClk>
+    where
+        Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, u32, ()>>,
+    {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
             &'graph mut self,
@@ -1702,8 +1748,10 @@ pub mod concurrent_graph {
     }
 
     // ===== Std-only owned handoff =====
-    impl GraphNodeOwnedEndpointHandoff<0, 0, 1> for TestPipelineStd {
-        type NodeOwned = NodeLink<SrcNode, 0, 1, (), u32>;
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeOwnedEndpointHandoff<0, 0, 1>
+        for TestPipelineStd<SrcClk>
+    {
+        type NodeOwned = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>;
 
         fn take_node_and_endpoints(
             &mut self,
@@ -1740,7 +1788,9 @@ pub mod concurrent_graph {
         }
     }
 
-    impl GraphNodeOwnedEndpointHandoff<1, 1, 1> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeOwnedEndpointHandoff<1, 1, 1>
+        for TestPipelineStd<SrcClk>
+    {
         type NodeOwned = NodeLink<MapNode, 1, 1, u32, u32>;
 
         fn take_node_and_endpoints(
@@ -1779,7 +1829,9 @@ pub mod concurrent_graph {
         }
     }
 
-    impl GraphNodeOwnedEndpointHandoff<2, 1, 0> for TestPipelineStd {
+    impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeOwnedEndpointHandoff<2, 1, 0>
+        for TestPipelineStd<SrcClk>
+    {
         type NodeOwned = NodeLink<SnkNode, 1, 0, u32, ()>;
 
         fn take_node_and_endpoints(

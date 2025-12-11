@@ -1,4 +1,5 @@
 use limen_core::edge::EdgeOccupancy;
+use limen_core::graph::bench::concurrent_graph::TestPipelineStd;
 use limen_core::graph::GraphApi;
 use limen_core::memory::PlacementAcceptance;
 use limen_core::message::{Message, MessageFlags};
@@ -11,6 +12,7 @@ use limen_core::policy::{
 };
 use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
 use limen_core::prelude::NoopTelemetry;
+use limen_core::runtime::bench::concurrent_runtime::TestStdRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 
@@ -22,16 +24,14 @@ type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
 
 type NoStdTestClock = NoStdLinuxMonotonicClock;
 
+type StdGraph = TestPipelineStd<NoStdTestClock>;
+type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, NoopTelemetry, 3, 3>;
+
 // ----------------------------------------------------------------------
 // std (concurrent) pipeline + std test runtime (one worker thread/node)
 // ----------------------------------------------------------------------
 #[test]
 fn std_pipeline_runs_with_std_runtime() {
-    use limen_core::{
-        graph::bench::concurrent_graph::TestPipelineStd,
-        runtime::bench::concurrent_runtime::TestStdRuntime,
-    };
-
     let node_policy = NodePolicy {
         batching: BatchingPolicy {
             fixed_n: None,
@@ -118,51 +118,43 @@ fn std_pipeline_runs_with_std_runtime() {
     let mut graph = TestPipelineStd::new(src, map, snk, q0, q1);
 
     // runtime
-    let mut runtime: TestStdRuntime<NoStdTestClock, NoopTelemetry, 3, 3> = TestStdRuntime::new();
+    let mut runtime: StdRuntime = StdRuntime::new();
 
     // init (moves bundles to worker threads)
     runtime.init(&mut graph, clock, NoopTelemetry).unwrap();
 
     // graph remains valid (descriptors intact)
     graph.validate_graph().unwrap();
+    let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy {
+        items: 0,
+        bytes: 0,
+        watermark: WatermarkState::AtOrAboveHard,
+    }; 3];
+    graph.write_all_edge_occupancies(&mut occ).unwrap();
+    println!(
+        "--- [initial_graph_occupancies] --- {:?}\n",
+        runtime.occupancies()
+    );
 
-    for _ in 0..10 {
+    for _ in 0..9 {
         let _ = runtime.step(&mut graph).unwrap();
 
-        #[cfg(feature = "std")]
-        println!(
-            "--- [graph_occupancies] --- {:?}",
-            <TestStdRuntime<NoStdTestClock, NoopTelemetry, 3, 3> as limen_core::runtime::LimenRuntime<
-                limen_core::graph::bench::TestPipeline<NoStdTestClock>,
-                3,
-                3,
-            >>::occupancies(&runtime)
-        );
+        println!("--- [graph_occupancies] --- {:?}", runtime.occupancies());
     }
 
     // request stop and run one final step to reattach bundles
-    <limen_core::runtime::bench::concurrent_runtime::TestStdRuntime<
-        NoStdTestClock,
-        NoopTelemetry,
-        3,
-        3,
-    > as LimenRuntime<
-        limen_core::graph::bench::concurrent_graph::TestPipelineStd<NoStdTestClock>,
-        3,
-        3,
-    >>::request_stop(&mut runtime);
-    let _ = runtime.step(&mut graph).unwrap();
+    LimenRuntime::<StdGraph, 3, 3>::request_stop(&mut runtime);
+    let _ = LimenRuntime::<StdGraph, 3, 3>::step(&mut runtime, &mut graph).unwrap();
 
     // validate again (nodes reattached)
     graph.validate_graph().unwrap();
 
-    // final snapshot
-    {
-        let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy {
-            items: 0,
-            bytes: 0,
-            watermark: WatermarkState::AtOrAboveHard,
-        }; 3];
-        graph.write_all_edge_occupancies(&mut occ).unwrap();
-    }
+    // Safely inspect telemetry, if present.
+    let _ = runtime.with_telemetry(|telemetry| {
+        // Push a metrics snapshot into the sink and flush.
+
+        use limen_core::prelude::Telemetry as _;
+        telemetry.push_metrics();
+        telemetry.flush();
+    });
 }

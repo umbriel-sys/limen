@@ -13,7 +13,7 @@ use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, Wa
 use crate::prelude::graph_telemetry::GraphTelemetry;
 use crate::prelude::linux::NoStdLinuxMonotonicClock;
 use crate::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
-use crate::prelude::{NoopClock, NoopTelemetry};
+use crate::prelude::NoopTelemetry;
 use crate::runtime::bench::TestNoStdRuntime;
 use crate::runtime::LimenRuntime;
 use crate::types::{QoSClass, SequenceNumber, TraceId};
@@ -195,6 +195,9 @@ fn std_pipeline_runs_with_std_runtime() {
         runtime::bench::concurrent_runtime::TestStdRuntime,
     };
 
+    type StdGraph = TestPipelineStd<NoStdTestClock>;
+    type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, NoopTelemetry, 3, 3>;
+
     let node_policy = NodePolicy {
         batching: BatchingPolicy {
             fixed_n: None,
@@ -211,9 +214,12 @@ fn std_pipeline_runs_with_std_runtime() {
         },
     };
 
+    // clock
+    let clock = NoStdLinuxMonotonicClock::new();
+
     // nodes
     let src = TestCounterSourceU32_2::new(
-        NoopClock,
+        clock,
         0,
         TraceId(0u64),
         SequenceNumber(0u64),
@@ -278,46 +284,43 @@ fn std_pipeline_runs_with_std_runtime() {
     let mut graph = TestPipelineStd::new(src, map, snk, q0, q1);
 
     // runtime
-    let mut runtime: TestStdRuntime<NoopClock, NoopTelemetry, 3, 3> = TestStdRuntime::new();
+    let mut runtime: StdRuntime = StdRuntime::new();
 
     // init (moves bundles to worker threads)
-    runtime.init(&mut graph, NoopClock, NoopTelemetry).unwrap();
+    runtime.init(&mut graph, clock, NoopTelemetry).unwrap();
 
     // graph remains valid (descriptors intact)
     graph.validate_graph().unwrap();
+    let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy {
+        items: 0,
+        bytes: 0,
+        watermark: WatermarkState::AtOrAboveHard,
+    }; 3];
+    graph.write_all_edge_occupancies(&mut occ).unwrap();
+    println!(
+        "--- [initial_graph_occupancies] --- {:?}\n",
+        runtime.occupancies()
+    );
 
-    for _ in 0..10 {
+    for _ in 0..9 {
         let _ = runtime.step(&mut graph).unwrap();
 
-        #[cfg(feature = "std")]
-        println!(
-            "--- [graph_occupancies] --- {:?}",
-            <TestStdRuntime<NoopClock, NoopTelemetry, 3, 3> as crate::runtime::LimenRuntime<
-                crate::graph::bench::TestPipeline<NoopClock>,
-                3,
-                3,
-            >>::occupancies(&runtime)
-        );
+        println!("--- [graph_occupancies] --- {:?}", runtime.occupancies());
     }
 
     // request stop and run one final step to reattach bundles
-    <crate::runtime::bench::concurrent_runtime::TestStdRuntime<NoopClock, NoopTelemetry,3, 3> as LimenRuntime<
-        crate::graph::bench::concurrent_graph::TestPipelineStd<NoopClock>,
-        3,
-        3,
-    >>::request_stop(&mut runtime);
-    let _ = runtime.step(&mut graph).unwrap();
+    LimenRuntime::<StdGraph, 3, 3>::request_stop(&mut runtime);
+    let _ = LimenRuntime::<StdGraph, 3, 3>::step(&mut runtime, &mut graph).unwrap();
 
     // validate again (nodes reattached)
     graph.validate_graph().unwrap();
 
-    // final snapshot
-    {
-        let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy {
-            items: 0,
-            bytes: 0,
-            watermark: WatermarkState::AtOrAboveHard,
-        }; 3];
-        graph.write_all_edge_occupancies(&mut occ).unwrap();
-    }
+    // Safely inspect telemetry, if present.
+    let _ = runtime.with_telemetry(|telemetry| {
+        // Push a metrics snapshot into the sink and flush.
+
+        use crate::prelude::Telemetry as _;
+        telemetry.push_metrics();
+        telemetry.flush();
+    });
 }

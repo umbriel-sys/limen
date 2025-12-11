@@ -10,8 +10,10 @@ use limen_core::node::NodeCapabilities;
 use limen_core::policy::{
     BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState,
 };
+use limen_core::prelude::concurrent::{spawn_telemetry_core, TelemetrySender};
+use limen_core::prelude::graph_telemetry::GraphTelemetry;
 use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
-use limen_core::prelude::NoopTelemetry;
+use limen_core::prelude::sink::IoLineWriter;
 use limen_core::runtime::bench::concurrent_runtime::TestStdRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
@@ -24,8 +26,11 @@ type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
 
 type NoStdTestClock = NoStdLinuxMonotonicClock;
 
+type StdTestTelemetryInner = GraphTelemetry<3, 3, IoLineWriter<std::io::Stdout>>;
+type StdTestTelemetry = TelemetrySender<StdTestTelemetryInner>;
+
 type StdGraph = TestPipelineStd<NoStdTestClock>;
-type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, NoopTelemetry, 3, 3>;
+type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, StdTestTelemetry, 3, 3>;
 
 // ----------------------------------------------------------------------
 // std (concurrent) pipeline + std test runtime (one worker thread/node)
@@ -114,6 +119,12 @@ fn std_pipeline_runs_with_std_runtime() {
     let q0: Q32 = Q32::default();
     let q1: Q32 = Q32::default();
 
+    // telemetry: GraphTelemetry wrapped in a concurrent TelemetrySender
+    let sink = IoLineWriter::<std::io::Stdout>::stdout_writer();
+    let inner_telemetry: StdTestTelemetryInner = StdTestTelemetryInner::new(0, true, sink);
+    let telemetry_core = spawn_telemetry_core(inner_telemetry);
+    let telemetry: StdTestTelemetry = telemetry_core.sender();
+
     // graph
     let mut graph = TestPipelineStd::new(src, map, snk, q0, q1);
 
@@ -121,7 +132,7 @@ fn std_pipeline_runs_with_std_runtime() {
     let mut runtime: StdRuntime = StdRuntime::new();
 
     // init (moves bundles to worker threads)
-    runtime.init(&mut graph, clock, NoopTelemetry).unwrap();
+    runtime.init(&mut graph, clock, telemetry).unwrap();
 
     // graph remains valid (descriptors intact)
     graph.validate_graph().unwrap();
@@ -157,4 +168,7 @@ fn std_pipeline_runs_with_std_runtime() {
         telemetry.push_metrics();
         telemetry.flush();
     });
+
+    // Shut down the telemetry core and flush everything.
+    telemetry_core.shutdown_and_join();
 }

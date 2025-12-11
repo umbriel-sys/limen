@@ -13,7 +13,6 @@ use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, Wa
 use crate::prelude::graph_telemetry::GraphTelemetry;
 use crate::prelude::linux::NoStdLinuxMonotonicClock;
 use crate::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
-use crate::prelude::NoopTelemetry;
 use crate::runtime::bench::TestNoStdRuntime;
 use crate::runtime::LimenRuntime;
 use crate::types::{QoSClass, SequenceNumber, TraceId};
@@ -192,11 +191,16 @@ fn core_pipeline_runs_with_nostd_runtime() {
 fn std_pipeline_runs_with_std_runtime() {
     use crate::{
         graph::bench::concurrent_graph::TestPipelineStd,
+        prelude::{concurrent::spawn_telemetry_core, sink::IoLineWriter},
         runtime::bench::concurrent_runtime::TestStdRuntime,
+        telemetry::concurrent::TelemetrySender,
     };
 
+    type StdTestTelemetryInner = GraphTelemetry<3, 3, IoLineWriter<std::io::Stdout>>;
+    type StdTestTelemetry = TelemetrySender<StdTestTelemetryInner>;
+
     type StdGraph = TestPipelineStd<NoStdTestClock>;
-    type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, NoopTelemetry, 3, 3>;
+    type StdRuntime = TestStdRuntime<StdGraph, NoStdTestClock, StdTestTelemetry, 3, 3>;
 
     let node_policy = NodePolicy {
         batching: BatchingPolicy {
@@ -280,6 +284,12 @@ fn std_pipeline_runs_with_std_runtime() {
     let q0: Q32 = Q32::default();
     let q1: Q32 = Q32::default();
 
+    // telemetry: GraphTelemetry wrapped in a concurrent TelemetrySender
+    let sink = IoLineWriter::<std::io::Stdout>::stdout_writer();
+    let inner_telemetry: StdTestTelemetryInner = StdTestTelemetryInner::new(0, true, sink);
+    let telemetry_core = spawn_telemetry_core(inner_telemetry);
+    let telemetry: StdTestTelemetry = telemetry_core.sender();
+
     // graph
     let mut graph = TestPipelineStd::new(src, map, snk, q0, q1);
 
@@ -287,7 +297,7 @@ fn std_pipeline_runs_with_std_runtime() {
     let mut runtime: StdRuntime = StdRuntime::new();
 
     // init (moves bundles to worker threads)
-    runtime.init(&mut graph, clock, NoopTelemetry).unwrap();
+    runtime.init(&mut graph, clock, telemetry).unwrap();
 
     // graph remains valid (descriptors intact)
     graph.validate_graph().unwrap();
@@ -318,9 +328,11 @@ fn std_pipeline_runs_with_std_runtime() {
     // Safely inspect telemetry, if present.
     let _ = runtime.with_telemetry(|telemetry| {
         // Push a metrics snapshot into the sink and flush.
-
         use crate::prelude::Telemetry as _;
         telemetry.push_metrics();
         telemetry.flush();
     });
+
+    // Shut down the telemetry core and flush everything.
+    telemetry_core.shutdown_and_join();
 }

@@ -8,6 +8,9 @@ pub mod event_message;
 pub mod graph_telemetry;
 pub mod sink;
 
+#[cfg(feature = "std")]
+pub mod concurrent;
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 

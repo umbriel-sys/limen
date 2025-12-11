@@ -337,6 +337,36 @@ impl<'a> NonStd<'a> {
         quote! { [ #( #ingress ),*, #( #reals ),* ] }
     }
 
+    /// Create the node policy array (`[NodePolicy; NODES]`).
+    fn node_policies_array(&self) -> TokenStream2 {
+        let elems = self.g.nodes.iter().enumerate().map(|(i, _)| {
+            let idx = Index::from(i);
+            quote! { self.nodes.#idx.policy() }
+        });
+        quote! { [ #( #elems ),* ] }
+    }
+
+    /// Create the edge policy array (`[EdgePolicy; EDGES]`), with ingress
+    /// policies first followed by real edge policies.
+    fn edge_policies_array(&self) -> TokenStream2 {
+        let ingress = self.ingress_nodes.iter().enumerate().map(|(k, _)| {
+            let kidx = Index::from(k);
+            quote! { INGRESS_POLICIES[#kidx] }
+        });
+
+        let reals = self.g.edges.iter().enumerate().map(|(j, _)| {
+            let jidx = Index::from(j);
+            quote! { self.edges.#jidx.policy() }
+        });
+
+        let total = self.ingress_count() + self.g.edges.len();
+        if total == 0 {
+            quote! { [] }
+        } else {
+            quote! { [ #( #ingress ),*, #( #reals ),* ] }
+        }
+    }
+
     /// Emit a constant with ingress policies (if any).
     ///
     /// This creates:
@@ -726,6 +756,10 @@ impl<'a> NonStd<'a> {
 
         let node_descs = self.node_desc_array();
         let edge_descs = self.edge_desc_array();
+
+        let node_policies = self.node_policies_array();
+        let edge_policies = self.edge_policies_array();
+
         let edge_occ_match = self.edge_occupancy_match();
         let write_all = self.write_all_occupancies();
         let refresh_one = self.refresh_for_node();
@@ -788,6 +822,14 @@ impl<'a> NonStd<'a> {
                 #[inline]
                 fn get_edge_descriptors(&self) -> [limen_core::edge::link::EdgeDescriptor; #edge_count] {
                     #edge_descs
+                }
+                #[inline]
+                fn get_node_policies(&self) -> [limen_core::policy::NodePolicy; #node_count] {
+                    #node_policies
+                }
+                #[inline]
+                fn get_edge_policies(&self) -> [limen_core::policy::EdgePolicy; #edge_count] {
+                    #edge_policies
                 }
                 #[inline]
                 fn edge_occupancy_for<const E: usize>(&self) -> Result<limen_core::edge::EdgeOccupancy, limen_core::errors::GraphError> {
@@ -1277,6 +1319,21 @@ impl<'a> Std<'a> {
         }
     }
 
+    /// Cache `[NodePolicy; NODES]` at construction time so node policies remain
+    /// available even if nodes are temporarily moved out.
+    fn node_policies_array_cache_init(&self) -> TokenStream2 {
+        let parts = self.g.nodes.iter().enumerate().map(|(i, _)| {
+            let idx = Index::from(i);
+            quote! { nodes.#idx.as_ref().unwrap().policy() }
+        });
+        let n = self.g.nodes.len();
+        if n == 0 {
+            quote! { [] }
+        } else {
+            quote! { [ #( #parts ),* ] }
+        }
+    }
+
     /// Compute the concrete concurrent graph type name: `<GraphName>Std`.
     fn std_graph_name(&self, base: &Ident) -> Ident {
         format_ident!("{}Std", base)
@@ -1528,6 +1585,25 @@ impl<'a> Std<'a> {
             quote! { [] }
         } else {
             quote! { [ #( #ingress ),* , #( #reals ),* ] }
+        }
+    }
+
+    /// Create the edge policy array (`[EdgePolicy; EDGES]`) for the concurrent graph,
+    /// with ingress policies first followed by real edge policies.
+    fn edge_policies_array_std(&self) -> TokenStream2 {
+        let ingress = self.ingress_nodes.iter().enumerate().map(|(k, _)| {
+            let kidx = Index::from(k);
+            quote! { INGRESS_POLICIES[#kidx] }
+        });
+        let reals = self.g.edges.iter().enumerate().map(|(j, _)| {
+            let jidx = Index::from(j);
+            quote! { self.edges.#jidx.policy() }
+        });
+        let total = self.ingress_count() + self.g.edges.len();
+        if total == 0 {
+            quote! { [] }
+        } else {
+            quote! { [ #( #ingress ),*, #( #reals ),* ] }
         }
     }
 
@@ -2089,12 +2165,14 @@ impl<'a> Std<'a> {
         let endpoints_init = self.endpoints_tuple_init();
         let (ingress_decl, ingress_both) = self.ingress_edges_tuple_init();
         let node_descs_init = self.node_descs_array_cache_init();
+        let node_policies_init = self.node_policies_array_cache_init();
 
         let node_count = self.g.nodes.len();
         let edge_count = self.ingress_count() + self.g.edges.len();
 
         let ingress_pols_const = self.ingress_policies_const();
         let edge_descs = self.edge_descriptors_array_std();
+        let edge_policies = self.edge_policies_array_std();
         let edge_occ_match = self.edge_occupancy_match_std();
         let write_all = self.write_all_occupancies_std();
         let refresh_one = self.refresh_for_node_std();
@@ -2138,6 +2216,8 @@ impl<'a> Std<'a> {
                     ingress_updaters: #ingress_updaters_ty,
                     /// Cached node descriptors (valid even when nodes are moved out).
                     node_descs: [limen_core::node::link::NodeDescriptor; #node_count],
+                    /// Cached node policies for all nodes.
+                    node_policies: [limen_core::policy::NodePolicy; #node_count],
                 }
 
                 impl #gname {
@@ -2164,8 +2244,9 @@ impl<'a> Std<'a> {
                         #ingress_decl
                         let (ingress_edges, ingress_updaters) = #ingress_both;
 
-                        // cache descriptors (works even if nodes are moved out later)
+                        // cache descriptors and policies (works even if nodes are moved out later)
                         let node_descs: [limen_core::node::link::NodeDescriptor; #node_count] = #node_descs_init;
+                        let node_policies: [limen_core::policy::NodePolicy; #node_count] = #node_policies_init;
 
                         Self {
                             nodes,
@@ -2174,6 +2255,7 @@ impl<'a> Std<'a> {
                             ingress_edges,
                             ingress_updaters,
                             node_descs,
+                            node_policies,
                         }
                     }
                 }
@@ -2190,6 +2272,14 @@ impl<'a> Std<'a> {
                     #[inline]
                     fn get_edge_descriptors(&self) -> [limen_core::edge::link::EdgeDescriptor; #edge_count] {
                         #edge_descs
+                    }
+                    #[inline]
+                    fn get_node_policies(&self) -> [limen_core::policy::NodePolicy; #node_count] {
+                        self.node_policies.clone()
+                    }
+                    #[inline]
+                    fn get_edge_policies(&self) -> [limen_core::policy::EdgePolicy; #edge_count] {
+                        #edge_policies
                     }
                     #[inline]
                     fn edge_occupancy_for<const E: usize>(&self) -> Result<limen_core::edge::EdgeOccupancy, limen_core::errors::GraphError> {

@@ -26,7 +26,7 @@ define_graph! {
 
     nodes {
         0: {
-            ty: limen_core::node::bench::TestCounterSourceU32_2,
+            ty: limen_core::node::bench::TestCounterSourceU32_2<limen_core::prelude::linux::NoStdLinuxMonotonicClock>,
             in_ports: 0,
             out_ports: 1,
             in_payload: (),
@@ -76,7 +76,7 @@ define_graph! {
     }
 }
 
-#[cfg(not(feature = "std"))]
+// #[cfg(not(feature = "std"))]
 #[path = "proc_example_graph/no_std.rs"]
 mod no_std;
 

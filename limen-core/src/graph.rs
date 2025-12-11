@@ -228,6 +228,18 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
     /// node indices described by [`get_node_descriptors`](Self::get_node_descriptors).
     fn get_edge_descriptors(&self) -> [EdgeDescriptor; EDGE_COUNT];
 
+    /// Returns the static `NodePolicy` for every node in the graph.
+    ///
+    /// The returned array length must equal `NODE_COUNT`, and index `i`
+    /// corresponds to `NodeIndex::from(i)`.
+    fn get_node_policies(&self) -> [NodePolicy; NODE_COUNT];
+
+    /// Returns the static `EdgePolicy` for every edge in the graph.
+    ///
+    /// The returned array length must equal `EDGE_COUNT`, and index `e`
+    /// corresponds to `EdgeIndex::from(e)`.
+    fn get_edge_policies(&self) -> [EdgePolicy; EDGE_COUNT];
+
     /// Validates the graph topology and policies derived from node and edge descriptors.
     ///
     /// This checks index bounds, arities, endpoint compatibility, and any static

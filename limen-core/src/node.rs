@@ -176,15 +176,13 @@ where
         debug_assert!(i < IN);
         match self.inputs[i].try_pop() {
             Ok(msg) => {
-                // Node ingress + input-edge processed counter.
-                self.telemetry.incr_counter(
-                    TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
-                    1,
-                );
-                self.telemetry.incr_counter(
-                    TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::Processed),
-                    1,
-                );
+                if T::METRICS_ENABLED {
+                    self.telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
+                        1,
+                    );
+                    let _ = self.in_occupancy(i);
+                }
                 Ok(msg)
             }
             Err(e) => Err(e),
@@ -203,11 +201,12 @@ where
     pub fn in_occupancy(&mut self, i: usize) -> EdgeOccupancy {
         debug_assert!(i < IN);
         let occ = self.inputs[i].occupancy(&self.in_policies[i]);
-        // Update an edge QueueDepth gauge (optional but useful).
-        self.telemetry.set_gauge(
-            TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::QueueDepth),
-            occ.items as u64,
-        );
+        if T::METRICS_ENABLED {
+            self.telemetry.set_gauge(
+                TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::QueueDepth),
+                occ.items as u64,
+            );
+        }
         occ
     }
 
@@ -223,26 +222,19 @@ where
     pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> crate::edge::EnqueueResult {
         debug_assert!(o < OUT);
         let res = self.outputs[o].try_push(m, &self.out_policies[o]);
-        match res {
-            crate::edge::EnqueueResult::Rejected => {
-                // Admission failed: count drops on both node and edge.
-                self.telemetry.incr_counter(
-                    TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::Dropped),
-                    1,
-                );
-                self.telemetry
-                    .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
-            }
-            _ => {
-                // Successful egress.
-                self.telemetry.incr_counter(
-                    TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
-                    1,
-                );
-                self.telemetry.incr_counter(
-                    TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::Processed),
-                    1,
-                );
+        if T::METRICS_ENABLED {
+            match res {
+                crate::edge::EnqueueResult::Enqueued => {
+                    self.telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
+                        1,
+                    );
+                    let _ = self.out_occupancy(o);
+                }
+                _ => {
+                    self.telemetry
+                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
+                }
             }
         }
         res
@@ -253,10 +245,12 @@ where
     pub fn out_occupancy(&mut self, o: usize) -> EdgeOccupancy {
         debug_assert!(o < OUT);
         let occ = self.outputs[o].occupancy(&self.out_policies[o]);
-        self.telemetry.set_gauge(
-            TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
-            occ.items as u64,
-        );
+        if T::METRICS_ENABLED {
+            self.telemetry.set_gauge(
+                TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
+                occ.items as u64,
+            );
+        }
         occ
     }
 

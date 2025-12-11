@@ -12,6 +12,8 @@
 //!
 //! Implementations of these traits are provided by `limen-platform` or host runtimes.
 
+pub mod linux;
+
 use crate::types::Ticks;
 
 /// A monotonic platform clock.
@@ -65,6 +67,37 @@ impl PlatformClock for () {
     #[inline]
     fn nanos_to_ticks(&self, ns: u64) -> Ticks {
         Ticks(ns)
+    }
+}
+
+/// Timing span helper backed by a `PlatformClock`.
+///
+/// A span records a start tick from the provided clock and can be closed to
+/// obtain an elapsed duration in nanoseconds.
+pub struct Span<'a, C: PlatformClock> {
+    /// Clock used to obtain ticks and convert them to nanoseconds.
+    clk: &'a C,
+    /// Tick value at the start of the span.
+    start: Ticks,
+}
+
+impl<'a, C: PlatformClock> Span<'a, C> {
+    /// Start a new span using the given platform clock.
+    #[inline]
+    pub fn start(clk: &'a C) -> Self {
+        Self {
+            clk,
+            start: clk.now_ticks(),
+        }
+    }
+
+    /// End the span and return the elapsed time in nanoseconds.
+    #[inline]
+    pub fn end_ns(self) -> u64 {
+        let end = self.clk.now_ticks();
+        let t0 = self.clk.ticks_to_nanos(self.start);
+        let t1 = self.clk.ticks_to_nanos(end);
+        t1.saturating_sub(t0)
     }
 }
 

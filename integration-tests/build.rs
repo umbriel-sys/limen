@@ -24,7 +24,9 @@ fn main() {
         .node(
             Node::new(0)
                 .ty(parse_quote!(
-                    limen_core::node::bench::TestCounterSourceU32_2
+                    limen_core::node::bench::TestCounterSourceU32_2<
+                        limen_core::prelude::linux::NoStdLinuxMonotonicClock,
+                    >
                 ))
                 .in_ports(0)
                 .out_ports(1)

@@ -11,9 +11,6 @@ pub mod sink;
 #[cfg(feature = "std")]
 pub mod concurrent;
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
-
 use core::fmt;
 
 use crate::policy::WatermarkState;

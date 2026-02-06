@@ -8,8 +8,6 @@ use crate::node::NodeKind;
 
 // no_std + alloc: bring in the `vec!` macro only
 #[cfg(all(feature = "alloc", not(feature = "std")))]
-extern crate alloc;
-#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::vec;
 
 /// An interface for descriptor validation (borrowed/owned/buffer).
@@ -237,7 +235,6 @@ pub fn validate_acyclic_alloc(
     nodes: &[NodeDescriptor],
     edges: &[EdgeDescriptor],
 ) -> Result<(), GraphError> {
-    extern crate alloc;
     use alloc::vec::Vec;
 
     let n = nodes.len();

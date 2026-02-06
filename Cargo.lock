@@ -40,13 +40,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
-name = "limen"
-version = "0.1.0"
-dependencies = [
- "limen-core",
-]
-
-[[package]]
 name = "limen-build"
 version = "0.1.0"
 dependencies = [
@@ -78,7 +71,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "limen-integration-tests"
+name = "limen-examples"
 version = "0.1.0"
 dependencies = [
  "limen-build",
@@ -88,21 +81,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "limen-light"
-version = "0.1.0"
-dependencies = [
- "limen-core",
-]
-
-[[package]]
-name = "limen-models"
-version = "0.1.0"
-dependencies = [
- "limen-core",
-]
-
-[[package]]
-name = "limen-output"
+name = "limen-node"
 version = "0.1.0"
 dependencies = [
  "limen-core",
@@ -116,14 +95,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "limen-processing"
-version = "0.1.0"
-dependencies = [
- "limen-core",
-]
-
-[[package]]
-name = "limen-sensors"
+name = "limen-runtime"
 version = "0.1.0"
 dependencies = [
  "limen-core",

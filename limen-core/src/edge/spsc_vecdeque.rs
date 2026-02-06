@@ -3,8 +3,6 @@
 //! Uses VecDeque as the backing ring; we enforce a fixed logical capacity and
 //! keep byte occupancy accounting for admission / watermark decisions.
 
-extern crate alloc;
-
 use alloc::collections::VecDeque;
 
 use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};

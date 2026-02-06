@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 //! # limen (P2 runtime)
@@ -20,6 +21,9 @@
 //! ## Modules
 //! - [`scheduler`]: EDF and throughput dequeue policies implementing the core trait.
 //! - [`runtime`]: single-thread event loop (`RuntimeP2`) and concurrent variant
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 pub mod runtime;
 pub mod scheduler;

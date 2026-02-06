@@ -1,18 +1,19 @@
 [package]
 name = "limen-core"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-description = "Limen core contracts and primitives for a graph-driven edge inference runtime (no_std by default)."
-repository = "https://example.com/limen" # TODO!
+description = "Limen core contracts and primitives."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [features]
 default = []
 alloc = []
-std = ["alloc", "ringbuf"]
-spsc_raw   = ["std"]                # enables SpscAtomicRing (unsafe)
+std = ["alloc", "dep:ringbuf"]
+spsc_raw = ["std"] # enables SpscAtomicRing (unsafe)
 
 [dependencies]
-heapless = { version = "0.8", default-features = false }
-ringbuf = { version = "0.4.8", optional = true }
-libc = { version = "0.2", default-features = false }
+heapless = { workspace = true }
+ringbuf = { workspace = true, optional = true }
+libc = { workspace = true }

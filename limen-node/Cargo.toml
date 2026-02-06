@@ -1,6 +1,6 @@
 [package]
-name = "limen-platform"
-description = "Platform adapters for Limen."
+name = "limen-node"
+description = "Limen node implementations."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
+default = []
 alloc = ["limen-core/alloc"]
 std = ["alloc", "limen-core/std"]
 

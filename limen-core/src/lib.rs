@@ -37,6 +37,9 @@
 //! runtimes can evolve independently. Avoid adding trait objects or dynamic
 //! allocation requirements to keep the core maximally portable.
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub mod errors;
 pub mod memory;
 pub mod telemetry;

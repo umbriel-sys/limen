@@ -3,14 +3,37 @@ members = [
     "limen-core",
     "limen-codegen",
     "limen-build",
-    "limen-light",
-    "limen",
-    "limen-processing",
-    "limen-models",
-    "limen-sensors",
-    "limen-output",
+    "limen-node",
+    "limen-runtime",
     "limen-platform",
-    "integration-tests",
+    "limen-examples",
 ]
-
 resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/idky137/limen"
+authors = ["idky137 <https://github.com/idky137>"]
+
+[workspace.dependencies]
+# Internal crates
+limen-core = { path = "limen-core", version = "0.1.0", default-features = false }
+limen-codegen = { path = "limen-codegen", version = "0.1.0" }
+limen-build = { path = "limen-build", version = "0.1.0" }
+limen-node = { path = "limen-node", version = "0.1.0", default-features = false }
+limen-runtime = { path = "limen-runtime", version = "0.1.0", default-features = false }
+limen-platform = { path = "limen-platform", version = "0.1.0", default-features = false }
+
+# Shared proc-macro/tooling deps
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }
+prettyplease = "0.2"
+thiserror = "1"
+
+# limen-core externals
+heapless = { version = "0.8", default-features = false }
+libc = { version = "0.2", default-features = false }
+ringbuf = { version = "0.4.8" }

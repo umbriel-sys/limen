@@ -26,8 +26,6 @@ use heapless::Vec as HeaplessVec;
 
 // alloc-backed buffers only when the feature is enabled
 #[cfg(feature = "alloc")]
-extern crate alloc;
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 // --- local helpers: map backend/queue errors into NodeError (no From impls required)

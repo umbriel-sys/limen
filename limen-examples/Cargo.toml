@@ -1,6 +1,6 @@
 [package]
-name = "limen-platform"
-description = "Platform adapters for Limen."
+name = "limen-examples"
+description = "Limen examples and integration tests."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,8 +8,14 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
+default = []
 alloc = ["limen-core/alloc"]
 std = ["alloc", "limen-core/std"]
 
-[dependencies]
+[dev-dependencies]
 limen-core = { workspace = true }
+limen-build = { workspace = true }
+
+[build-dependencies]
+limen-codegen = { workspace = true }
+syn = { workspace = true }

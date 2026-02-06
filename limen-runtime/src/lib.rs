@@ -1,26 +1,20 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
-//! # limen (P2 runtime)
+//! # limen-runtime
 //!
-//! This crate implements the **P2** runtime for Limen on top of
-//! [`limen-core`](https://crates.io/crates/limen-core), providing:
+//! **Limen Runtime** provides runtime implementations used to run limen graphs.
+//! It is `no_std` by default and uses feature gates to enable `alloc` and
+//! `std`-specific conveniences.
 //!
-//! - **Schedulers**: latency-first (**EDF**) and throughput-oriented policies.
-//! - **Runtime**: a single-thread event loop with the same *graph-facing
-//!   interface* shape as P0/P1, plus an **optional concurrent runtime** for
-//!   graphs that provide interior-mutability based stepping.
+//! ## Modules Overview
+//! - [`todo`]: still todo.
+//! - [`todo`]: still todo.
+//! - [`todo`]: still todo.
 //!
-//! ## Design Notes
-//! - The hot path remains **free of dynamic dispatch**. All queues and the
-//!   scheduler policy are **generic** and **monomorphized**.
-//! - Worker pools require interior mutability inside the graph; we provide an
-//!   optional concurrent runtime that operates via a `GraphP2Concurrent` trait.
-//!   This keeps the data plane generic while enabling concurrency where safe.
-//!
-//! ## Modules
-//! - [`scheduler`]: EDF and throughput dequeue policies implementing the core trait.
-//! - [`runtime`]: single-thread event loop (`RuntimeP2`) and concurrent variant
+//! ## Feature Flags
+//! - `alloc`: enables optional APIs using `alloc` types.
+//! - `std`: enables `std`-specific conveniences; implies `alloc`.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

@@ -29,7 +29,7 @@
 //! - [`prelude`]: convenient re-exports for implementers.
 //!
 //! ## Feature Flags
-//! - `alloc`: enables optional APIs using `alloc` types. Not required for P0.
+//! - `alloc`: enables optional APIs using `alloc` types.
 //! - `std`: enables `std`-specific conveniences; implies `alloc`.
 //!
 //! ## Versioning and Stability

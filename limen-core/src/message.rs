@@ -149,9 +149,9 @@ impl MessageHeader {
     #[inline]
     pub const fn empty() -> Self {
         Self {
-            trace_id: TraceId(0),
-            sequence: SequenceNumber(0),
-            creation_tick: Ticks(0),
+            trace_id: TraceId::new(0),
+            sequence: SequenceNumber::new(0),
+            creation_tick: Ticks::new(0),
             deadline_ns: None,
             qos: QoSClass::BestEffort,
             payload_size_bytes: 0,
@@ -170,8 +170,8 @@ impl MessageHeader {
     #[inline]
     pub fn sync_from_payload<P: Payload>(&mut self, payload: &P) {
         let desc = payload.buffer_descriptor();
-        self.payload_size_bytes = desc.bytes;
-        self.memory_class = desc.class;
+        self.payload_size_bytes = desc.bytes();
+        self.memory_class = desc.class();
     }
 }
 
@@ -198,8 +198,8 @@ impl<P: Payload> Message<P> {
     /// Construct a new message from a header and payload, fixing size and class.
     pub fn new(mut header: MessageHeader, payload: P) -> Self {
         let desc = payload.buffer_descriptor();
-        header.payload_size_bytes = desc.bytes;
-        header.memory_class = desc.class;
+        header.payload_size_bytes = desc.bytes();
+        header.memory_class = desc.class();
         Self { header, payload }
     }
 
@@ -208,8 +208,8 @@ impl<P: Payload> Message<P> {
     pub fn with_payload<Q: Payload>(self, payload: Q) -> Message<Q> {
         let mut header = self.header;
         let desc = payload.buffer_descriptor();
-        header.payload_size_bytes = desc.bytes;
-        header.memory_class = desc.class;
+        header.payload_size_bytes = desc.bytes();
+        header.memory_class = desc.class();
         Message { header, payload }
     }
 
@@ -227,8 +227,8 @@ impl<P: Payload> Message<P> {
 
         // Recompute size and placement from the new payload.
         let desc = new_payload.buffer_descriptor();
-        header.payload_size_bytes = desc.bytes;
-        header.memory_class = desc.class;
+        header.payload_size_bytes = desc.bytes();
+        header.memory_class = desc.class();
 
         Message {
             header,

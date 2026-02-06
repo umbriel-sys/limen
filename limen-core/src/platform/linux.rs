@@ -70,7 +70,7 @@ impl PlatformClock for NoStdLinuxMonotonicClock {
     #[inline]
     fn now_ticks(&self) -> Ticks {
         // Define ticks as nanoseconds of CLOCK_MONOTONIC.
-        Ticks(Self::read_monotonic_nanoseconds())
+        Ticks::new(Self::read_monotonic_nanoseconds())
     }
 
     #[inline]
@@ -82,7 +82,7 @@ impl PlatformClock for NoStdLinuxMonotonicClock {
     #[inline]
     fn nanos_to_ticks(&self, nanoseconds: u64) -> Ticks {
         // Identity mapping: ticks are nanoseconds.
-        Ticks(nanoseconds)
+        Ticks::new(nanoseconds)
     }
 }
 
@@ -126,9 +126,9 @@ impl PlatformClock for StdLinuxMonotonicClock {
 
         // Saturate down to u64 if it ever exceeds the range.
         if total_nanoseconds_as_u128 > u64::MAX as u128 {
-            Ticks(u64::MAX)
+            Ticks::new(u64::MAX)
         } else {
-            Ticks(total_nanoseconds_as_u128 as u64)
+            Ticks::new(total_nanoseconds_as_u128 as u64)
         }
     }
 
@@ -141,6 +141,6 @@ impl PlatformClock for StdLinuxMonotonicClock {
     #[inline]
     fn nanos_to_ticks(&self, nanoseconds: u64) -> Ticks {
         // Identity mapping: ticks are nanoseconds.
-        Ticks(nanoseconds)
+        Ticks::new(nanoseconds)
     }
 }

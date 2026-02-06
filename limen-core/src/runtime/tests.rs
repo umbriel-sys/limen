@@ -70,8 +70,8 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let src = TestCounterSourceU32_2::new(
         clock,
         0,
-        TraceId(0u64),
-        SequenceNumber(0u64),
+        TraceId::new(0u64),
+        SequenceNumber::new(0u64),
         None,
         QoSClass::BestEffort,
         MessageFlags::empty(),
@@ -225,8 +225,8 @@ fn std_pipeline_runs_with_std_runtime() {
     let src = TestCounterSourceU32_2::new(
         clock,
         0,
-        TraceId(0u64),
-        SequenceNumber(0u64),
+        TraceId::new(0u64),
+        SequenceNumber::new(0u64),
         None,
         QoSClass::BestEffort,
         MessageFlags::empty(),

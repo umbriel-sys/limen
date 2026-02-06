@@ -100,28 +100,16 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
             EdgeLink::<Q32, u32>::new(
                 q_0,
                 EdgeIndex::from(1usize),
-                PortId {
-                    node: NodeIndex::from(0usize),
-                    port: PortIndex(0usize),
-                },
-                PortId {
-                    node: NodeIndex::from(1usize),
-                    port: PortIndex(0usize),
-                },
+                PortId::new(NodeIndex::from(0usize), PortIndex::from(0usize)),
+                PortId::new(NodeIndex::from(1usize), PortIndex::from(0usize)),
                 Q_32_POLICY,
                 Some("e0"),
             ),
             EdgeLink::<Q32, u32>::new(
                 q_1,
                 EdgeIndex::from(2usize),
-                PortId {
-                    node: NodeIndex::from(1usize),
-                    port: PortIndex(0usize),
-                },
-                PortId {
-                    node: NodeIndex::from(2usize),
-                    port: PortIndex(0usize),
-                },
+                PortId::new(NodeIndex::from(1usize), PortIndex::from(0usize)),
+                PortId::new(NodeIndex::from(2usize), PortIndex::from(0usize)),
                 Q_32_POLICY,
                 Some("e1"),
             ),
@@ -146,14 +134,8 @@ impl<SrcClk: PlatformClock> GraphApi<3, 3> for TestPipeline<SrcClk> {
         [
             EdgeDescriptor {
                 id: EdgeIndex::from(0usize),
-                upstream: PortId {
-                    node: EXTERNAL_INGRESS_NODE,
-                    port: PortIndex(0usize),
-                },
-                downstream: PortId {
-                    node: NodeIndex::from(0usize),
-                    port: PortIndex(0usize),
-                },
+                upstream: PortId::new(EXTERNAL_INGRESS_NODE, PortIndex::from(0usize)),
+                downstream: PortId::new(NodeIndex::from(0usize), PortIndex::from(0usize)),
                 name: Some("ingress0"),
             },
             self.edges.0.descriptor(),
@@ -211,7 +193,7 @@ impl<SrcClk: PlatformClock> GraphApi<3, 3> for TestPipeline<SrcClk> {
         let node_idx = NodeIndex::from(I);
         // Iterate *all* edges; update those where this node is upstream OR downstream.
         for ed in self.get_edge_descriptors().iter() {
-            if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
+            if ed.upstream.node() == node_idx || ed.downstream.node() == node_idx {
                 let ei = (ed.id).as_usize();
                 match ei {
                     0 => {
@@ -879,28 +861,16 @@ pub mod concurrent_graph {
             let e0 = ConcurrentEdgeLink::<Q32, u32>::new(
                 q_0,
                 EdgeIndex::from(1usize),
-                PortId {
-                    node: NodeIndex::from(0usize),
-                    port: PortIndex(0),
-                },
-                PortId {
-                    node: NodeIndex::from(1usize),
-                    port: PortIndex(0),
-                },
+                PortId::new(NodeIndex::from(0usize), PortIndex::from(0)),
+                PortId::new(NodeIndex::from(1usize), PortIndex::from(0)),
                 Q_32_POLICY,
                 Some("e0"),
             );
             let e1 = ConcurrentEdgeLink::<Q32, u32>::new(
                 q_1,
                 EdgeIndex::from(2usize),
-                PortId {
-                    node: NodeIndex::from(1usize),
-                    port: PortIndex(0),
-                },
-                PortId {
-                    node: NodeIndex::from(2usize),
-                    port: PortIndex(0),
-                },
+                PortId::new(NodeIndex::from(1usize), PortIndex::from(0)),
+                PortId::new(NodeIndex::from(2usize), PortIndex::from(0)),
                 Q_32_POLICY,
                 Some("e1"),
             );
@@ -926,14 +896,8 @@ pub mod concurrent_graph {
             let ingress_edge_0 = ConcurrentIngressEdgeLink::from_probe(
                 probe_edge_0,
                 EdgeIndex::from(0usize),
-                PortId {
-                    node: EXTERNAL_INGRESS_NODE,
-                    port: PortIndex(0),
-                },
-                PortId {
-                    node: NodeIndex::from(0usize),
-                    port: PortIndex(0),
-                },
+                PortId::new(EXTERNAL_INGRESS_NODE, PortIndex::from(0)),
+                PortId::new(NodeIndex::from(0usize), PortIndex::from(0)),
                 INGRESS_POLICIES[0],
                 Some("ingress0"),
             );
@@ -1059,7 +1023,7 @@ pub mod concurrent_graph {
         ) -> Result<(), GraphError> {
             let node_idx = NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
-                if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
+                if ed.upstream.node() == node_idx || ed.downstream.node() == node_idx {
                     match (ed.id).as_usize() {
                         0 => out[0] = self.edge_occupancy_for::<0>()?,
                         1 => out[1] = self.edge_occupancy_for::<1>()?,

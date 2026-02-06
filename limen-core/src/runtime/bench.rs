@@ -131,7 +131,7 @@ where
                         continue;
                     }
                 }
-                Err(error) => match error.kind {
+                Err(error) => match error.kind() {
                     NodeErrorKind::NoInput | NodeErrorKind::Backpressured => {
                         tried += 1;
                         continue;

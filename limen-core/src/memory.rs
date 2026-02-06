@@ -1,6 +1,7 @@
 //! Memory classes and placement descriptors for zero-copy data paths.
 
 /// The memory class associated with a payload.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryClass {
     /// Regular host memory.
@@ -40,6 +41,7 @@ const DEVICE_MASK: u32 = {
 /* -------------------- Acceptance set (payload placement policy) -------------------- */
 
 /// A bitfield describing which memory classes a port can accept zero-copy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementAcceptance {
     bits: u32,
@@ -178,20 +180,38 @@ impl PlacementAcceptance {
     }
 }
 
-/* ------------------------ Buffer descriptor (as before) ------------------------ */
-
 /// A descriptor of a buffer/payload view for size accounting and placement.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferDescriptor {
     /// The byte size of the payload.
-    pub bytes: usize,
+    bytes: usize,
     /// The memory class where this payload currently resides.
-    pub class: MemoryClass,
+    class: MemoryClass,
 }
 
-/* ---------------------- Tiny edge policy helper you wanted ---------------------- */
+impl BufferDescriptor {
+    /// Construct a new buffer descriptor.
+    #[inline]
+    pub const fn new(bytes: usize, class: MemoryClass) -> Self {
+        Self { bytes, class }
+    }
+
+    /// Return the byte size of the payload.
+    #[inline]
+    pub const fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Return the memory class where this payload resides.
+    #[inline]
+    pub const fn class(&self) -> MemoryClass {
+        self.class
+    }
+}
 
 /// The edge-level placement decision for a message about to cross a port.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlacementDecision {
     /// Input port accepts the current placement; pass through zero-copy.

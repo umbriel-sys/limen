@@ -426,10 +426,7 @@ impl<'a> Payload for TensorRef<'a> {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
         debug_assert!(self.is_compatible(), "TensorRef: incompatible shape/data");
-        BufferDescriptor {
-            bytes: self.byte_len(),
-            class: self.memory_class,
-        }
+        BufferDescriptor::new(self.byte_len(), self.memory_class)
     }
 }
 
@@ -873,9 +870,6 @@ impl<'a> Payload for TensorRefMut<'a> {
             self.is_compatible(),
             "TensorRefMut: incompatible shape/data"
         );
-        BufferDescriptor {
-            bytes: self.byte_len(),
-            class: self.memory_class,
-        }
+        BufferDescriptor::new(self.byte_len(), self.memory_class)
     }
 }

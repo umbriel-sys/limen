@@ -14,6 +14,7 @@ use crate::types::EdgeIndex;
 // **** Edge Errors *****
 
 /// Errors originating from queue operations.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
     /// The queue is at or above the hard watermark capacity.
@@ -50,6 +51,7 @@ impl Error for QueueError {}
 // ***** Node Errors *****
 
 /// Errors from node execution.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeErrorKind {
     /// Inputs were not available to progress this node.
@@ -87,12 +89,13 @@ impl fmt::Display for NodeErrorKind {
 }
 
 /// A unified error used by node lifecycle methods.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeError {
     /// The error kind.
-    pub kind: NodeErrorKind,
+    kind: NodeErrorKind,
     /// Optional numeric code for platform/backend-specific mapping.
-    pub code: u32,
+    code: u32,
 }
 
 impl NodeError {
@@ -144,6 +147,18 @@ impl NodeError {
         self.code = code;
         self
     }
+
+    /// Return the error kind.
+    #[inline]
+    pub const fn kind(&self) -> NodeErrorKind {
+        self.kind
+    }
+
+    /// Return the numeric code associated with this error.
+    #[inline]
+    pub const fn code(&self) -> u32 {
+        self.code
+    }
 }
 
 impl From<NodeErrorKind> for NodeError {
@@ -154,6 +169,7 @@ impl From<NodeErrorKind> for NodeError {
 }
 
 /// Errors related to model loading and inference execution.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferenceErrorKind {
     /// A model artifact is invalid or unsupported.
@@ -186,18 +202,31 @@ impl fmt::Display for InferenceErrorKind {
 }
 
 /// Inference error including a kind and optional code.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InferenceError {
     /// Error kind.
-    pub kind: InferenceErrorKind,
+    kind: InferenceErrorKind,
     /// Optional numeric code.
-    pub code: u32,
+    code: u32,
 }
 
 impl InferenceError {
     /// Construct a new inference error.
     pub const fn new(kind: InferenceErrorKind, code: u32) -> Self {
         Self { kind, code }
+    }
+
+    /// Return the inference error kind.
+    #[inline]
+    pub const fn kind(&self) -> InferenceErrorKind {
+        self.kind
+    }
+
+    /// Return the numeric code associated with this inference error.
+    #[inline]
+    pub const fn code(&self) -> u32 {
+        self.code
     }
 }
 
@@ -213,6 +242,7 @@ impl Error for InferenceError {}
 // ***** Graph Errors *****
 
 /// Graph validation and wiring errors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphError {
     /// The graph contains a cycle.
@@ -240,7 +270,7 @@ impl fmt::Display for GraphError {
             }
             GraphError::InvalidEdgeIndex => f.write_str("edge index is invalid"),
             GraphError::OccupancySampleFailed(ei) => {
-                write!(f, "failed to sample occupancy for edge {}", ei.0)
+                write!(f, "failed to sample occupancy for edge {}", ei.as_usize())
             }
         }
     }
@@ -252,6 +282,7 @@ impl Error for GraphError {}
 // ***** Runtime Errors *****
 
 /// Generic runtime error kinds.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeErrorKind {
     /// An invariant has been violated (e.g., cyclic graph or type mismatch).
@@ -283,6 +314,7 @@ impl fmt::Display for RuntimeErrorKind {
 impl Error for RuntimeErrorKind {}
 
 /// Scheduler-related errors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulerError {
     /// The scheduler cannot proceed due to an invariant violation.
@@ -308,6 +340,7 @@ impl Error for SchedulerError {}
 // ***** Source Errors *****
 
 /// Source / sensor related errors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensorError {
     /// Sensor open failed.
@@ -340,6 +373,7 @@ impl Error for SensorError {}
 // ***** Sink Errors *****
 
 /// Output / sink related errors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputError {
     /// Sink write failed.
@@ -363,6 +397,7 @@ impl Error for OutputError {}
 // ***** Runtime Errors *****
 
 /// Runtime invariants that were violated (programmer errors).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeInvariantError {
     /// `step` was called before `init` installed a clock.
@@ -381,6 +416,7 @@ impl fmt::Display for RuntimeInvariantError {
 }
 
 /// Error surface for runtimes: can wrap graph- and node-level errors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeError {
     /// Graph errors

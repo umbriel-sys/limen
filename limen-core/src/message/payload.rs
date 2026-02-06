@@ -15,10 +15,7 @@ pub trait Payload {
 impl<T> Payload for [T] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: self.len() * mem::size_of::<T>(),
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(self.len() * mem::size_of::<T>(), MemoryClass::Host)
     }
 }
 
@@ -26,20 +23,14 @@ impl<T> Payload for [T] {
 impl<'a, T> Payload for &'a [T] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: self.len() * mem::size_of::<T>(),
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(self.len() * mem::size_of::<T>(), MemoryClass::Host)
     }
 }
 
 impl<T, const N: usize> Payload for [T; N] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: N * mem::size_of::<T>(),
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(N * mem::size_of::<T>(), MemoryClass::Host)
     }
 }
 
@@ -47,10 +38,7 @@ impl<T, const N: usize> Payload for [T; N] {
 impl<'a, T, const N: usize> Payload for &'a [T; N] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: N * mem::size_of::<T>(),
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(N * mem::size_of::<T>(), MemoryClass::Host)
     }
 }
 
@@ -59,19 +47,13 @@ impl<'a, T, const N: usize> Payload for &'a [T; N] {
 impl Payload for () {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: 0,
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(0, MemoryClass::Host)
     }
 }
 
 impl Payload for u32 {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor {
-            bytes: mem::size_of::<u32>(),
-            class: MemoryClass::Host,
-        }
+        BufferDescriptor::new(mem::size_of::<u32>(), MemoryClass::Host)
     }
 }

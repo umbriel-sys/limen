@@ -259,14 +259,14 @@ impl<'a> NonStd<'a> {
                 limen_core::edge::link::EdgeLink::<#ety, #epayload>::new(
                     #q_ident,
                     limen_core::types::EdgeIndex::from(#id as usize),
-                    limen_core::types::PortId {
-                        node: limen_core::types::NodeIndex::from(#up as usize),
-                        port: limen_core::types::PortIndex(#up_p),
-                    },
-                    limen_core::types::PortId {
-                        node: limen_core::types::NodeIndex::from(#dn as usize),
-                        port: limen_core::types::PortIndex(#dn_p),
-                    },
+                    limen_core::types::PortId::new(
+                        limen_core::types::NodeIndex::from(#up as usize),
+                        limen_core::types::PortIndex::from(#up_p),
+                    ),
+                    limen_core::types::PortId::new(
+                        limen_core::types::NodeIndex::from(#dn as usize),
+                        limen_core::types::PortIndex::from(#dn_p),
+                    ),
                     #pol,
                     #name_opt
                 )
@@ -316,14 +316,14 @@ impl<'a> NonStd<'a> {
             quote! {
                 limen_core::edge::link::EdgeDescriptor {
                     id: limen_core::types::EdgeIndex::from(#k as usize),
-                    upstream: limen_core::types::PortId {
-                        node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
-                        port: limen_core::types::PortIndex(0),
-                    },
-                    downstream: limen_core::types::PortId {
-                        node: limen_core::types::NodeIndex::from(#dn as usize),
-                        port: limen_core::types::PortIndex(0),
-                    },
+                    upstream: limen_core::types::PortId::new(
+                        limen_core::node::source::EXTERNAL_INGRESS_NODE,
+                        limen_core::types::PortIndex::from(0),
+                    ),
+                    downstream: limen_core::types::PortId::new(
+                        limen_core::types::NodeIndex::from(#dn as usize),
+                        limen_core::types::PortIndex::from(0),
+                    ),
                     name: Some(#name),
                 }
             }
@@ -441,7 +441,7 @@ impl<'a> NonStd<'a> {
         quote! {
             let node_idx = limen_core::types::NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
-                if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
+                if ed.upstream.node() == node_idx || ed.downstream.node() == node_idx {
                     let k = (ed.id).as_usize();
                     match k {
                         #( #arms )*,
@@ -1151,14 +1151,14 @@ impl<'a> Std<'a> {
                 let #e_var = limen_core::edge::link::ConcurrentEdgeLink::<#ety, #epayload>::new(
                     #q_ident,
                     limen_core::types::EdgeIndex::from(#id as usize),
-                    limen_core::types::PortId {
-                        node: limen_core::types::NodeIndex::from(#up as usize),
-                        port: limen_core::types::PortIndex(#up_p),
-                    },
-                    limen_core::types::PortId {
-                        node: limen_core::types::NodeIndex::from(#dn as usize),
-                        port: limen_core::types::PortIndex(#dn_p),
-                    },
+                    limen_core::types::PortId::new(
+                        limen_core::types::NodeIndex::from(#up as usize),
+                        limen_core::types::PortIndex::from(#up_p),
+                    ),
+                    limen_core::types::PortId::new(
+                        limen_core::types::NodeIndex::from(#dn as usize),
+                        limen_core::types::PortIndex::from(#dn_p),
+                    ),
                     #pol,
                     #name_opt
                 );
@@ -1242,14 +1242,14 @@ impl<'a> Std<'a> {
                         limen_core::node::source::probe::ConcurrentIngressEdgeLink::from_probe(
                             #e_var,
                             limen_core::types::EdgeIndex::from(#k as usize),
-                            limen_core::types::PortId {
-                                node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
-                                port: limen_core::types::PortIndex(0),
-                            },
-                            limen_core::types::PortId {
-                                node: limen_core::types::NodeIndex::from(#dn as usize),
-                                port: limen_core::types::PortIndex(0),
-                            },
+                            limen_core::types::PortId::new(
+                                limen_core::node::source::EXTERNAL_INGRESS_NODE,
+                                limen_core::types::PortIndex::from(0),
+                            ),
+                            limen_core::types::PortId::new(
+                                limen_core::types::NodeIndex::from(#dn as usize),
+                                limen_core::types::PortIndex::from(0),
+                            ),
                             INGRESS_POLICIES[#k],
                             Some(#name),
                         ),
@@ -1264,14 +1264,14 @@ impl<'a> Std<'a> {
                         limen_core::node::source::probe::ConcurrentIngressEdgeLink::from_probe(
                             #e_var,
                             limen_core::types::EdgeIndex::from(#k as usize),
-                            limen_core::types::PortId {
+                            limen_core::types::PortId::new(
                                 node: limen_core::node::source::EXTERNAL_INGRESS_NODE,
-                                port: limen_core::types::PortIndex(0),
-                            },
-                            limen_core::types::PortId {
+                                port: limen_core::types::PortIndex::from(0),
+                            ),
+                            limen_core::types::PortId::new(
                                 node: limen_core::types::NodeIndex::from(#dn as usize),
-                                port: limen_core::types::PortIndex(0),
-                            },
+                                port: limen_core::types::PortIndex::from(0),
+                            ),
                             INGRESS_POLICIES[#k],
                             Some(#name),
                         )
@@ -1662,7 +1662,7 @@ impl<'a> Std<'a> {
         quote! {
             let node_idx = limen_core::types::NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
-                if ed.upstream.node == node_idx || ed.downstream.node == node_idx {
+                if ed.upstream.node() == node_idx || ed.downstream.node() == node_idx {
                     let k = (ed.id).as_usize();
                     match k {
                         #( #arms )*,

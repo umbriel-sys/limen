@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 // --- local helpers: map backend/queue errors into NodeError (no From impls required)
 #[inline]
 fn map_inference_err(e: InferenceError) -> NodeError {
-    NodeError::execution_failed().with_code(e.code)
+    NodeError::execution_failed().with_code(e.code())
 }
 #[inline]
 fn map_queue_err(e: QueueError) -> NodeError {

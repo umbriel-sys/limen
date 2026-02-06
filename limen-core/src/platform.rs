@@ -39,34 +39,34 @@ pub struct NoopClock;
 impl PlatformClock for NoopClock {
     #[inline]
     fn now_ticks(&self) -> Ticks {
-        Ticks(0)
+        Ticks::new(0)
     }
 
     #[inline]
     fn ticks_to_nanos(&self, ticks: Ticks) -> u64 {
-        ticks.0
+        ticks.as_u64()
     }
 
     #[inline]
     fn nanos_to_ticks(&self, ns: u64) -> Ticks {
-        Ticks(ns)
+        Ticks::new(ns)
     }
 }
 
 impl PlatformClock for () {
     #[inline]
     fn now_ticks(&self) -> Ticks {
-        Ticks(0)
+        Ticks::new(0)
     }
 
     #[inline]
     fn ticks_to_nanos(&self, ticks: Ticks) -> u64 {
-        ticks.0
+        ticks.as_u64()
     }
 
     #[inline]
     fn nanos_to_ticks(&self, ns: u64) -> Ticks {
-        Ticks(ns)
+        Ticks::new(ns)
     }
 }
 

@@ -122,7 +122,7 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
             w.write_str("node-step gid=")?;
             write_u64(w, ev.graph_id as u64)?;
             w.write_str(" nin=")?;
-            write_u64(w, ev.node_index.0 as u64)?;
+            write_u64(w, ev.node_index.as_usize() as u64)?;
             w.write_str(" ts_start=")?;
             write_u64(w, ev.timestamp_start_ns)?;
             w.write_str(" ts_end=")?;
@@ -155,7 +155,7 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
             w.write_str("edge-snap gid=")?;
             write_u64(w, ev.graph_id as u64)?;
             w.write_str(" eid=")?;
-            write_u64(w, ev.edge_index.0 as u64)?;
+            write_u64(w, ev.edge_index.as_usize() as u64)?;
             w.write_str(" ts=")?;
             write_u64(w, ev.timestamp_ns)?;
             w.write_str(" occ=")?;

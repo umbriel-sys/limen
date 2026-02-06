@@ -182,7 +182,7 @@ where
     fn advance_counters(&mut self) {
         // Wrapping increments are fine for a test source.
         self.next_value_to_emit = self.next_value_to_emit.wrapping_add(1);
-        self.next_sequence = SequenceNumber((self.next_sequence).0.wrapping_add(1));
+        self.next_sequence = SequenceNumber::new(self.next_sequence.as_u64().wrapping_add(1));
     }
 
     /// Consume one unit from the software backlog when we successfully produce.

@@ -4,9 +4,14 @@
 
 /// A 64-bit trace identifier used to correlate messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TraceId(pub u64);
+pub struct TraceId(u64);
 
 impl TraceId {
+    /// creates a new [`TraceId`].
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
     /// Return the inner u64.
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -15,9 +20,14 @@ impl TraceId {
 
 /// A 64-bit sequence number assigned by sources or routers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SequenceNumber(pub u64);
+pub struct SequenceNumber(u64);
 
 impl SequenceNumber {
+    /// creates a new [`SequenceNumber`].
+    pub const fn new(sequence_number: u64) -> Self {
+        Self(sequence_number)
+    }
+
     /// Return the inner u64.
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -28,9 +38,14 @@ impl SequenceNumber {
 
 /// Monotonic tick unit from the platform clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Ticks(pub u64);
+pub struct Ticks(u64);
 
 impl Ticks {
+    /// creates a new [`Ticks`].
+    pub const fn new(ticks: u64) -> Self {
+        Self(ticks)
+    }
+
     /// Wrapping (modular) subtraction. Computes `self - rhs`,
     /// wrapping around at the boundary of the type.
     #[inline]
@@ -65,9 +80,14 @@ impl Ticks {
 
 /// Absolute deadline in nanoseconds since platform boot (or epoch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeadlineNs(pub u64);
+pub struct DeadlineNs(u64);
 
 impl DeadlineNs {
+    /// creates a new [`DeadlineNs`].
+    pub const fn new(ns: u64) -> Self {
+        Self(ns)
+    }
+
     /// Return the inner u64.
     pub fn as_u64(&self) -> u64 {
         self.0
@@ -77,6 +97,7 @@ impl DeadlineNs {
 // ***** Policy *****
 
 /// Quality-of-Service class label attached to messages and used by admission.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QoSClass {
     /// Latency-critical traffic; favored by EDF schedulers.
@@ -90,15 +111,22 @@ pub enum QoSClass {
 // ***** Routing *****
 
 /// Port ID (node and port index) for an inout or output port on a node.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PortId {
     /// A logical index of a node in a graph.
-    pub node: NodeIndex,
+    node: NodeIndex,
     /// A logical index for input or output ports on a node.
-    pub port: PortIndex,
+    port: PortIndex,
 }
 
 impl PortId {
+    /// Create a new `PortId`.
+    #[inline]
+    pub const fn new(node: NodeIndex, port: PortIndex) -> Self {
+        Self { node, port }
+    }
+
     /// Return the node index.
     pub fn node(&self) -> NodeIndex {
         self.node
@@ -112,7 +140,7 @@ impl PortId {
 
 /// A logical index for input or output ports on a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PortIndex(pub usize);
+pub struct PortIndex(usize);
 
 impl core::convert::From<usize> for PortIndex {
     #[inline]
@@ -122,6 +150,12 @@ impl core::convert::From<usize> for PortIndex {
 }
 
 impl PortIndex {
+    /// Create a new `PortIndex`.
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Return the inner usize held.
     #[inline]
     pub fn as_usize(self) -> usize {
@@ -131,7 +165,7 @@ impl PortIndex {
 
 /// A logical index of a node in a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeIndex(pub usize);
+pub struct NodeIndex(usize);
 
 impl core::convert::From<usize> for NodeIndex {
     #[inline]
@@ -141,6 +175,12 @@ impl core::convert::From<usize> for NodeIndex {
 }
 
 impl NodeIndex {
+    /// Create a new `NodeIndex`.
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Return the inner usize held.
     #[inline]
     pub fn as_usize(self) -> usize {
@@ -150,7 +190,7 @@ impl NodeIndex {
 
 /// A logical index of an edge in a graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EdgeIndex(pub usize);
+pub struct EdgeIndex(usize);
 
 impl core::convert::From<usize> for EdgeIndex {
     #[inline]
@@ -160,6 +200,12 @@ impl core::convert::From<usize> for EdgeIndex {
 }
 
 impl EdgeIndex {
+    /// Create a new `EdgeIndex`.
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Return the inner usize held.
     #[inline]
     pub fn as_usize(self) -> usize {
@@ -170,6 +216,7 @@ impl EdgeIndex {
 // ***** Payload *****
 
 /// Supported primitive data types for tensors and values.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataType {
     /// Boolean value (1 byte).
@@ -255,7 +302,7 @@ pub trait DType {
 /// same size and alignment as `u16`. No heap allocations are performed.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct F16(pub u16);
+pub struct F16(u16);
 
 impl core::fmt::Debug for F16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -496,7 +543,7 @@ impl From<F16> for f32 {
 /// same size and alignment as `u16`. No heap allocations are performed.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BF16(pub u16);
+pub struct BF16(u16);
 
 impl core::fmt::Debug for BF16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -557,6 +604,8 @@ impl BF16 {
     }
 
     /// Convert to `f32` by widening (zero-extends the lower 16 bits).
+    ///
+    /// TODO: Check this.
     #[inline]
     pub fn to_f32(self) -> f32 {
         f32::from_bits((self.0 as u32) << 16)

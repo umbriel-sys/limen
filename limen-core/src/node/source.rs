@@ -31,7 +31,7 @@ use crate::types::{EdgeIndex, NodeIndex, PortId};
 use core::marker::PhantomData;
 
 /// Reserved node index used for virtual input nodes.
-pub const EXTERNAL_INGRESS_NODE: NodeIndex = NodeIndex(usize::MAX);
+pub const EXTERNAL_INGRESS_NODE: NodeIndex = NodeIndex::new(usize::MAX);
 
 /// Uniform contract for source implementations (0 inputs / ≥1 outputs).
 ///

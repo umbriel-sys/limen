@@ -18,6 +18,7 @@ use crate::{
 /// - `'a`: lifetime of the borrowed queue
 /// - `Q`: concrete queue type implementing `SpscQueue<Item = Message<P>>`
 /// - `P`: message payload type
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct EdgeLink<Q, P>
 where
@@ -28,7 +29,7 @@ where
     queue: Q,
 
     /// Unique identifier of this edge in the graph.
-    pub id: EdgeIndex,
+    id: EdgeIndex,
 
     /// Upstream node's output port.
     upstream_port: PortId,
@@ -86,26 +87,26 @@ where
 
     /// Get the unique identifier of this edge.
     #[inline]
-    pub fn id(&self) -> EdgeIndex {
-        self.id
+    pub fn id(&self) -> &EdgeIndex {
+        &self.id
     }
 
     /// Get the upstream output port index.
     #[inline]
-    pub fn upstream_port(&self) -> PortId {
-        self.upstream_port
+    pub fn upstream_port(&self) -> &PortId {
+        &self.upstream_port
     }
 
     /// Get the downstream input port index.
     #[inline]
-    pub fn downstream_port(&self) -> PortId {
-        self.downstream_port
+    pub fn downstream_port(&self) -> &PortId {
+        &self.downstream_port
     }
 
     /// Get the edge policy applied to this queue.
     #[inline]
-    pub fn policy(&self) -> EdgePolicy {
-        self.policy
+    pub fn policy(&self) -> &EdgePolicy {
+        &self.policy
     }
 
     /// Get the optional static name of this queue link.
@@ -118,10 +119,10 @@ where
     #[inline]
     pub fn descriptor(&self) -> EdgeDescriptor {
         EdgeDescriptor {
-            id: self.id(),
-            upstream: self.upstream_port(),
-            downstream: self.downstream_port(),
-            name: self.name(),
+            id: self.id,
+            upstream: self.upstream_port,
+            downstream: self.downstream_port,
+            name: self.name,
         }
     }
 }
@@ -155,16 +156,59 @@ where
 }
 
 /// An edge couples one output port to one input port with an admission policy.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDescriptor {
     /// Unique identifier of this edge in the graph.
-    pub id: EdgeIndex,
+    id: EdgeIndex,
     /// Identifier of the upstream node / port.
-    pub upstream: PortId,
+    upstream: PortId,
     /// Identifier of the downstream node / port.
-    pub downstream: PortId,
+    downstream: PortId,
     /// Optional static name (for diagnostics or graph tooling).
-    pub name: Option<&'static str>,
+    name: Option<&'static str>,
+}
+
+impl EdgeDescriptor {
+    /// Construct a new `EdgeDescriptor`.
+    #[inline]
+    pub fn new(
+        id: EdgeIndex,
+        upstream: PortId,
+        downstream: PortId,
+        name: Option<&'static str>,
+    ) -> Self {
+        Self {
+            id,
+            upstream,
+            downstream,
+            name,
+        }
+    }
+
+    /// Unique identifier of this edge in the graph.
+    #[inline]
+    pub fn id(&self) -> &EdgeIndex {
+        &self.id
+    }
+
+    /// Identifier of the upstream node / port.
+    #[inline]
+    pub fn upstream(&self) -> &PortId {
+        &self.upstream
+    }
+
+    /// Identifier of the downstream node / port.
+    #[inline]
+    pub fn downstream(&self) -> &PortId {
+        &self.downstream
+    }
+
+    /// Optional static name (for diagnostics or graph tooling).
+    #[inline]
+    pub fn name(&self) -> Option<&'static str> {
+        self.name
+    }
 }
 
 /// Std-only, owning edge link that stores the concrete queue behind an
@@ -174,6 +218,7 @@ pub struct EdgeDescriptor {
 /// it **owns** it in an `Arc<Mutex<_>>` so concurrent runtimes can hand out
 /// cloned, thread-safe endpoints to worker threads.
 #[cfg(feature = "std")]
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct ConcurrentEdgeLink<Q, P>
 where
@@ -239,8 +284,8 @@ where
 
     /// Get the edge policy (admission/watermarks/over-budget behavior).
     #[inline]
-    pub fn policy(&self) -> EdgePolicy {
-        self.policy
+    pub fn policy(&self) -> &EdgePolicy {
+        &self.policy
     }
 
     /// Access the shared `Arc<Mutex<Q>>` to build thread-safe endpoints.

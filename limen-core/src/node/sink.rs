@@ -60,7 +60,7 @@ where
     /// "no input available now".
     #[inline]
     fn select_input(&mut self, occ: &[EdgeOccupancy; IN]) -> Option<usize> {
-        occ.iter().position(|o| o.items > 0)
+        occ.iter().position(|o| o.items() > &0)
     }
 }
 

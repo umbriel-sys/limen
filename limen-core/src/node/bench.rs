@@ -246,11 +246,7 @@ where
         // Fallback to software backlog counters.
         let items = self.backlog_items;
         let bytes = self.backlog_bytes;
-        EdgeOccupancy {
-            items,
-            bytes,
-            watermark: policy.watermark(items, bytes),
-        }
+        EdgeOccupancy::new(items, bytes, policy.watermark(items, bytes))
     }
 
     #[inline]

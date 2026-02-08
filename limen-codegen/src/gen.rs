@@ -314,18 +314,18 @@ impl<'a> NonStd<'a> {
             let dn = node_idx;
             let name = format!("ingress{}", k);
             quote! {
-                limen_core::edge::link::EdgeDescriptor {
-                    id: limen_core::types::EdgeIndex::from(#k as usize),
-                    upstream: limen_core::types::PortId::new(
+                limen_core::edge::link::EdgeDescriptor::new(
+                    limen_core::types::EdgeIndex::from(#k as usize),
+                    limen_core::types::PortId::new(
                         limen_core::node::source::EXTERNAL_INGRESS_NODE,
                         limen_core::types::PortIndex::from(0),
                     ),
-                    downstream: limen_core::types::PortId::new(
+                    limen_core::types::PortId::new(
                         limen_core::types::NodeIndex::from(#dn as usize),
                         limen_core::types::PortIndex::from(0),
                     ),
-                    name: Some(#name),
-                }
+                    Some(#name),
+                )
             }
         });
 
@@ -356,7 +356,7 @@ impl<'a> NonStd<'a> {
 
         let reals = self.g.edges.iter().enumerate().map(|(j, _)| {
             let jidx = Index::from(j);
-            quote! { self.edges.#jidx.policy() }
+            quote! { *self.edges.#jidx.policy() }
         });
 
         let total = self.ingress_count() + self.g.edges.len();
@@ -407,7 +407,8 @@ impl<'a> NonStd<'a> {
             quote! {
                 #eid => {
                     let e = &self.edges.#jidx;
-                    Ok(e.occupancy(&e.policy()))
+                    let pol = *e.policy();
+                    Ok(e.occupancy(&pol))
                 }
             }
         });
@@ -441,8 +442,8 @@ impl<'a> NonStd<'a> {
         quote! {
             let node_idx = limen_core::types::NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
-                if *ed.upstream.node() == node_idx || *ed.downstream.node() == node_idx {
-                    let k = (ed.id).as_usize();
+                if *ed.upstream().node() == node_idx || *ed.downstream().node() == node_idx {
+                    let k = ed.id().as_usize();
                     match k {
                         #( #arms )*,
                         _ => unreachable!("invalid edge index"),
@@ -612,7 +613,7 @@ impl<'a> NonStd<'a> {
                         .iter()
                         .map(|&eidx| {
                             let pos = Index::from(eidx);
-                            quote! { self.edges.#pos.policy() }
+                            quote! { *self.edges.#pos.policy() }
                         })
                         .collect()
                 };
@@ -623,7 +624,7 @@ impl<'a> NonStd<'a> {
                         .iter()
                         .map(|&eidx| {
                             let pos = Index::from(eidx);
-                            quote! { self.edges.#pos.policy() }
+                            quote! { *self.edges.#pos.policy() }
                         })
                         .collect()
                 };
@@ -1458,7 +1459,7 @@ impl<'a> Std<'a> {
             } else {
                 self.in_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
             let out_pols: Vec<TokenStream2> = if out_ports == 0 {
@@ -1466,7 +1467,7 @@ impl<'a> Std<'a> {
             } else {
                 self.out_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
 
@@ -1597,7 +1598,7 @@ impl<'a> Std<'a> {
         });
         let reals = self.g.edges.iter().enumerate().map(|(j, _)| {
             let jidx = Index::from(j);
-            quote! { self.edges.#jidx.policy() }
+            quote! { *self.edges.#jidx.policy() }
         });
         let total = self.ingress_count() + self.g.edges.len();
         if total == 0 {
@@ -1618,6 +1619,7 @@ impl<'a> Std<'a> {
                 #k => {
                     let e = &self.ingress_edges.#kidx;
                     Ok(e.occupancy(&e.policy()))
+
                 }
             }
         });
@@ -1662,8 +1664,8 @@ impl<'a> Std<'a> {
         quote! {
             let node_idx = limen_core::types::NodeIndex::from(I);
             for ed in self.get_edge_descriptors().iter() {
-                if *ed.upstream.node() == node_idx || *ed.downstream.node() == node_idx {
-                    let k = (ed.id).as_usize();
+                if *ed.upstream().node() == node_idx || *ed.downstream().node() == node_idx {
+                    let k = ed.id().as_usize();
                     match k {
                         #( #arms )*,
                         _ => unreachable!("invalid edge index"),
@@ -1778,7 +1780,7 @@ impl<'a> Std<'a> {
             } else {
                 self.in_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
             let out_policies_collect: Vec<TokenStream2> = if out_ports == 0 {
@@ -1786,7 +1788,7 @@ impl<'a> Std<'a> {
             } else {
                 self.out_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
 
@@ -1941,7 +1943,7 @@ impl<'a> Std<'a> {
             let maybe_ing_update = if let Some(k) = self.source_pos_by_node[i] {
                 quote! {
                     let occ = node.node().source_ref().ingress_occupancy(&INGRESS_POLICIES[#k]);
-                    ingress_updater.update(occ.items, occ.bytes);
+                    ingress_updater.update(*occ.items(), *occ.bytes());
                 }
             } else {
                 quote! {}
@@ -2072,13 +2074,13 @@ impl<'a> Std<'a> {
             let in_pols: Vec<TokenStream2> = if in_ports == 0 { vec![] } else {
                 self.in_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
             let out_pols: Vec<TokenStream2> = if out_ports == 0 { vec![] } else {
                 self.out_edges_by_node[i].iter().map(|&eidx| {
                     let pos = Index::from(eidx);
-                    quote! { self.edges.#pos.policy() }
+                    quote! { *self.edges.#pos.policy() }
                 }).collect()
             };
 

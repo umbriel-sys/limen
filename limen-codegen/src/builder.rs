@@ -255,7 +255,7 @@ impl GraphBuilder {
 
         // Policy expression
         let policy_expr = {
-            let s = edge_policy_value_to_string(&link.policy());
+            let s = edge_policy_value_to_string(link.policy());
             parse_str::<Expr>(&s).expect("failed to parse EdgePolicy")
         };
 

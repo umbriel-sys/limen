@@ -103,11 +103,7 @@ fn proc_macro_std_pipeline_runs_with_std_runtime() {
 
     // graph remains valid (descriptors intact)
     graph.validate_graph().unwrap();
-    let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy {
-        items: 0,
-        bytes: 0,
-        watermark: WatermarkState::AtOrAboveHard,
-    }; 3];
+    let mut occ: [EdgeOccupancy; 3] = [EdgeOccupancy::new(0, 0, WatermarkState::AtOrAboveHard); 3];
     graph.write_all_edge_occupancies(&mut occ).unwrap();
     println!(
         "--- [initial_graph_occupancies] --- {:?}\n",

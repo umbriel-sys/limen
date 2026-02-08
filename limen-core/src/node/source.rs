@@ -353,12 +353,7 @@ where
     /// Edge descriptor.
     #[inline]
     pub fn descriptor(&self) -> EdgeDescriptor {
-        EdgeDescriptor {
-            id: self.id,
-            upstream: self.upstream,
-            downstream: self.downstream,
-            name: self.name,
-        }
+        EdgeDescriptor::new(self.id, self.upstream, self.downstream, self.name)
     }
 
     /// Policy accessor.
@@ -446,11 +441,7 @@ pub mod probe {
         pub fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
             let items = self.items.load(Ordering::Relaxed);
             let bytes = self.bytes.load(Ordering::Relaxed);
-            EdgeOccupancy {
-                items,
-                bytes,
-                watermark: policy.watermark(items, bytes),
-            }
+            EdgeOccupancy::new(items, bytes, policy.watermark(items, bytes))
         }
     }
 
@@ -606,12 +597,7 @@ pub mod probe {
         /// Edge descriptor.
         #[inline]
         pub fn descriptor(&self) -> EdgeDescriptor {
-            EdgeDescriptor {
-                id: self.id,
-                upstream: self.upstream,
-                downstream: self.downstream,
-                name: self.name,
-            }
+            EdgeDescriptor::new(self.id, self.upstream, self.downstream, self.name)
         }
 
         /// Policy accessor.

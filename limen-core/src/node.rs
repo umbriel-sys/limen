@@ -204,7 +204,7 @@ where
         if T::METRICS_ENABLED {
             self.telemetry.set_gauge(
                 TelemetryKey::edge(self.in_edge_ids[i], TelemetryKind::QueueDepth),
-                occ.items as u64,
+                *occ.items() as u64,
             );
         }
         occ
@@ -248,7 +248,7 @@ where
         if T::METRICS_ENABLED {
             self.telemetry.set_gauge(
                 TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
-                occ.items as u64,
+                *occ.items() as u64,
             );
         }
         occ

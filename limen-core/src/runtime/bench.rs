@@ -35,12 +35,7 @@ where
 {
     /// Construct with a pessimistic initial occupancy; `init()` will overwrite it.
     pub const fn new() -> Self {
-        const INIT_OCC: EdgeOccupancy = EdgeOccupancy {
-            items: 0,
-            bytes: 0,
-            // Any value is fine; init() will replace the whole array.
-            watermark: WatermarkState::AtOrAboveHard,
-        };
+        const INIT_OCC: EdgeOccupancy = EdgeOccupancy::new(0, 0, WatermarkState::AtOrAboveHard);
         const INIT_POLICY: NodePolicy = NodePolicy::new(
             BatchingPolicy::none(),
             BudgetPolicy::new(None, None),
@@ -380,12 +375,7 @@ pub mod concurrent_runtime {
     {
         /// Construct with a pessimistic initial occupancy; `init()` will overwrite it.
         pub fn new() -> Self {
-            const INIT_OCC: EdgeOccupancy = EdgeOccupancy {
-                items: 0,
-                bytes: 0,
-                // Any value is fine; init()/step() will replace the whole array.
-                watermark: WatermarkState::AtOrAboveHard,
-            };
+            const INIT_OCC: EdgeOccupancy = EdgeOccupancy::new(0, 0, WatermarkState::AtOrAboveHard);
 
             Self {
                 stop: false,

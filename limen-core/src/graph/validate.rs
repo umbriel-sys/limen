@@ -96,12 +96,12 @@ pub fn validate_ports(
     // They do not consume a real port, so we bypass downstream port checks for them.
     for (i, ed) in edges.iter().enumerate() {
         // strict id match
-        if ed.id.as_usize() != &i {
+        if ed.id().as_usize() != &i {
             return Err(GraphError::IncompatiblePorts);
         }
 
-        let is_monitor = ed.upstream.node() == &EXTERNAL_INGRESS_NODE;
-        let t = ed.downstream.node().as_usize();
+        let is_monitor = ed.upstream().node() == &EXTERNAL_INGRESS_NODE;
+        let t = ed.downstream().node().as_usize();
 
         if is_monitor {
             // Downstream must be real and a Source.
@@ -117,8 +117,8 @@ pub fn validate_ports(
                 if j == i {
                     continue;
                 }
-                if other.upstream.node() == &EXTERNAL_INGRESS_NODE
-                    && other.downstream.node().as_usize() == t
+                if other.upstream().node() == &EXTERNAL_INGRESS_NODE
+                    && other.downstream().node().as_usize() == t
                 {
                     return Err(GraphError::IncompatiblePorts);
                 }
@@ -129,7 +129,7 @@ pub fn validate_ports(
         }
 
         // Regular edge: both endpoints must be real nodes in range.
-        let f = ed.upstream.node().as_usize();
+        let f = ed.upstream().node().as_usize();
         if f >= &n || t >= &n {
             return Err(GraphError::IncompatiblePorts);
         }
@@ -138,10 +138,10 @@ pub fn validate_ports(
         let nt = &nodes[*t];
 
         // Regular port bounds.
-        if *ed.upstream.port().as_usize() >= nf.out_ports as usize {
+        if *ed.upstream().port().as_usize() >= nf.out_ports as usize {
             return Err(GraphError::IncompatiblePorts);
         }
-        if *ed.downstream.port().as_usize() >= nt.in_ports as usize {
+        if *ed.downstream().port().as_usize() >= nt.in_ports as usize {
             return Err(GraphError::IncompatiblePorts);
         }
     }
@@ -149,15 +149,15 @@ pub fn validate_ports(
     // (C) Each (to_node, to_port) must be unique among REAL edges.
     // Monitor edges are excluded because they do not occupy a real input port.
     for (i, ei) in edges.iter().enumerate() {
-        if ei.upstream.node() == &EXTERNAL_INGRESS_NODE {
+        if ei.upstream().node() == &EXTERNAL_INGRESS_NODE {
             continue; // skip monitors
         }
         for ej in edges.iter().skip(i + 1) {
-            if ej.upstream.node() == &EXTERNAL_INGRESS_NODE {
+            if ej.upstream().node() == &EXTERNAL_INGRESS_NODE {
                 continue; // skip monitors
             }
-            if ei.downstream.node().as_usize() == ej.downstream.node().as_usize()
-                && ei.downstream.port().as_usize() == ej.downstream.port().as_usize()
+            if ei.downstream().node().as_usize() == ej.downstream().node().as_usize()
+                && ei.downstream().port().as_usize() == ej.downstream().port().as_usize()
             {
                 return Err(GraphError::IncompatiblePorts);
             }
@@ -182,11 +182,11 @@ pub fn validate_acyclic_buf<const N: usize>(
 
     // Validate both ends and build indegree.
     for e in edges {
-        if e.upstream.node() == &EXTERNAL_INGRESS_NODE {
+        if e.upstream().node() == &EXTERNAL_INGRESS_NODE {
             continue; // ignore monitor edge
         }
-        let u = e.upstream.node().as_usize();
-        let v = e.downstream.node().as_usize();
+        let u = e.upstream().node().as_usize();
+        let v = e.downstream().node().as_usize();
         if u >= &N || v >= &N {
             return Err(GraphError::IncompatiblePorts);
         }
@@ -212,9 +212,9 @@ pub fn validate_acyclic_buf<const N: usize>(
 
         // Decrement indegree of real outgoing edges from u.
         for e in edges.iter().filter(|e| {
-            e.upstream.node() != &EXTERNAL_INGRESS_NODE && e.upstream.node().as_usize() == &u
+            e.upstream().node() != &EXTERNAL_INGRESS_NODE && e.upstream().node().as_usize() == &u
         }) {
-            let v = e.downstream.node().as_usize();
+            let v = e.downstream().node().as_usize();
             debug_assert!(v < &N, "downstream index validated earlier");
             indeg[*v] -= 1;
             if indeg[*v] == 0 {
@@ -243,11 +243,11 @@ pub fn validate_acyclic_alloc(
 
     // Validate indices and build indegree for real edges only.
     for e in edges {
-        if e.upstream.node() == &EXTERNAL_INGRESS_NODE {
+        if e.upstream().node() == &EXTERNAL_INGRESS_NODE {
             continue;
         }
-        let u = e.upstream.node().as_usize();
-        let v = e.downstream.node().as_usize();
+        let u = e.upstream().node().as_usize();
+        let v = e.downstream().node().as_usize();
         if u >= &n || v >= &n {
             return Err(GraphError::IncompatiblePorts);
         }
@@ -267,9 +267,9 @@ pub fn validate_acyclic_alloc(
     while let Some(u) = stack.pop() {
         visited += 1;
         for e in edges.iter().filter(|e| {
-            e.upstream.node() != &EXTERNAL_INGRESS_NODE && e.upstream.node().as_usize() == &u
+            e.upstream().node() != &EXTERNAL_INGRESS_NODE && e.upstream().node().as_usize() == &u
         }) {
-            let v = e.downstream.node().as_usize();
+            let v = e.downstream().node().as_usize();
             indeg[*v] -= 1;
             if indeg[*v] == 0 {
                 stack.push(*v);

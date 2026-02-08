@@ -24,6 +24,7 @@ pub mod spsc_raw;
 pub mod spsc_priority2;
 
 /// Push result for enqueue attempts.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnqueueResult {
     /// Item was enqueued successfully.
@@ -35,14 +36,45 @@ pub enum EnqueueResult {
 }
 
 /// Queue occupancy snapshot used for decisions.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeOccupancy {
     /// Number of items currently in the queue.
-    pub items: usize,
+    items: usize,
     /// Estimated bytes currently in the queue.
-    pub bytes: usize,
+    bytes: usize,
     /// Watermark state derived from capacities.
-    pub watermark: WatermarkState,
+    watermark: WatermarkState,
+}
+
+impl EdgeOccupancy {
+    /// Create a new `EdgeOccupancy`.
+    #[inline]
+    pub const fn new(items: usize, bytes: usize, watermark: WatermarkState) -> Self {
+        Self {
+            items,
+            bytes,
+            watermark,
+        }
+    }
+
+    /// Number of items currently in the queue.
+    #[inline]
+    pub fn items(&self) -> &usize {
+        &self.items
+    }
+
+    /// Estimated bytes currently in the queue.
+    #[inline]
+    pub fn bytes(&self) -> &usize {
+        &self.bytes
+    }
+
+    /// Watermark state derived from capacities.
+    #[inline]
+    pub fn watermark(&self) -> &WatermarkState {
+        &self.watermark
+    }
 }
 
 /// A single-producer, single-consumer queue contract.

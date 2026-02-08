@@ -22,6 +22,7 @@ use crate::types::{DataType, BF16, F16};
 ///
 /// Each variant holds a borrowed, contiguous slice of the corresponding scalar type.
 /// No allocation or copying is performed.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum TensorElements<'a> {
     /// Slice of boolean elements.
@@ -434,6 +435,7 @@ impl<'a> Payload for TensorRef<'a> {
 ///
 /// Each variant holds a mutable borrowed, contiguous slice of the corresponding
 /// scalar type. No allocation or copying is performed.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum TensorElementsMut<'a> {
     /// Mutable slice of boolean elements.

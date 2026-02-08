@@ -47,7 +47,7 @@ where
     type Item = Message<P>;
 
     fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
-        match item.header.qos {
+        match item.header_ref().qos() {
             QoSClass::LatencyCritical => self.hi.try_push(item, policy),
             _ => self.lo.try_push(item, policy),
         }

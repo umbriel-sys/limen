@@ -100,24 +100,25 @@ impl MessageFlags {
 }
 
 /// Fixed header present on all messages that traverse the runtime.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageHeader {
     /// Correlation identifier for tracing across nodes.
-    pub trace_id: TraceId,
+    trace_id: TraceId,
     /// Monotonic sequence number assigned by producers/routers.
-    pub sequence: SequenceNumber,
+    sequence: SequenceNumber,
     /// Creation tick (monotonic; platform-defined units).
-    pub creation_tick: Ticks,
+    creation_tick: Ticks,
     /// Optional absolute deadline in nanoseconds since boot (P2).
-    pub deadline_ns: Option<DeadlineNs>,
+    deadline_ns: Option<DeadlineNs>,
     /// QoS class used by admission/scheduling.
-    pub qos: QoSClass,
+    qos: QoSClass,
     /// Reported payload size (bytes), used for byte-cap admission.
-    pub payload_size_bytes: usize,
+    payload_size_bytes: usize,
     /// Message flags (batch boundaries, degrade hints).
-    pub flags: MessageFlags,
+    flags: MessageFlags,
     /// Memory class where the payload currently resides.
-    pub memory_class: MemoryClass,
+    memory_class: MemoryClass,
 }
 
 impl MessageHeader {
@@ -173,6 +174,114 @@ impl MessageHeader {
         self.payload_size_bytes = desc.bytes();
         self.memory_class = desc.class();
     }
+
+    /// Return the trace id.
+    #[inline]
+    pub const fn trace_id(&self) -> TraceId {
+        self.trace_id
+    }
+
+    /// Set the trace id.
+    #[inline]
+    pub fn set_trace_id(&mut self, trace_id: TraceId) {
+        self.trace_id = trace_id;
+    }
+
+    /// Return the sequence number.
+    #[inline]
+    pub const fn sequence(&self) -> SequenceNumber {
+        self.sequence
+    }
+
+    /// Set the sequence number.
+    #[inline]
+    pub fn set_sequence(&mut self, sequence: SequenceNumber) {
+        self.sequence = sequence;
+    }
+
+    /// Return the creation tick.
+    #[inline]
+    pub const fn creation_tick(&self) -> Ticks {
+        self.creation_tick
+    }
+
+    /// Set the creation tick.
+    #[inline]
+    pub fn set_creation_tick(&mut self, creation_tick: Ticks) {
+        self.creation_tick = creation_tick;
+    }
+
+    /// Return the optional deadline.
+    #[inline]
+    pub const fn deadline_ns(&self) -> Option<DeadlineNs> {
+        self.deadline_ns
+    }
+
+    /// Set the optional deadline in nanoseconds since boot.
+    #[inline]
+    pub fn set_deadline_ns(&mut self, deadline_ns: Option<DeadlineNs>) {
+        self.deadline_ns = deadline_ns;
+    }
+
+    /// Return the QoS class.
+    #[inline]
+    pub const fn qos(&self) -> QoSClass {
+        self.qos
+    }
+
+    /// Set the QoS class.
+    #[inline]
+    pub fn set_qos(&mut self, qos: QoSClass) {
+        self.qos = qos;
+    }
+
+    /// Return the payload size in bytes.
+    #[inline]
+    pub const fn payload_size_bytes(&self) -> usize {
+        self.payload_size_bytes
+    }
+
+    /// Set the payload size in bytes.
+    #[inline]
+    pub fn set_payload_size_bytes(&mut self, payload_size_bytes: usize) {
+        self.payload_size_bytes = payload_size_bytes;
+    }
+
+    /// Return the message flags.
+    #[inline]
+    pub const fn flags(&self) -> MessageFlags {
+        self.flags
+    }
+
+    /// Set the message flags.
+    #[inline]
+    pub fn set_flags(&mut self, flags: MessageFlags) {
+        self.flags = flags;
+    }
+
+    /// Return the memory class.
+    #[inline]
+    pub const fn memory_class(&self) -> MemoryClass {
+        self.memory_class
+    }
+
+    /// Set the memory class.
+    #[inline]
+    pub fn set_memory_class(&mut self, memory_class: MemoryClass) {
+        self.memory_class = memory_class;
+    }
+
+    /// Mark this header as the first element in a batch by setting `FIRST_IN_BATCH`.
+    #[inline]
+    pub fn set_first_in_batch(&mut self) {
+        self.flags = self.flags.first_in_batch();
+    }
+
+    /// Mark this header as the last element in a batch by setting `LAST_IN_BATCH`.
+    #[inline]
+    pub fn set_last_in_batch(&mut self) {
+        self.flags = self.flags.last_in_batch();
+    }
 }
 
 impl Default for MessageHeader {
@@ -186,9 +295,9 @@ impl Default for MessageHeader {
 #[derive(Debug, Clone)]
 pub struct Message<P: Payload> {
     /// The header fields.
-    pub header: MessageHeader,
+    header: MessageHeader,
     /// The payload object or view.
-    pub payload: P,
+    payload: P,
 }
 
 // Copy only when the payload is Copy (e.g., TensorRef<'a>).
@@ -236,10 +345,40 @@ impl<P: Payload> Message<P> {
         }
     }
 
+    /// Return the payload.
+    #[inline]
+    pub fn payload(self) -> P {
+        self.payload
+    }
+
     /// Borrow the payload.
     #[inline]
     pub fn payload_ref(&self) -> &P {
         &self.payload
+    }
+
+    /// Mutable borrow of the payload.
+    #[inline]
+    pub fn payload_mut(&mut self) -> &mut P {
+        &mut self.payload
+    }
+
+    /// Return the header.
+    #[inline]
+    pub fn header(self) -> MessageHeader {
+        self.header
+    }
+
+    /// Borrow the header.
+    #[inline]
+    pub fn header_ref(&self) -> &MessageHeader {
+        &self.header
+    }
+
+    /// Mutable borrow of the header.
+    #[inline]
+    pub fn header_mut(&mut self) -> &mut MessageHeader {
+        &mut self.header
     }
 
     /// Decompose into `(header, payload)`.
@@ -256,10 +395,22 @@ impl<P: Payload> Message<P> {
 #[derive(Debug, Copy, Clone)]
 pub struct Batch<'a, P: Payload> {
     /// The ordered messages in the batch.
-    pub messages: &'a [Message<P>],
+    messages: &'a [Message<P>],
 }
 
 impl<'a, P: Payload> Batch<'a, P> {
+    /// Construct a new batch view over a slice of messages.
+    #[inline]
+    pub const fn new(messages: &'a [Message<P>]) -> Self {
+        Self { messages }
+    }
+
+    /// Return the underlying messages slice.
+    #[inline]
+    pub fn messages(&self) -> &'a [Message<P>] {
+        self.messages
+    }
+
     /// Return the number of messages in the batch.
     #[inline]
     pub fn len(&self) -> usize {

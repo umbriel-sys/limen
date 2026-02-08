@@ -301,8 +301,9 @@ where
             return Ok(StepResult::NoInput);
         }
 
-        headers[0].flags = headers[0].flags.first_in_batch();
-        headers[n - 1].flags = headers[n - 1].flags.last_in_batch();
+        // Mark batch boundary flags.
+        headers[0].set_first_in_batch();
+        headers[n - 1].set_last_in_batch();
 
         self.model
             .infer_batch(in_buf.as_slice(), &mut out_buf[..n])
@@ -350,9 +351,9 @@ where
         }
 
         // Mark batch boundary flags.
-        headers[0].flags = headers[0].flags.first_in_batch();
+        headers[0].set_first_in_batch();
         let last = headers.len() - 1;
-        headers[last].flags = headers[last].flags.last_in_batch();
+        headers[last].set_last_in_batch();
 
         // Prepare outputs and run batched inference.
         let mut out_buf: Vec<OutP> = Vec::with_capacity(headers.len());

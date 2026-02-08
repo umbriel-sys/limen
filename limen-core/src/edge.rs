@@ -112,7 +112,12 @@ pub fn enqueue_with_admission<P: Payload, Q: Edge<Item = Message<P>>>(
     msg: Message<P>,
 ) -> EnqueueResult {
     let occ = queue.occupancy(policy);
-    match policy.decide(occ.items, occ.bytes, msg.header.deadline_ns, msg.header.qos) {
+    match policy.decide(
+        occ.items,
+        occ.bytes,
+        msg.header_ref().deadline_ns(),
+        msg.header_ref().qos(),
+    ) {
         AdmissionDecision::Admit => queue.try_push(msg, policy),
         AdmissionDecision::Reject => EnqueueResult::Rejected,
     }

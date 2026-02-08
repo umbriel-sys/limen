@@ -42,13 +42,14 @@ extern crate alloc;
 
 pub mod errors;
 pub mod memory;
-pub mod telemetry;
 pub mod types;
 
 pub mod message;
 pub mod platform;
 pub mod policy;
+
 pub mod scheduling;
+pub mod telemetry;
 
 pub mod compute;
 pub mod edge;

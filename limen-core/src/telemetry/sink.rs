@@ -7,6 +7,7 @@ use super::*;
 /// Implementations use this to signal input output failures or buffer
 /// exhaustion without tying the core telemetry code to any particular
 /// error type.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub enum TelemetrySinkError {
     /// The event could not be pushed to the underlying sink.
@@ -93,11 +94,11 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
     match e {
         TelemetryEvent::Runtime(ev) => {
             w.write_str("runtime id=")?;
-            write_u64(w, ev.graph_id as u64)?;
+            write_u64(w, ev.graph_id() as u64)?;
             w.write_str(" ts=")?;
-            write_u64(w, ev.timestamp_ns)?;
+            write_u64(w, ev.timestamp_ns())?;
             w.write_str(" kind=")?;
-            w.write_str(match ev.event_kind {
+            w.write_str(match ev.event_kind() {
                 RuntimeTelemetryEventKind::GraphStarted => "GraphStarted",
                 RuntimeTelemetryEventKind::GraphStopped => "GraphStopped",
                 RuntimeTelemetryEventKind::GraphPanicked => "GraphPanicked",
@@ -111,7 +112,7 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
                 RuntimeTelemetryEventKind::InvalidDataSeen => "InvalidDataSeen",
             })?;
             w.write_str(" msg=")?;
-            if let Some(msg) = ev.message {
+            if let Some(msg) = ev.message() {
                 w.write_str(msg.as_str())?;
             } else {
                 w.write_str("-")?;
@@ -120,25 +121,25 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
         }
         TelemetryEvent::NodeStep(ev) => {
             w.write_str("node-step gid=")?;
-            write_u64(w, ev.graph_id as u64)?;
+            write_u64(w, ev.graph_id() as u64)?;
             w.write_str(" nin=")?;
-            write_u64(w, ev.node_index.as_usize() as u64)?;
+            write_u64(w, ev.node_index().as_usize() as u64)?;
             w.write_str(" ts_start=")?;
-            write_u64(w, ev.timestamp_start_ns)?;
+            write_u64(w, ev.timestamp_start_ns())?;
             w.write_str(" ts_end=")?;
-            write_u64(w, ev.timestamp_end_ns)?;
+            write_u64(w, ev.timestamp_end_ns())?;
             w.write_str(" dur=")?;
-            write_u64(w, ev.duration_ns)?;
+            write_u64(w, ev.duration_ns())?;
             w.write_str(" dl=")?;
-            if let Some(d) = ev.deadline_ns {
+            if let Some(d) = ev.deadline_ns() {
                 write_u64(w, d)?;
             } else {
                 w.write_str("-")?;
             }
             w.write_str(" miss=")?;
-            w.write_str(if ev.deadline_missed { "1" } else { "0" })?;
+            w.write_str(if ev.deadline_missed() { "1" } else { "0" })?;
             w.write_str(" err=")?;
-            if let Some(k) = ev.error_kind {
+            if let Some(k) = ev.error_kind() {
                 w.write_str(match k {
                     NodeStepError::NoInput => "NoInput",
                     NodeStepError::Backpressured => "BackPressured",
@@ -153,15 +154,15 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
         }
         TelemetryEvent::EdgeSnapshot(ev) => {
             w.write_str("edge-snap gid=")?;
-            write_u64(w, ev.graph_id as u64)?;
+            write_u64(w, ev.graph_id() as u64)?;
             w.write_str(" eid=")?;
-            write_u64(w, ev.edge_index.as_usize() as u64)?;
+            write_u64(w, ev.edge_index().as_usize() as u64)?;
             w.write_str(" ts=")?;
-            write_u64(w, ev.timestamp_ns)?;
+            write_u64(w, ev.timestamp_ns())?;
             w.write_str(" occ=")?;
-            write_u64(w, ev.current_occupancy as u64)?;
+            write_u64(w, ev.current_occupancy() as u64)?;
             w.write_str(" wm=")?;
-            w.write_str(wm_str(ev.watermark_state))?;
+            w.write_str(wm_str(ev.watermark_state()))?;
             w.write_str("\n")
         }
     }

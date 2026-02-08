@@ -303,17 +303,17 @@ where
                 }
             };
 
-            let event = TelemetryEvent::NodeStep(NodeStepTelemetry {
-                graph_id: GRAPH_ID,
-                node_index: self.id,
-                node_name: self.name,
+            let event = TelemetryEvent::node_step(NodeStepTelemetry::new(
+                GRAPH_ID,
+                self.id,
+                self.name,
                 timestamp_start_ns,
                 timestamp_end_ns,
                 duration_ns,
                 deadline_ns,
                 deadline_missed,
                 error_kind,
-            });
+            ));
 
             telemetry.push_event(event);
         }

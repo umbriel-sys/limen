@@ -98,11 +98,11 @@ pub trait Telemetry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TelemetryKey {
     /// Namespace that this key belongs to (node, edge, or runtime).
-    pub ns: TelemetryNs,
+    ns: TelemetryNs,
     /// Integer identifier within the namespace (for example node index).
-    pub id: u32,
+    id: u32,
     /// Logical kind of metric represented by this key.
-    pub kind: TelemetryKind,
+    kind: TelemetryKind,
 }
 
 impl TelemetryKey {
@@ -162,11 +162,30 @@ impl TelemetryKey {
             kind,
         }
     }
+
+    /// Return the namespace.
+    #[inline]
+    pub const fn ns(&self) -> TelemetryNs {
+        self.ns
+    }
+
+    /// Return the identifier.
+    #[inline]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Return the logical kind.
+    #[inline]
+    pub const fn kind(&self) -> TelemetryKind {
+        self.kind
+    }
 }
 
 /// Logical namespace for telemetry keys.
 ///
 /// Separates metrics that describe nodes, edges, and the runtime itself.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TelemetryNs {
     /// Node level metrics such as processed counts and latencies.
@@ -181,6 +200,7 @@ pub enum TelemetryNs {
 ///
 /// These kinds are interpreted by collectors such as fixed and dynamic telemetry
 /// stores and are intentionally small and generic.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TelemetryKind {
     /// Number of items successfully processed.
@@ -210,6 +230,7 @@ pub type GraphInstanceId = u32;
 /// This mirrors `crate::errors::NodeErrorKind` so that telemetry can
 /// faithfully report the scheduler-visible error semantics without
 /// inventing additional information that is not available at this layer.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub enum NodeStepError {
     /// Inputs were not available to progress this node.
@@ -228,62 +249,231 @@ pub enum NodeStepError {
 ///
 /// A node step represents a single scheduling decision in which a node consumes
 /// zero or more input messages and produces zero or more output messages.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub struct NodeStepTelemetry {
     /// Identifier of the graph instance this node belongs to.
-    pub graph_id: GraphInstanceId,
+    graph_id: GraphInstanceId,
     /// Index of the node within the graph.
-    pub node_index: NodeIndex,
+    node_index: NodeIndex,
     /// Optional static node name for debugging and correlation.
-    pub node_name: Option<&'static str>,
+    node_name: Option<&'static str>,
 
     /// Start timestamp of the step in nanoseconds since an arbitrary epoch.
-    pub timestamp_start_ns: u64,
+    timestamp_start_ns: u64,
     /// End timestamp of the step in nanoseconds since an arbitrary epoch.
-    pub timestamp_end_ns: u64,
+    timestamp_end_ns: u64,
     /// Duration of the step in nanoseconds.
-    pub duration_ns: u64,
+    duration_ns: u64,
 
     /// Optional absolute deadline in nanoseconds for this step.
-    pub deadline_ns: Option<u64>,
+    deadline_ns: Option<u64>,
     /// Whether the deadline was missed during this step.
-    pub deadline_missed: bool,
+    deadline_missed: bool,
 
     /// Optional high level error classification for this step.
-    pub error_kind: Option<NodeStepError>,
+    error_kind: Option<NodeStepError>,
+}
+
+impl NodeStepTelemetry {
+    /// Construct a new `NodeStepTelemetry` record.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        graph_id: GraphInstanceId,
+        node_index: NodeIndex,
+        node_name: Option<&'static str>,
+        timestamp_start_ns: u64,
+        timestamp_end_ns: u64,
+        duration_ns: u64,
+        deadline_ns: Option<u64>,
+        deadline_missed: bool,
+        error_kind: Option<NodeStepError>,
+    ) -> Self {
+        Self {
+            graph_id,
+            node_index,
+            node_name,
+            timestamp_start_ns,
+            timestamp_end_ns,
+            duration_ns,
+            deadline_ns,
+            deadline_missed,
+            error_kind,
+        }
+    }
+
+    /// Returns the identifier of the graph instance this step belongs to.
+    #[inline]
+    pub const fn graph_id(&self) -> GraphInstanceId {
+        self.graph_id
+    }
+
+    /// Returns the index of the node within the graph.
+    #[inline]
+    pub const fn node_index(&self) -> NodeIndex {
+        self.node_index
+    }
+
+    /// Returns the optional static node name associated with this step.
+    #[inline]
+    pub const fn node_name(&self) -> Option<&'static str> {
+        self.node_name
+    }
+
+    /// Returns the step start timestamp in nanoseconds since an arbitrary epoch.
+    #[inline]
+    pub const fn timestamp_start_ns(&self) -> u64 {
+        self.timestamp_start_ns
+    }
+
+    /// Returns the step end timestamp in nanoseconds since an arbitrary epoch.
+    #[inline]
+    pub const fn timestamp_end_ns(&self) -> u64 {
+        self.timestamp_end_ns
+    }
+
+    /// Returns the step duration in nanoseconds.
+    #[inline]
+    pub const fn duration_ns(&self) -> u64 {
+        self.duration_ns
+    }
+
+    /// Returns the optional absolute deadline for this step in nanoseconds.
+    #[inline]
+    pub const fn deadline_ns(&self) -> Option<u64> {
+        self.deadline_ns
+    }
+
+    /// Returns whether the step exceeded its deadline.
+    #[inline]
+    pub const fn deadline_missed(&self) -> bool {
+        self.deadline_missed
+    }
+
+    /// Returns the optional high-level error classification for this step.
+    #[inline]
+    pub const fn error_kind(&self) -> Option<NodeStepError> {
+        self.error_kind
+    }
 }
 
 /// Structured snapshot describing the state of a single edge.
 ///
 /// These snapshots are typically taken by runtimes when they want to record
 /// backpressure or queue depth for a link between nodes.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub struct EdgeSnapshotTelemetry {
     /// Identifier of the graph instance this edge belongs to.
-    pub graph_id: GraphInstanceId,
+    graph_id: GraphInstanceId,
     /// Index of the edge within the graph.
-    pub edge_index: EdgeIndex,
+    edge_index: EdgeIndex,
     /// Index of the source node for this edge.
-    pub source_node_index: NodeIndex,
+    source_node_index: NodeIndex,
     /// Index of the target node for this edge.
-    pub target_node_index: NodeIndex,
+    target_node_index: NodeIndex,
 
     /// Timestamp of the snapshot in nanoseconds since an arbitrary epoch.
-    pub timestamp_ns: u64,
+    timestamp_ns: u64,
     /// Current occupancy of the edge buffer.
-    pub current_occupancy: u32,
+    current_occupancy: u32,
     /// Configured soft watermark for this edge.
-    pub soft_watermark: u32,
+    soft_watermark: u32,
     /// Configured hard watermark for this edge.
-    pub hard_watermark: u32,
+    hard_watermark: u32,
     /// Current watermark state relative to the configured thresholds.
-    pub watermark_state: WatermarkState,
+    watermark_state: WatermarkState,
+}
+
+impl EdgeSnapshotTelemetry {
+    /// Creates a new snapshot record for a single edge.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        graph_id: GraphInstanceId,
+        edge_index: EdgeIndex,
+        source_node_index: NodeIndex,
+        target_node_index: NodeIndex,
+        timestamp_ns: u64,
+        current_occupancy: u32,
+        soft_watermark: u32,
+        hard_watermark: u32,
+        watermark_state: WatermarkState,
+    ) -> Self {
+        Self {
+            graph_id,
+            edge_index,
+            source_node_index,
+            target_node_index,
+            timestamp_ns,
+            current_occupancy,
+            soft_watermark,
+            hard_watermark,
+            watermark_state,
+        }
+    }
+
+    /// Returns the identifier of the graph instance this edge belongs to.
+    #[inline]
+    pub const fn graph_id(&self) -> GraphInstanceId {
+        self.graph_id
+    }
+
+    /// Returns the index of the edge within the graph.
+    #[inline]
+    pub const fn edge_index(&self) -> EdgeIndex {
+        self.edge_index
+    }
+
+    /// Returns the index of the source node for this edge.
+    #[inline]
+    pub const fn source_node_index(&self) -> NodeIndex {
+        self.source_node_index
+    }
+
+    /// Returns the index of the target node for this edge.
+    #[inline]
+    pub const fn target_node_index(&self) -> NodeIndex {
+        self.target_node_index
+    }
+
+    /// Returns the snapshot timestamp in nanoseconds since an arbitrary epoch.
+    #[inline]
+    pub const fn timestamp_ns(&self) -> u64 {
+        self.timestamp_ns
+    }
+
+    /// Returns the current occupancy of the edge buffer.
+    #[inline]
+    pub const fn current_occupancy(&self) -> u32 {
+        self.current_occupancy
+    }
+
+    /// Returns the configured soft watermark for this edge.
+    #[inline]
+    pub const fn soft_watermark(&self) -> u32 {
+        self.soft_watermark
+    }
+
+    /// Returns the configured hard watermark for this edge.
+    #[inline]
+    pub const fn hard_watermark(&self) -> u32 {
+        self.hard_watermark
+    }
+
+    /// Returns the current watermark state relative to the configured thresholds.
+    #[inline]
+    pub const fn watermark_state(&self) -> WatermarkState {
+        self.watermark_state
+    }
 }
 
 /// Classification of runtime level events that are not tied to a single node.
 ///
 /// These events are useful for monitoring graph lifecycle, connectivity, and
 /// data quality issues.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub enum RuntimeTelemetryEventKind {
     /// A graph instance has started running.
@@ -314,26 +504,70 @@ pub enum RuntimeTelemetryEventKind {
 ///
 /// These events describe lifecycle transitions, connectivity changes, and
 /// coarse grained data quality issues at the graph level.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub struct RuntimeTelemetryEvent {
     /// Identifier of the graph instance this event refers to.
-    pub graph_id: GraphInstanceId,
+    graph_id: GraphInstanceId,
     /// Timestamp of the event in nanoseconds since an arbitrary epoch.
-    pub timestamp_ns: u64,
+    timestamp_ns: u64,
     /// Kind of runtime event that occurred.
-    pub event_kind: RuntimeTelemetryEventKind,
+    event_kind: RuntimeTelemetryEventKind,
     /// Optional static message with additional context.
     ///
     /// NOTE: `message` is rendered as the final `msg=` field in `fmt_event`.
     /// It must not contain newlines; spaces are allowed and are treated
     /// as part of the message up to end-of-line.
-    pub message: Option<EventMessage>,
+    message: Option<EventMessage>,
+}
+
+impl RuntimeTelemetryEvent {
+    /// Creates a new runtime telemetry event record.
+    #[inline]
+    pub const fn new(
+        graph_id: GraphInstanceId,
+        timestamp_ns: u64,
+        event_kind: RuntimeTelemetryEventKind,
+        message: Option<EventMessage>,
+    ) -> Self {
+        Self {
+            graph_id,
+            timestamp_ns,
+            event_kind,
+            message,
+        }
+    }
+
+    /// Returns the identifier of the graph instance this event refers to.
+    #[inline]
+    pub const fn graph_id(&self) -> GraphInstanceId {
+        self.graph_id
+    }
+
+    /// Returns the event timestamp in nanoseconds since an arbitrary epoch.
+    #[inline]
+    pub const fn timestamp_ns(&self) -> u64 {
+        self.timestamp_ns
+    }
+
+    /// Returns the kind of runtime event that occurred.
+    #[inline]
+    pub const fn event_kind(&self) -> RuntimeTelemetryEventKind {
+        self.event_kind
+    }
+
+    /// Returns the optional static message associated with this event.
+    #[inline]
+    pub const fn message(&self) -> Option<EventMessage> {
+        self.message
+    }
 }
 
 /// Discriminated union of all structured telemetry events.
 ///
 /// This is the type carried by event writers and is the payload for all
 /// structured telemetry emission.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
 pub enum TelemetryEvent {
     /// Node level timing and throughput information for a single step.
@@ -344,28 +578,49 @@ pub enum TelemetryEvent {
     Runtime(RuntimeTelemetryEvent),
 }
 
+impl TelemetryEvent {
+    /// Creates a telemetry event from a node step telemetry record.
+    #[inline]
+    pub const fn node_step(ev: NodeStepTelemetry) -> Self {
+        TelemetryEvent::NodeStep(ev)
+    }
+
+    /// Creates a telemetry event from an edge snapshot telemetry record.
+    #[inline]
+    pub const fn edge_snapshot(ev: EdgeSnapshotTelemetry) -> Self {
+        TelemetryEvent::EdgeSnapshot(ev)
+    }
+
+    /// Creates a telemetry event from a runtime telemetry event record.
+    #[inline]
+    pub const fn runtime(ev: RuntimeTelemetryEvent) -> Self {
+        TelemetryEvent::Runtime(ev)
+    }
+}
+
 /// Per node metrics aggregated by fixed and dynamic collectors.
 ///
 /// These metrics are updated via the `Telemetry` trait and represent simple
 /// counters and latency aggregates.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct NodeMetrics {
     /// Number of items successfully processed by the node.
-    pub processed: u64,
+    processed: u64,
     /// Number of items dropped by the node (including deadline misses).
-    pub dropped: u64,
+    dropped: u64,
     /// Number of ingress messages observed by the node.
-    pub ingress: u64,
+    ingress: u64,
     /// Number of egress messages emitted by the node.
-    pub egress: u64,
+    egress: u64,
     /// Sum of all recorded latencies in nanoseconds.
-    pub lat_sum: u64,
+    lat_sum: u64,
     /// Number of latency samples recorded.
-    pub lat_cnt: u64,
+    lat_cnt: u64,
     /// Maximum latency observed in nanoseconds.
-    pub lat_max: u64,
+    lat_max: u64,
     /// Number of deadline misses observed for this node.
-    pub deadline_miss_count: u64,
+    deadline_miss_count: u64,
 }
 
 impl Default for NodeMetrics {
@@ -388,13 +643,177 @@ impl NodeMetrics {
             deadline_miss_count: 0,
         }
     }
+
+    /// Returns the number of items successfully processed by the node.
+    #[inline]
+    pub const fn processed(&self) -> u64 {
+        self.processed
+    }
+
+    /// Returns the number of items dropped by the node.
+    #[inline]
+    pub const fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Returns the number of ingress messages observed by the node.
+    #[inline]
+    pub const fn ingress(&self) -> u64 {
+        self.ingress
+    }
+
+    /// Returns the number of egress messages emitted by the node.
+    #[inline]
+    pub const fn egress(&self) -> u64 {
+        self.egress
+    }
+
+    /// Returns the sum of all recorded latencies in nanoseconds.
+    #[inline]
+    pub const fn lat_sum(&self) -> u64 {
+        self.lat_sum
+    }
+
+    /// Returns the number of latency samples recorded.
+    #[inline]
+    pub const fn lat_cnt(&self) -> u64 {
+        self.lat_cnt
+    }
+
+    /// Returns the maximum latency observed in nanoseconds.
+    #[inline]
+    pub const fn lat_max(&self) -> u64 {
+        self.lat_max
+    }
+
+    /// Returns the number of deadline misses observed for this node.
+    #[inline]
+    pub const fn deadline_miss_count(&self) -> u64 {
+        self.deadline_miss_count
+    }
+
+    /// Increment `processed` by `delta` (saturating).
+    #[inline]
+    pub fn inc_processed(&mut self, delta: u64) {
+        self.processed = self.processed.saturating_add(delta);
+    }
+
+    /// Subtract from `processed` (saturating at zero).
+    #[inline]
+    pub fn dec_processed(&mut self, delta: u64) {
+        self.processed = self.processed.saturating_sub(delta);
+    }
+
+    /// Set `processed` to `v`.
+    #[inline]
+    pub fn set_processed(&mut self, v: u64) {
+        self.processed = v;
+    }
+
+    /// Increment `dropped` by `delta` (saturating).
+    #[inline]
+    pub fn inc_dropped(&mut self, delta: u64) {
+        self.dropped = self.dropped.saturating_add(delta);
+    }
+
+    /// Subtract from `dropped` (saturating at zero).
+    #[inline]
+    pub fn dec_dropped(&mut self, delta: u64) {
+        self.dropped = self.dropped.saturating_sub(delta);
+    }
+
+    /// Set `dropped` to `v`.
+    #[inline]
+    pub fn set_dropped(&mut self, v: u64) {
+        self.dropped = v;
+    }
+
+    /// Increment `ingress` by `delta` (saturating).
+    #[inline]
+    pub fn inc_ingress(&mut self, delta: u64) {
+        self.ingress = self.ingress.saturating_add(delta);
+    }
+
+    /// Subtract from `ingress` (saturating at zero).
+    #[inline]
+    pub fn dec_ingress(&mut self, delta: u64) {
+        self.ingress = self.ingress.saturating_sub(delta);
+    }
+
+    /// Set `ingress` to `v`.
+    #[inline]
+    pub fn set_ingress(&mut self, v: u64) {
+        self.ingress = v;
+    }
+
+    /// Increment `egress` by `delta` (saturating).
+    #[inline]
+    pub fn inc_egress(&mut self, delta: u64) {
+        self.egress = self.egress.saturating_add(delta);
+    }
+
+    /// Subtract from `egress` (saturating at zero).
+    #[inline]
+    pub fn dec_egress(&mut self, delta: u64) {
+        self.egress = self.egress.saturating_sub(delta);
+    }
+
+    /// Set `egress` to `v`.
+    #[inline]
+    pub fn set_egress(&mut self, v: u64) {
+        self.egress = v;
+    }
+
+    /// Record a latency sample in nanoseconds.
+    ///
+    /// This updates `lat_sum`, `lat_cnt`, and `lat_max`. Uses saturating
+    /// addition to avoid overflow on long running systems.
+    #[inline]
+    pub fn record_latency_ns(&mut self, value_ns: u64) {
+        self.lat_sum = self.lat_sum.saturating_add(value_ns);
+        self.lat_cnt = self.lat_cnt.saturating_add(1);
+        if value_ns > self.lat_max {
+            self.lat_max = value_ns;
+        }
+    }
+
+    /// Merge another `NodeMetrics` into `self`. This uses saturating addition
+    /// for counters and takes the maximum for latency max.
+    #[inline]
+    pub fn merge_from(&mut self, other: &Self) {
+        self.processed = self.processed.saturating_add(other.processed);
+        self.dropped = self.dropped.saturating_add(other.dropped);
+        self.ingress = self.ingress.saturating_add(other.ingress);
+        self.egress = self.egress.saturating_add(other.egress);
+        self.lat_sum = self.lat_sum.saturating_add(other.lat_sum);
+        self.lat_cnt = self.lat_cnt.saturating_add(other.lat_cnt);
+        if other.lat_max > self.lat_max {
+            self.lat_max = other.lat_max;
+        }
+        self.deadline_miss_count = self
+            .deadline_miss_count
+            .saturating_add(other.deadline_miss_count);
+    }
+
+    /// Increment the deadline miss counter by `delta` (saturating).
+    #[inline]
+    pub fn inc_deadline_miss_count(&mut self, delta: u64) {
+        self.deadline_miss_count = self.deadline_miss_count.saturating_add(delta);
+    }
+
+    /// Reset all counters and aggregates to zero.
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
 }
 
 /// Per edge metrics aggregated by fixed and dynamic collectors.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct EdgeMetrics {
     /// Current queue depth for the edge.
-    pub queue_depth: u32,
+    queue_depth: u32,
 }
 
 impl Default for EdgeMetrics {
@@ -408,17 +827,54 @@ impl EdgeMetrics {
     pub const fn new() -> Self {
         Self { queue_depth: 0 }
     }
+
+    /// Returns the current queue depth for the edge.
+    #[inline]
+    pub const fn queue_depth(&self) -> u32 {
+        self.queue_depth
+    }
+
+    /// Sets the current queue depth for the edge.
+    #[inline]
+    pub fn set_queue_depth(&mut self, v: u32) {
+        self.queue_depth = v;
+    }
+
+    /// Increment queue depth by `delta` (saturating).
+    #[inline]
+    pub fn inc_queue_depth(&mut self, delta: u32) {
+        self.queue_depth = self.queue_depth.saturating_add(delta);
+    }
+
+    /// Decrement queue depth by `delta` (saturating at zero).
+    #[inline]
+    pub fn dec_queue_depth(&mut self, delta: u32) {
+        self.queue_depth = self.queue_depth.saturating_sub(delta);
+    }
+
+    /// Merge another `EdgeMetrics` into `self`. For queue depth we follow the
+    /// last-writer-wins semantics used by higher-level merge logic.
+    #[inline]
+    pub fn merge_from(&mut self, other: &Self) {
+        self.queue_depth = other.queue_depth;
+    }
+
+    /// Reset all counters and aggregates to zero.
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
 }
 
 /// Per graph telemetry metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct GraphMetrics<const MAX_NODES: usize, const MAX_EDGES: usize> {
     /// Graph id.
-    pub id: u32,
+    id: u32,
     /// graoh nodes.
-    pub nodes: [NodeMetrics; MAX_NODES],
+    nodes: [NodeMetrics; MAX_NODES],
     /// graoh edges.
-    pub edges: [EdgeMetrics; MAX_EDGES],
+    edges: [EdgeMetrics; MAX_EDGES],
 }
 
 impl<const MAX_NODES: usize, const MAX_EDGES: usize> GraphMetrics<MAX_NODES, MAX_EDGES> {

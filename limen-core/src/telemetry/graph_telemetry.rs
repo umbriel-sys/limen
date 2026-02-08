@@ -120,30 +120,34 @@ impl<const N: usize, const E: usize, W: TelemetrySink> Telemetry for GraphTeleme
 
     #[inline]
     fn incr_counter(&mut self, key: TelemetryKey, delta: u64) {
-        match (key.ns, key.kind) {
-            (TelemetryNs::Node, TelemetryKind::Processed) if Self::node_ok(key.id) => {
-                self.metrics.nodes[key.id as usize].processed = self.metrics.nodes[key.id as usize]
+        match (key.ns(), key.kind()) {
+            (TelemetryNs::Node, TelemetryKind::Processed) if Self::node_ok(key.id()) => {
+                self.metrics.nodes[key.id() as usize].processed = self.metrics.nodes
+                    [key.id() as usize]
                     .processed
                     .saturating_add(delta);
             }
-            (TelemetryNs::Node, TelemetryKind::Dropped) if Self::node_ok(key.id) => {
-                self.metrics.nodes[key.id as usize].dropped = self.metrics.nodes[key.id as usize]
+            (TelemetryNs::Node, TelemetryKind::Dropped) if Self::node_ok(key.id()) => {
+                self.metrics.nodes[key.id() as usize].dropped = self.metrics.nodes
+                    [key.id() as usize]
                     .dropped
                     .saturating_add(delta);
             }
-            (TelemetryNs::Node, TelemetryKind::IngressMsgs) if Self::node_ok(key.id) => {
-                self.metrics.nodes[key.id as usize].ingress = self.metrics.nodes[key.id as usize]
+            (TelemetryNs::Node, TelemetryKind::IngressMsgs) if Self::node_ok(key.id()) => {
+                self.metrics.nodes[key.id() as usize].ingress = self.metrics.nodes
+                    [key.id() as usize]
                     .ingress
                     .saturating_add(delta);
             }
-            (TelemetryNs::Node, TelemetryKind::EgressMsgs) if Self::node_ok(key.id) => {
-                self.metrics.nodes[key.id as usize].egress = self.metrics.nodes[key.id as usize]
+            (TelemetryNs::Node, TelemetryKind::EgressMsgs) if Self::node_ok(key.id()) => {
+                self.metrics.nodes[key.id() as usize].egress = self.metrics.nodes
+                    [key.id() as usize]
                     .egress
                     .saturating_add(delta);
             }
-            (TelemetryNs::Node, TelemetryKind::DeadlineMiss) if Self::node_ok(key.id) => {
-                self.metrics.nodes[key.id as usize].deadline_miss_count = self.metrics.nodes
-                    [key.id as usize]
+            (TelemetryNs::Node, TelemetryKind::DeadlineMiss) if Self::node_ok(key.id()) => {
+                self.metrics.nodes[key.id() as usize].deadline_miss_count = self.metrics.nodes
+                    [key.id() as usize]
                     .deadline_miss_count
                     .saturating_add(delta);
             }
@@ -153,21 +157,21 @@ impl<const N: usize, const E: usize, W: TelemetrySink> Telemetry for GraphTeleme
 
     #[inline]
     fn set_gauge(&mut self, key: TelemetryKey, value: u64) {
-        if matches!(key.ns, TelemetryNs::Edge)
-            && matches!(key.kind, TelemetryKind::QueueDepth)
-            && Self::edge_ok(key.id)
+        if matches!(key.ns(), TelemetryNs::Edge)
+            && matches!(key.kind(), TelemetryKind::QueueDepth)
+            && Self::edge_ok(key.id())
         {
-            self.metrics.edges[key.id as usize].queue_depth = value as u32;
+            self.metrics.edges[key.id() as usize].queue_depth = value as u32;
         }
     }
 
     #[inline]
     fn record_latency_ns(&mut self, key: TelemetryKey, value_ns: u64) {
-        if matches!(key.ns, TelemetryNs::Node)
-            && matches!(key.kind, TelemetryKind::Latency)
-            && Self::node_ok(key.id)
+        if matches!(key.ns(), TelemetryNs::Node)
+            && matches!(key.kind(), TelemetryKind::Latency)
+            && Self::node_ok(key.id())
         {
-            let m = &mut self.metrics.nodes[key.id as usize];
+            let m = &mut self.metrics.nodes[key.id() as usize];
             m.lat_sum = m.lat_sum.saturating_add(value_ns);
             m.lat_cnt = m.lat_cnt.saturating_add(1);
             if value_ns > m.lat_max {

@@ -17,5 +17,6 @@ limen-core = { workspace = true }
 limen-build = { workspace = true }
 
 [build-dependencies]
+limen-core = { workspace = true }
 limen-codegen = { workspace = true }
 syn = { workspace = true }

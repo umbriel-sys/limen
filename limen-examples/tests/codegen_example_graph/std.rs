@@ -34,21 +34,11 @@ type StdRuntime = TestStdRuntime<SimpleExampleGraphStd, NoStdTestClock, StdTestT
 
 #[test]
 fn codegen_std_pipeline_runs_with_std_runtime() {
-    let node_policy = NodePolicy {
-        batching: BatchingPolicy {
-            fixed_n: None,
-            max_delta_t: None,
-        },
-        budget: BudgetPolicy {
-            tick_budget: None,
-            watchdog_ticks: None,
-        },
-        deadline: DeadlinePolicy {
-            require_absolute_deadline: false,
-            slack_tolerance_ns: None,
-            default_deadline_ns: None,
-        },
-    };
+    let node_policy = NodePolicy::new(
+        BatchingPolicy::none(),
+        BudgetPolicy::new(None, None),
+        DeadlinePolicy::new(false, None, None),
+    );
 
     // clock
     let clock = NoStdLinuxMonotonicClock::new();
@@ -70,21 +60,11 @@ fn codegen_std_pipeline_runs_with_std_runtime() {
     let map = MapNode::new(
         TestU32Backend,
         (),
-        NodePolicy {
-            batching: BatchingPolicy {
-                fixed_n: None,
-                max_delta_t: None,
-            },
-            budget: BudgetPolicy {
-                tick_budget: None,
-                watchdog_ticks: None,
-            },
-            deadline: DeadlinePolicy {
-                require_absolute_deadline: false,
-                slack_tolerance_ns: None,
-                default_deadline_ns: None,
-            },
-        },
+        NodePolicy::new(
+            BatchingPolicy::none(),
+            BudgetPolicy::new(None, None),
+            DeadlinePolicy::new(false, None, None),
+        ),
         NodeCapabilities::default(),
         [PlacementAcceptance::default()],
         [PlacementAcceptance::default()],
@@ -93,21 +73,11 @@ fn codegen_std_pipeline_runs_with_std_runtime() {
 
     let snk = TestSinkNodeU32_2::new(
         NodeCapabilities::default(),
-        NodePolicy {
-            batching: BatchingPolicy {
-                fixed_n: None,
-                max_delta_t: None,
-            },
-            budget: BudgetPolicy {
-                tick_budget: None,
-                watchdog_ticks: None,
-            },
-            deadline: DeadlinePolicy {
-                require_absolute_deadline: false,
-                slack_tolerance_ns: None,
-                default_deadline_ns: None,
-            },
-        },
+        NodePolicy::new(
+            BatchingPolicy::none(),
+            BudgetPolicy::new(None, None),
+            DeadlinePolicy::new(false, None, None),
+        ),
         [PlacementAcceptance::default()],
         |s: &str| println!("--- [***Sink Output***] --- {}", s),
     );

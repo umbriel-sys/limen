@@ -3,12 +3,13 @@
 use crate::types::{DeadlineNs, QoSClass, Ticks};
 
 /// Batch formation policy: fixed-N and/or Δt micro-batching.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchingPolicy {
     /// Fixed number of items per batch (>= 1). If `None`, do not use fixed-N.
-    pub fixed_n: Option<usize>,
+    fixed_n: Option<usize>,
     /// Maximum micro-batching window in ticks (Δt). If `None`, no Δt cap.
-    pub max_delta_t: Option<Ticks>,
+    max_delta_t: Option<Ticks>,
 }
 
 impl BatchingPolicy {
@@ -43,6 +44,18 @@ impl BatchingPolicy {
             max_delta_t: Some(cap),
         }
     }
+
+    /// Borrow the fixed-N batching value (if any).
+    #[inline]
+    pub const fn fixed_n(&self) -> &Option<usize> {
+        &self.fixed_n
+    }
+
+    /// Borrow the delta-t cap (if any).
+    #[inline]
+    pub const fn max_delta_t(&self) -> &Option<Ticks> {
+        &self.max_delta_t
+    }
 }
 
 impl Default for BatchingPolicy {
@@ -52,30 +65,88 @@ impl Default for BatchingPolicy {
 }
 
 /// Budget policy for node execution.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BudgetPolicy {
     /// Per-step tick budget; exceeding invokes over-budget action.
-    pub tick_budget: Option<Ticks>,
+    tick_budget: Option<Ticks>,
     /// *Hard* guardrail for a single step. If exceeded, the runtime may call
     /// `Node::on_watchdog_timeout` and/or apply `OverBudgetAction`.
     ///
     /// Keep in no_std: only requires a monotonic clock; no OS timers.
-    pub watchdog_ticks: Option<Ticks>,
+    watchdog_ticks: Option<Ticks>,
+}
+
+impl BudgetPolicy {
+    /// Construct a new budget policy.
+    pub const fn new(tick_budget: Option<Ticks>, watchdog_ticks: Option<Ticks>) -> Self {
+        Self {
+            tick_budget,
+            watchdog_ticks,
+        }
+    }
+
+    /// Borrow the tick budget.
+    #[inline]
+    pub const fn tick_budget(&self) -> &Option<Ticks> {
+        &self.tick_budget
+    }
+
+    /// Borrow the watchdog ticks.
+    #[inline]
+    pub const fn watchdog_ticks(&self) -> &Option<Ticks> {
+        &self.watchdog_ticks
+    }
 }
 
 /// Deadline policy for messages processed by a node.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeadlinePolicy {
     /// Whether to require absolute deadlines on inputs (P2).
-    pub require_absolute_deadline: bool,
+    require_absolute_deadline: bool,
     /// Optional slack tolerance (ns) before defaulting/degrading.
-    pub slack_tolerance_ns: Option<DeadlineNs>,
+    slack_tolerance_ns: Option<DeadlineNs>,
     /// Synthesize a deadline when inputs have none: absolute_deadline = now + value.
     /// Leave `None` to avoid synthesizing (strict mode or non-EDF).
-    pub default_deadline_ns: Option<DeadlineNs>,
+    default_deadline_ns: Option<DeadlineNs>,
+}
+
+impl DeadlinePolicy {
+    /// Construct a deadline policy.
+    pub const fn new(
+        require_absolute_deadline: bool,
+        slack_tolerance_ns: Option<DeadlineNs>,
+        default_deadline_ns: Option<DeadlineNs>,
+    ) -> Self {
+        Self {
+            require_absolute_deadline,
+            slack_tolerance_ns,
+            default_deadline_ns,
+        }
+    }
+
+    /// Borrow the require_absolute_deadline bool.
+    #[inline]
+    pub const fn require_absolute_deadline(&self) -> bool {
+        self.require_absolute_deadline
+    }
+
+    /// Borrow the slack_tolerance_ns.
+    #[inline]
+    pub const fn slack_tolerance_ns(&self) -> Option<DeadlineNs> {
+        self.slack_tolerance_ns
+    }
+
+    /// Borrow the default_deadline_ns.
+    #[inline]
+    pub const fn default_deadline_ns(&self) -> Option<DeadlineNs> {
+        self.default_deadline_ns
+    }
 }
 
 /// Action to take when budgets or deadlines are breached.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverBudgetAction {
     /// Drop the message(s).
@@ -92,6 +163,7 @@ pub enum OverBudgetAction {
 ///
 /// `soft_*` define backpressure **watermarks**; `max_*` define **hard caps**.
 /// Watermark state is derived from live occupancy snapshots and drives scheduling/backpressure.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCaps {
     /// Maximum number of items permitted (hard cap).
@@ -105,6 +177,45 @@ pub struct QueueCaps {
 }
 
 impl QueueCaps {
+    /// Construct new queue caps.
+    pub const fn new(
+        max_items: usize,
+        soft_items: usize,
+        max_bytes: Option<usize>,
+        soft_bytes: Option<usize>,
+    ) -> Self {
+        Self {
+            max_items,
+            soft_items,
+            max_bytes,
+            soft_bytes,
+        }
+    }
+
+    /// Borrow max_items.
+    #[inline]
+    pub const fn max_items(&self) -> &usize {
+        &self.max_items
+    }
+
+    /// Borrow soft_items.
+    #[inline]
+    pub const fn soft_items(&self) -> &usize {
+        &self.soft_items
+    }
+
+    /// Borrow max_bytes.
+    #[inline]
+    pub const fn max_bytes(&self) -> &Option<usize> {
+        &self.max_bytes
+    }
+
+    /// Borrow soft_bytes.
+    #[inline]
+    pub const fn soft_bytes(&self) -> &Option<usize> {
+        &self.soft_bytes
+    }
+
     /// Return `true` if the given occupancy is below soft watermarks.
     pub fn below_soft(&self, items: usize, bytes: usize) -> bool {
         let items_ok = items < self.soft_items;
@@ -130,6 +241,7 @@ impl QueueCaps {
 }
 
 /// Watermark state derived from queue occupancy and caps.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatermarkState {
     /// Well below soft watermarks.
@@ -141,6 +253,7 @@ pub enum WatermarkState {
 }
 
 /// Admission behavior when the queue is not clearly below soft caps.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionPolicy {
     /// Deadline-aware and QoS-aware admission between soft and hard caps.
@@ -154,6 +267,7 @@ pub enum AdmissionPolicy {
 }
 
 /// Decision returned by an admission controller.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionDecision {
     /// Admit the item.
@@ -166,6 +280,7 @@ pub enum AdmissionDecision {
 ///
 /// `caps` → soft/hard watermarks; `admission` → behavior between soft/hard;
 /// `over_budget` → action when capacity/budget constraints are breached.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgePolicy {
     /// Capacity and watermarks.
@@ -176,24 +291,38 @@ pub struct EdgePolicy {
     pub over_budget: OverBudgetAction,
 }
 
-/// Policy bundle attached to a node.
-///
-/// Used by schedulers:
-/// - `batching.fixed_n`/`max_delta_t` guide batch formation.
-/// - `budget.tick_budget` (soft) and `budget.watchdog_ticks` (hard) guide time budgeting.
-/// - `deadline.default_deadline_ns` allows EDF synthesis when inputs have no deadlines,
-///   `deadline.slack_tolerance_ns` provides grace, and `require_absolute_deadline` enforces strictness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct NodePolicy {
-    /// Batch formation policy.
-    pub batching: BatchingPolicy,
-    /// Budget policy for execution steps.
-    pub budget: BudgetPolicy,
-    /// Deadline policy for inputs/outputs.
-    pub deadline: DeadlinePolicy,
-}
-
 impl EdgePolicy {
+    /// Construct a new `EdgePolicy`.
+    pub const fn new(
+        caps: QueueCaps,
+        admission: AdmissionPolicy,
+        over_budget: OverBudgetAction,
+    ) -> Self {
+        Self {
+            caps,
+            admission,
+            over_budget,
+        }
+    }
+
+    /// Borrow caps.
+    #[inline]
+    pub const fn caps(&self) -> &QueueCaps {
+        &self.caps
+    }
+
+    /// Borrow admission policy.
+    #[inline]
+    pub const fn admission(&self) -> &AdmissionPolicy {
+        &self.admission
+    }
+
+    /// Borrow over-budget action.
+    #[inline]
+    pub const fn over_budget(&self) -> &OverBudgetAction {
+        &self.over_budget
+    }
+
     /// Compute a watermark state from occupancy stats.
     pub fn watermark(&self, items: usize, bytes: usize) -> WatermarkState {
         if self.caps.at_or_above_hard(items, bytes) {
@@ -226,5 +355,56 @@ impl EdgePolicy {
                 AdmissionPolicy::Block => AdmissionDecision::Reject, // core cannot block TODO: FIX!
             },
         }
+    }
+}
+
+/// Policy bundle attached to a node.
+///
+/// Used by schedulers:
+/// - `batching.fixed_n`/`max_delta_t` guide batch formation.
+/// - `budget.tick_budget` (soft) and `budget.watchdog_ticks` (hard) guide time budgeting.
+/// - `deadline.default_deadline_ns` allows EDF synthesis when inputs have no deadlines,
+///   `deadline.slack_tolerance_ns` provides grace, and `require_absolute_deadline` enforces strictness.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodePolicy {
+    /// Batch formation policy.
+    batching: BatchingPolicy,
+    /// Budget policy for execution steps.
+    budget: BudgetPolicy,
+    /// Deadline policy for inputs/outputs.
+    deadline: DeadlinePolicy,
+}
+
+impl NodePolicy {
+    /// Construct a `NodePolicy` explicitly.
+    pub const fn new(
+        batching: BatchingPolicy,
+        budget: BudgetPolicy,
+        deadline: DeadlinePolicy,
+    ) -> Self {
+        Self {
+            batching,
+            budget,
+            deadline,
+        }
+    }
+
+    /// Borrow the batching policy.
+    #[inline]
+    pub const fn batching(&self) -> &BatchingPolicy {
+        &self.batching
+    }
+
+    /// Borrow the budget policy.
+    #[inline]
+    pub const fn budget(&self) -> &BudgetPolicy {
+        &self.budget
+    }
+
+    /// borrow the deadline policy.
+    #[inline]
+    pub const fn deadline(&self) -> &DeadlinePolicy {
+        &self.deadline
     }
 }

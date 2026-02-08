@@ -47,21 +47,11 @@ fn core_pipeline_runs_with_nostd_runtime() {
         }
     };
 
-    let node_policy = NodePolicy {
-        batching: BatchingPolicy {
-            fixed_n: None,
-            max_delta_t: None,
-        },
-        budget: BudgetPolicy {
-            tick_budget: None,
-            watchdog_ticks: None,
-        },
-        deadline: DeadlinePolicy {
-            require_absolute_deadline: false,
-            slack_tolerance_ns: None,
-            default_deadline_ns: None,
-        },
-    };
+    let node_policy = NodePolicy::new(
+        BatchingPolicy::none(),
+        BudgetPolicy::new(None, None),
+        DeadlinePolicy::new(false, None, None),
+    );
 
     // clock
     let clock = NoStdLinuxMonotonicClock::new();

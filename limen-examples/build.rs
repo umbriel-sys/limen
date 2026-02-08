@@ -7,16 +7,11 @@ use syn::parse_quote;
 fn main() {
     // Per-graph policy (tune as needed)
     let edge_policy: syn::Expr = parse_quote! {
-        limen_core::policy::EdgePolicy {
-            caps: limen_core::policy::QueueCaps {
-                max_items: 8,
-                soft_items: 6,
-                max_bytes: None,
-                soft_bytes: None,
-            },
-            admission: limen_core::policy::AdmissionPolicy::DropNewest,
-            over_budget: limen_core::policy::OverBudgetAction::Drop,
-        }
+        limen_core::policy::EdgePolicy::new(
+            limen_core::policy::QueueCaps::new(8, 6, None, None),
+            limen_core::policy::AdmissionPolicy::DropNewest,
+            limen_core::policy::OverBudgetAction::Drop,
+        )
     };
 
     // Build a typed AST for the graph

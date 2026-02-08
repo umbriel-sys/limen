@@ -199,8 +199,8 @@ where
 
         // Cache static policy (copy) for deadline/budget checks.
         let policy = self.node.policy();
-        let budget_policy = policy.budget;
-        let deadline_policy = policy.deadline;
+        let budget_policy = policy.budget();
+        let deadline_policy = policy.deadline();
 
         // ---- Execute node step + measure latency ----
         let timestamp_start_ns = ctx.now_nanos();
@@ -212,14 +212,14 @@ where
 
         let mut budget_ns_opt: Option<u64> = None;
 
-        if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns {
+        if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns() {
             budget_ns_opt = Some(default_deadline_ns.as_u64());
-        } else if let Some(tick_budget) = budget_policy.tick_budget {
-            let budget_ns = ctx.ticks_to_nanos(tick_budget);
+        } else if let Some(tick_budget) = budget_policy.tick_budget() {
+            let budget_ns = ctx.ticks_to_nanos(*tick_budget);
             budget_ns_opt = Some(budget_ns);
         }
 
-        let slack_ns: u64 = match deadline_policy.slack_tolerance_ns {
+        let slack_ns: u64 = match deadline_policy.slack_tolerance_ns() {
             Some(slack) => slack.as_u64(),
             None => 0,
         };

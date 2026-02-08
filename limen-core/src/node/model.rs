@@ -182,7 +182,7 @@ where
         T: Telemetry + Sized,
     {
         // Decide effective batch size.
-        let want = self.node_policy.batching.fixed_n.unwrap_or(1);
+        let want = self.node_policy.batching().fixed_n().unwrap_or(1);
         let cap = self.backend_caps.max_batch.unwrap_or(usize::MAX);
         let nmax = core::cmp::min(core::cmp::min(want, cap), MAX_BATCH);
 
@@ -230,8 +230,8 @@ where
         T: Telemetry,
     {
         // Use configured budget backoff if present; otherwise yield once at "now".
-        if let Some(backoff) = self.node_policy.budget.watchdog_ticks {
-            let until = clock.now_ticks().saturating_add(backoff);
+        if let Some(backoff) = self.node_policy.budget().watchdog_ticks() {
+            let until = clock.now_ticks().saturating_add(*backoff);
             Ok(StepResult::YieldUntil(until))
         } else {
             Ok(StepResult::YieldUntil(clock.now_ticks()))

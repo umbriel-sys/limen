@@ -5,7 +5,7 @@ use crate::errors::{NodeErrorKind, RuntimeError, RuntimeInvariantError};
 use crate::event_message;
 use crate::graph::GraphApi;
 use crate::node::StepResult;
-use crate::policy::{BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
+use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
 use crate::prelude::{PlatformClock, Telemetry};
 
 use super::LimenRuntime;
@@ -41,21 +41,11 @@ where
             // Any value is fine; init() will replace the whole array.
             watermark: WatermarkState::AtOrAboveHard,
         };
-        const INIT_POLICY: NodePolicy = NodePolicy {
-            batching: crate::policy::BatchingPolicy {
-                fixed_n: Some(1),
-                max_delta_t: None,
-            },
-            budget: BudgetPolicy {
-                tick_budget: None,
-                watchdog_ticks: None,
-            },
-            deadline: DeadlinePolicy {
-                require_absolute_deadline: false,
-                slack_tolerance_ns: None,
-                default_deadline_ns: None,
-            },
-        };
+        const INIT_POLICY: NodePolicy = NodePolicy::new(
+            BatchingPolicy::none(),
+            BudgetPolicy::new(None, None),
+            DeadlinePolicy::new(false, None, None),
+        );
 
         Self {
             stop: false,

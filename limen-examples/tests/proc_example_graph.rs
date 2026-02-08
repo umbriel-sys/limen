@@ -7,16 +7,11 @@ use limen_core::node::Node;
 use limen_core::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
 
 /// Example edge policy used by the proc-macro graph.
-const EXAMPLE_EDGE_POLICY: EdgePolicy = EdgePolicy {
-    caps: QueueCaps {
-        max_items: 8,
-        soft_items: 6,
-        max_bytes: None,
-        soft_bytes: None,
-    },
-    admission: AdmissionPolicy::DropNewest,
-    over_budget: OverBudgetAction::Drop,
-};
+const EXAMPLE_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
+    QueueCaps::new(8, 6, None, None),
+    AdmissionPolicy::DropNewest,
+    OverBudgetAction::Drop,
+);
 
 // The DSL is identical in shape to the codegen example graph; the only
 // difference is that we invoke it via the `define_graph!` proc macro rather

@@ -183,7 +183,8 @@ where
     {
         // Decide effective batch size.
         let want = self.node_policy.batching().fixed_n().unwrap_or(1);
-        let cap = self.backend_caps.max_batch.unwrap_or(usize::MAX);
+        // FIX / TODO: should this unwrap to usize::max?
+        let cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
         let nmax = core::cmp::min(core::cmp::min(want, cap), MAX_BATCH);
 
         // Single-item fast path (no alloc, no arrays).

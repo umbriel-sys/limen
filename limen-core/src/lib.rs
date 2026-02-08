@@ -48,10 +48,10 @@ pub mod message;
 pub mod platform;
 pub mod policy;
 
+pub mod compute;
 pub mod scheduling;
 pub mod telemetry;
 
-pub mod compute;
 pub mod edge;
 pub mod graph;
 pub mod node;

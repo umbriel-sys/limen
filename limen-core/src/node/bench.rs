@@ -334,12 +334,7 @@ impl ComputeModel<u32, u32> for TestU32Model {
 
     #[inline]
     fn metadata(&self) -> ModelMetadata {
-        ModelMetadata {
-            preferred_input: MemoryClass::Host,
-            preferred_output: MemoryClass::Host,
-            max_input_bytes: None,
-            max_output_bytes: None,
-        }
+        ModelMetadata::new(MemoryClass::Host, MemoryClass::Host, None, None)
     }
 }
 
@@ -356,11 +351,7 @@ impl ComputeBackend<u32, u32> for TestU32Backend {
 
     #[inline]
     fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
-            device_streams: false,
-            max_batch: Some(usize::MAX),
-            dtype_mask: 0,
-        }
+        BackendCapabilities::new(false, Some(usize::MAX), 0)
     }
 
     #[inline]

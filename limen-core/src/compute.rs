@@ -13,27 +13,101 @@ use crate::memory::MemoryClass;
 use crate::message::payload::Payload;
 
 /// Capability descriptor of a compute backend.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendCapabilities {
     /// Whether the backend supports device streams (async/event completion).
-    pub device_streams: bool,
+    device_streams: bool,
     /// Maximum supported batch size, if any.
-    pub max_batch: Option<usize>,
+    max_batch: Option<usize>,
     /// Bitfield for supported data types (backend-defined; optional use).
-    pub dtype_mask: u64,
+    dtype_mask: u64,
+}
+
+impl BackendCapabilities {
+    /// Create a new `BackendCapabilities`.
+    #[inline]
+    pub fn new(device_streams: bool, max_batch: Option<usize>, dtype_mask: u64) -> Self {
+        Self {
+            device_streams,
+            max_batch,
+            dtype_mask,
+        }
+    }
+
+    /// Whether the backend supports device streams (async/event completion).
+    #[inline]
+    pub fn device_streams(&self) -> &bool {
+        &self.device_streams
+    }
+
+    /// Maximum supported batch size, if any.
+    #[inline]
+    pub fn max_batch(&self) -> &Option<usize> {
+        &self.max_batch
+    }
+
+    /// Bitfield for supported data types (backend-defined; optional use).
+    #[inline]
+    pub fn dtype_mask(&self) -> &u64 {
+        &self.dtype_mask
+    }
 }
 
 /// Model metadata describing input/output shapes and preferences.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelMetadata {
     /// Preferred input memory class (Host/Pinned/Device).
-    pub preferred_input: MemoryClass,
+    preferred_input: MemoryClass,
     /// Preferred output memory class.
-    pub preferred_output: MemoryClass,
+    preferred_output: MemoryClass,
     /// Optional maximum input size in bytes (admission hint).
-    pub max_input_bytes: Option<usize>,
+    max_input_bytes: Option<usize>,
     /// Optional maximum output size in bytes.
-    pub max_output_bytes: Option<usize>,
+    max_output_bytes: Option<usize>,
+}
+
+impl ModelMetadata {
+    /// Create a new `ModelMetadata`.
+    #[inline]
+    pub fn new(
+        preferred_input: MemoryClass,
+        preferred_output: MemoryClass,
+        max_input_bytes: Option<usize>,
+        max_output_bytes: Option<usize>,
+    ) -> Self {
+        Self {
+            preferred_input,
+            preferred_output,
+            max_input_bytes,
+            max_output_bytes,
+        }
+    }
+
+    /// Preferred input memory class (Host/Pinned/Device).
+    #[inline]
+    pub fn preferred_input(&self) -> &MemoryClass {
+        &self.preferred_input
+    }
+
+    /// Preferred output memory class.
+    #[inline]
+    pub fn preferred_output(&self) -> &MemoryClass {
+        &self.preferred_output
+    }
+
+    /// Optional maximum input size in bytes (admission hint).
+    #[inline]
+    pub fn max_input_bytes(&self) -> &Option<usize> {
+        &self.max_input_bytes
+    }
+
+    /// Optional maximum output size in bytes.
+    #[inline]
+    pub fn max_output_bytes(&self) -> &Option<usize> {
+        &self.max_output_bytes
+    }
 }
 
 /// A loaded model that can perform inference.
@@ -92,16 +166,23 @@ pub trait ComputeBackend<InP: Payload, OutP: Payload> {
 
 /// A simple artifact passed to backends for model creation (POC-friendly).
 #[cfg(feature = "std")]
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ModelArtifact {
     /// Raw bytes of a model file or an engine-specific blob.
-    pub bytes: std::sync::Arc<Vec<u8>>,
+    bytes: std::sync::Arc<Vec<u8>>,
     /// Optional label or path hint.
-    pub label: Option<String>,
+    label: Option<String>,
 }
 
 #[cfg(feature = "std")]
 impl ModelArtifact {
+    /// Construct from an Arc of bytes and an optional label.
+    #[inline]
+    pub fn new(bytes: std::sync::Arc<Vec<u8>>, label: Option<String>) -> Self {
+        Self { bytes, label }
+    }
+
     /// Construct from raw bytes.
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
@@ -114,5 +195,17 @@ impl ModelArtifact {
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
         Ok(Self::from_bytes(bytes))
+    }
+
+    /// Access the bytes (cloned Arc).
+    #[inline]
+    pub fn bytes(&self) -> std::sync::Arc<Vec<u8>> {
+        self.bytes.clone()
+    }
+
+    /// Access the optional label as `Option<&str>`.
+    #[inline]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 }

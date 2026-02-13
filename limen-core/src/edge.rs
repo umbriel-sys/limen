@@ -355,7 +355,7 @@ pub mod contract_tests {
     use super::*;
     use crate::message::{Message, MessageHeader};
     use crate::policy::{AdmissionPolicy, BatchingPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
-    use crate::types::Ticks;
+    use crate::types::{DeadlineNs, Ticks};
 
     const TEST_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
         QueueCaps::new(8, 6, None, None),
@@ -443,6 +443,21 @@ pub mod contract_tests {
                 fn admission_policies() {
                     fixtures::run_admission_policies(|| $make());
                 }
+
+                #[test]
+                fn batch_get_admission_drop_newest_between_soft_and_hard() {
+                    fixtures::batch_get_admission_drop_newest_between_soft_and_hard(|| $make());
+                }
+
+                #[test]
+                fn batch_get_admission_evict_until_below_hard() {
+                    fixtures::batch_get_admission_evict_until_below_hard(|| $make());
+                }
+
+                #[test]
+                fn batch_item_bytes_and_deadline_semantics() {
+                    fixtures::batch_item_bytes_and_deadline_semantics(|| $make());
+                }
             }
         };
     }
@@ -463,7 +478,10 @@ pub mod contract_tests {
         run_batch_fixed_and_delta(&mut make);
         run_batch_sliding(&mut make);
         run_batch_default_one(&mut make);
-        run_admission_policies(&mut make)
+        run_admission_policies(&mut make);
+        batch_get_admission_drop_newest_between_soft_and_hard(&mut make);
+        batch_get_admission_evict_until_below_hard(&mut make);
+        batch_item_bytes_and_deadline_semantics(&mut make)
     }
 
     /// Basic push / peek / pop / is_empty invariants.
@@ -835,5 +853,162 @@ pub mod contract_tests {
             assert_eq!(*y.header().creation_tick(), *b.header().creation_tick());
             assert!(matches!(q.try_pop(), Err(QueueError::Empty)));
         }
+    }
+
+    /// Batch admission: DropNewest between soft and hard should be DropNewest.
+    ///
+    /// Uses borrowed BatchView (no `alloc`) so test is `no_std` compatible.
+    pub fn batch_get_admission_drop_newest_between_soft_and_hard<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge<Item = Message<u32>>,
+    {
+        let caps = QueueCaps::new(4, 2, None, None);
+        let mut q = make();
+        let policy_drop_newest =
+            EdgePolicy::new(caps, AdmissionPolicy::DropNewest, OverBudgetAction::Drop);
+
+        // push two items so the queue sits BetweenSoftAndHard for our caps.
+        // For QueueCaps::new(4,2,...) soft == 2, so having 2 items places the queue
+        // between soft and hard as intended by this test.
+        let m1 = make_msg_u32(1);
+        assert_eq!(q.try_push(m1, &policy_drop_newest), EnqueueResult::Enqueued);
+        let m2 = make_msg_u32(2);
+        assert_eq!(q.try_push(m2, &policy_drop_newest), EnqueueResult::Enqueued);
+
+        // Build a small borrowed array of two messages.
+        let mut arr: [Message<u32>; 2] = core::array::from_fn(|i| {
+            let mut h = MessageHeader::empty();
+            h.set_creation_tick(Ticks::new((i as u64) + 2));
+            Message::new(h, (i as u32) + 2)
+        });
+
+        // Borrow first 2 entries as a BatchView (no alloc).
+        let batch_view = BatchView::from_borrowed(&mut arr, 2);
+
+        // Ask the queue for an admission decision for the batch.
+        let decision = q.get_admission_decision(&policy_drop_newest, &batch_view);
+        assert_eq!(decision, AdmissionDecision::DropNewest);
+    }
+
+    /// Batch admission: At-or-above-hard + DropOldest -> EvictUntilBelowHard; but
+    /// if the batch's single item_bytes alone exceed hard cap -> Reject.
+    ///
+    /// All batch values are borrowed (no alloc).
+    pub fn batch_get_admission_evict_until_below_hard<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge<Item = Message<u32>>,
+    {
+        // Add a hard byte cap so we can test Reject when a batch alone exceeds bytes.
+        let caps = QueueCaps::new(4, 2, Some(1024), Some(512));
+
+        // Create a queue and fill it so occupancy reports AtOrAboveHard.
+        // Use a fill policy that will not evict while we grow the queue,
+        // otherwise DropOldest would evict and prevent the queue reaching hard.
+        let mut q = make();
+        let policy_fill = EdgePolicy::new(
+            caps,
+            AdmissionPolicy::DeadlineAndQoSAware,
+            OverBudgetAction::Drop,
+        );
+
+        // push enough single messages to reach the configured max_items/hard state.
+        for _ in 0..*caps.max_items() {
+            let m = make_msg_u32(10);
+            let _ = q.try_push(m, &policy_fill);
+        }
+
+        // Now construct the DropOldest policy which we will query against.
+        let policy_drop_oldest =
+            EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
+
+        // Small batch (1 message) using borrowed array: should prompt EvictUntilBelowHard.
+        let mut small: [Message<u32>; 1] = core::array::from_fn(|_| {
+            let mut h = MessageHeader::empty();
+            h.set_creation_tick(Ticks::new(20u64));
+            Message::new(h, 42u32)
+        });
+        let batch_small = BatchView::from_borrowed(&mut small, 1);
+
+        let decision_small = q.get_admission_decision(&policy_drop_oldest, &batch_small);
+        assert_eq!(decision_small, AdmissionDecision::EvictUntilBelowHard);
+
+        // Now craft a "large" borrowed batch that by itself exceeds the hard byte cap.
+        // We simulate this by creating an array with many messages (more than caps.max_items()*4)
+        // so its total bytes are large relative to caps.
+        const LARGE_N: usize = 64;
+        // Construct an array with LARGE_N messages (default headers), then take a large prefix.
+        let mut large_arr: [Message<u32>; LARGE_N] = core::array::from_fn(|_| Message::default());
+        // Fill headers with consistent ticks.
+        for m in &mut large_arr[..LARGE_N] {
+            let h = m.header_mut();
+            h.set_creation_tick(Ticks::new(30u64));
+            // Optionally set a larger payload by manipulating header.payload_size_bytes
+            // (we rely on Message::default() being valid and we can adjust header directly).
+            h.set_payload_size_bytes(1024); // inflate per-message bytes to ensure batch is huge.
+        }
+
+        // Use a borrowed batch of LARGE_N items.
+        let batch_large = BatchView::from_borrowed(&mut large_arr, LARGE_N);
+
+        let decision_large = q.get_admission_decision(&policy_drop_oldest, &batch_large);
+        // Because the batch's item_bytes alone exceed the hard cap even on an empty queue,
+        // EdgePolicy::decide should return Reject.
+        assert_eq!(decision_large, AdmissionDecision::Reject);
+    }
+
+    /// Batch AdmissionInfo semantics: item_bytes sums headers+payloads and
+    /// deadline is taken from the LAST message in the batch.
+    ///
+    /// Uses borrowed BatchView and no allocation.
+    pub fn batch_item_bytes_and_deadline_semantics<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge<Item = Message<u32>>,
+    {
+        let caps = QueueCaps::new(100, 50, None, None);
+        let q = make();
+
+        // Create a borrowed array with two messages; last has later deadline.
+        let mut arr: [Message<u32>; 2] = core::array::from_fn(|i| {
+            let mut h = MessageHeader::empty();
+            h.set_creation_tick(Ticks::new((i as u64) + 1));
+            Message::new(h, (i as u32) + 1)
+        });
+
+        // Set deadlines explicitly: first smaller, last larger.
+        arr[0]
+            .header_mut()
+            .set_deadline_ns(Some(DeadlineNs::new(1000)));
+        arr[1]
+            .header_mut()
+            .set_deadline_ns(Some(DeadlineNs::new(2000)));
+
+        let batch = BatchView::from_borrowed(&mut arr, 2);
+
+        let policy = EdgePolicy::new(
+            caps,
+            AdmissionPolicy::DeadlineAndQoSAware,
+            OverBudgetAction::Drop,
+        );
+
+        // Ensure the batch.total bytes are visible to the policy via get_admission_decision.
+        let decision = q.get_admission_decision(&policy, &batch);
+        assert_eq!(decision, AdmissionDecision::Admit);
+
+        // Additionally assert that AdmissionInfo returns the batch deadline from the last message.
+        let occ = q.occupancy(&policy);
+        let decision2 = policy.decide(
+            occ.items,
+            occ.bytes,
+            batch.item_bytes(),
+            batch.deadline(),
+            batch.qos(),
+        );
+        assert_eq!(decision2, AdmissionDecision::Admit);
+
+        // And confirm that deadline() indeed matches the last header we set (2000).
+        assert_eq!(batch.deadline(), Some(DeadlineNs::new(2000)));
     }
 }

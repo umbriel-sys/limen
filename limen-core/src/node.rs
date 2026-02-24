@@ -825,12 +825,12 @@ where
     where
         T: Telemetry;
 
-    // Note: we intentionally use an *anonymous* borrow `'_` for the second
-    // lifetime parameter of OutStepContext. This ensures each call to
-    // `process_message(..., &mut out)` creates a *fresh* short-lived mutable
-    // borrow of `out`, allowing repeated re-borrows inside a loop over a
-    // batch. If we tied this borrow to the batch lifetime, the borrow would
-    // last the whole batch and prevent reborrowing.
+    /// Note: we intentionally use an *anonymous* borrow `'_` for the second
+    /// lifetime parameter of OutStepContext. This ensures each call to
+    /// `process_message(..., &mut out)` creates a *fresh* short-lived mutable
+    /// borrow of `out`, allowing repeated re-borrows inside a loop over a
+    /// batch. If we tied this borrow to the batch lifetime, the borrow would
+    /// last the whole batch and prevent reborrowing.
     fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
         &mut self,
         msg: &Message<InP>,

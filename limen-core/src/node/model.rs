@@ -18,7 +18,7 @@ use crate::edge::{Edge, EnqueueResult};
 use crate::errors::{InferenceError, NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message, MessageHeader};
-use crate::node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult};
+use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
 use crate::policy::NodePolicy;
 use crate::prelude::{PlatformClock, Telemetry};
 
@@ -171,9 +171,36 @@ where
         self.model.init().map_err(map_inference_err)
     }
 
+    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+        &mut self,
+        msg: &Message<InP>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, 1, OutP, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        // Run single-item inference into the reusable scratch output.
+        let inp: &InP = msg.payload();
+        self.model
+            .infer_one(inp, &mut self.scratch_out)
+            .map_err(map_inference_err)?;
+
+        // Build output message reusing header from input (clone the header).
+        let hdr = msg.header().clone();
+        let out_msg = Message::new(hdr, core::mem::take(&mut self.scratch_out));
+
+        // Push to output 0 and map enqueue result to StepResult.
+        match out_ctx.out_try_push(0, out_msg) {
+            EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => Ok(StepResult::MadeProgress),
+            EnqueueResult::Rejected => Ok(StepResult::Backpressured),
+        }
+    }
+
     fn step<'g, 't, 'c, InQ, OutQ, C, T>(
         &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
     ) -> Result<StepResult, NodeError>
     where
         InQ: Edge<Item = Message<InP>>,
@@ -181,43 +208,50 @@ where
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
-        // Decide effective batch size.
+        // Pop a single message (map queue errors consistently).
+        let m_in = match ctx.in_try_pop(0) {
+            Ok(m) => m,
+            Err(QueueError::Empty) => return Ok(StepResult::NoInput),
+            Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
+            Err(e) => return Err(map_queue_err(e)),
+        };
+
+        // Create an OutStepContext (borrows outputs/telemetry) while message is owned.
+        let mut out = ctx.to_out_step_context();
+
+        // Delegate to per-message hook. We pass a reference to the owned message.
+        let res = self.process_message(&m_in, &mut out)?;
+        Ok(res)
+    }
+
+    fn step_batch<'g, 't, 'c, InQ, OutQ, C, T>(
+        &mut self,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge<Item = Message<InP>>,
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        // Decide effective batch size from node policy, backend caps, and MAX_BATCH.
         let want = self.node_policy.batching().fixed_n().unwrap_or(1);
-        // FIX / TODO: should this unwrap to usize::max?
-        let cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
-        let nmax = core::cmp::min(core::cmp::min(want, cap), MAX_BATCH);
+        let backend_cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
+        let nmax = core::cmp::min(core::cmp::min(want, backend_cap), MAX_BATCH);
 
-        // Single-item fast path (no alloc, no arrays).
-        if nmax == 1 {
-            let m_in = match cx.in_try_pop(0) {
-                Ok(m) => m,
-                Err(QueueError::Empty) => return Ok(StepResult::NoInput),
-                Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
-                Err(e) => return Err(map_queue_err(e)),
-            };
-
-            let inp: &InP = m_in.payload();
-            self.model
-                .infer_one(inp, &mut self.scratch_out)
-                .map_err(map_inference_err)?;
-
-            let out_msg = m_in.with_payload(core::mem::take(&mut self.scratch_out));
-            return match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {
-                    Ok(StepResult::MadeProgress)
-                }
-                EnqueueResult::Rejected => Ok(StepResult::Backpressured),
-            };
+        if nmax <= 1 {
+            // No batching requested — fall back to single-step.
+            return self.step(ctx);
         }
 
-        // Batched path:
+        // Use the existing batched helpers which consume via `ctx.in_try_pop` and call infer_batch.
         #[cfg(not(feature = "alloc"))]
         {
-            self.step_batched_stack::<InQ, OutQ, C, T>(cx, nmax)
+            self.step_batched_stack::<InQ, OutQ, C, T>(ctx, nmax)
         }
         #[cfg(feature = "alloc")]
         {
-            self.step_batched_alloc::<InQ, OutQ, C, T>(cx, nmax)
+            self.step_batched_alloc::<InQ, OutQ, C, T>(ctx, nmax)
         }
     }
 

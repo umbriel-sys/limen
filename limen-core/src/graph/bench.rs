@@ -921,6 +921,7 @@ pub mod concurrent_graph {
     }
 
     /// ===== std-only opaque owned-bundle used by GraphApi take/put =====
+    #[allow(clippy::large_enum_variant)]
     pub enum TestPipelineStdOwnedBundle<SrcClk: PlatformClock + std::marker::Send + 'static> {
         /// node 0: out=[e1.out] + ingress updater.
         N0 {

@@ -269,10 +269,7 @@ where
         self.produce_n_items_in_backlog(self.random_backlog_add_count());
 
         // Pop and send message.
-        match self.try_pop_from_backlog() {
-            Some(message) => Some((0, message)),
-            None => None,
-        }
+        self.try_pop_from_backlog().map(|message| (0, message))
     }
 
     #[inline]

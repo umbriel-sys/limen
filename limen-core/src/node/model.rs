@@ -188,7 +188,7 @@ where
             .map_err(map_inference_err)?;
 
         // Build output message reusing header from input (clone the header).
-        let hdr = msg.header().clone();
+        let hdr = *msg.header();
         let out_msg = Message::new(hdr, core::mem::take(&mut self.scratch_out));
 
         // Push to output 0 and map enqueue result to StepResult.

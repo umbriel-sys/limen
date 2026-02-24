@@ -531,6 +531,7 @@ where
     /// and the `OutStepContext<'graph, 'ctx, 'clock, ...>` (which borrows outputs/telemetry)
     /// from the *same* `&'ctx mut self` is the safe way to obtain two disjoint mutable
     /// borrows that the caller can use simultaneously (the borrow checker accepts it).
+    #[allow(clippy::type_complexity)]
     #[inline]
     pub fn pop_input_messages_as_batch_with_out<'ctx>(
         &'ctx mut self,
@@ -831,7 +832,7 @@ where
     /// borrow of `out`, allowing repeated re-borrows inside a loop over a
     /// batch. If we tied this borrow to the batch lifetime, the borrow would
     /// last the whole batch and prevent reborrowing.
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    fn process_message<'graph, 'clock, OutQ, C, T>(
         &mut self,
         msg: &Message<InP>,
         out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
@@ -961,7 +962,7 @@ where
                 for msg in batch_view.iter() {
                     // `msg` is assumed to be `Message<InP>` (owned). We pass a reference to the
                     // per-message hook; the hook may use `ctx` to emit outputs and telemetry.
-                    let msg_ref: &Message<InP> = &msg;
+                    let msg_ref: &Message<InP> = msg;
 
                     // Put the mutable borrow of `out` into a *short, inner scope* so
                     // the borrow ends before the next loop iteration.

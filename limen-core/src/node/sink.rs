@@ -267,7 +267,7 @@ where
                 for msg in batch_view.iter() {
                     // `msg` is assumed to be `Message<InP>` (owned). We pass a reference to the
                     // per-message hook; the hook may use `ctx` to emit outputs and telemetry.
-                    let msg_ref: &Message<InP> = &msg;
+                    let msg_ref: &Message<InP> = msg;
 
                     // Put the mutable borrow of `out` into a *short, inner scope* so
                     // the borrow ends before the next loop iteration.

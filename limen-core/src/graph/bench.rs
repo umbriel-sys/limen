@@ -50,7 +50,7 @@ const Q_32_POLICY: EdgePolicy = EdgePolicy {
 
 // Test source node types.
 #[allow(type_alias_bounds)]
-type SrcNode<SrcClk: PlatformClock> = SourceNode<TestCounterSourceU32_2<SrcClk>, u32, 1>;
+type SrcNode<SrcClk: PlatformClock> = SourceNode<TestCounterSourceU32_2<SrcClk, 32>, u32, 1>;
 const INGRESS_POLICY: EdgePolicy = Q_32_POLICY;
 
 // Test model node types.
@@ -166,7 +166,7 @@ impl<SrcClk: PlatformClock> GraphApi<3, 3> for TestPipeline<SrcClk> {
         let occ = match E {
             0 => {
                 let src = self.nodes.0.node().source_ref();
-                src.ingress_occupancy(&INGRESS_POLICY)
+                src.ingress_occupancy()
             }
             1 => {
                 let e = &self.edges.0;
@@ -777,7 +777,7 @@ pub mod concurrent_graph {
     // Test source node types.
     #[allow(type_alias_bounds)]
     type SrcNode<SrcClk: PlatformClock + std::marker::Send + 'static> =
-        SourceNode<TestCounterSourceU32_2<SrcClk>, u32, 1>;
+        SourceNode<TestCounterSourceU32_2<SrcClk, 32>, u32, 1>;
     // Per-source ingress policies (S = 1 in this graph). No global default.
     const INGRESS_POLICIES: [EdgePolicy; 1] = [Q_32_POLICY];
 
@@ -1181,10 +1181,7 @@ pub mod concurrent_graph {
                     ingress_updater,
                 } => {
                     // Update ingress probe from the live source before stepping.
-                    let occ = node
-                        .node()
-                        .source_ref()
-                        .ingress_occupancy(&INGRESS_POLICIES[0]);
+                    let occ = node.node().source_ref().ingress_occupancy();
                     ingress_updater.update(*occ.items(), *occ.bytes());
 
                     let inputs: [&mut NoQueue<()>; 0] = [/* empty */];

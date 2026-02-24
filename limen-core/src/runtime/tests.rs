@@ -9,7 +9,9 @@ use crate::node::bench::{
     TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
 };
 use crate::node::NodeCapabilities;
-use crate::policy::{BatchingPolicy, BudgetPolicy, DeadlinePolicy, NodePolicy, WatermarkState};
+use crate::policy::{
+    BatchingPolicy, BudgetPolicy, DeadlinePolicy, EdgePolicy, NodePolicy, WatermarkState,
+};
 use crate::prelude::graph_telemetry::GraphTelemetry;
 use crate::prelude::linux::NoStdLinuxMonotonicClock;
 use crate::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
@@ -19,6 +21,17 @@ use crate::types::{QoSClass, SequenceNumber, TraceId};
 
 // Concrete queue type used by the test pipelines
 type Q32 = crate::edge::bench::TestSpscRingBuf<Message<u32>, 8>;
+
+const INGRESS_POLICY: EdgePolicy = EdgePolicy {
+    caps: crate::policy::QueueCaps {
+        max_items: 8,
+        soft_items: 8,
+        max_bytes: None,
+        soft_bytes: None,
+    },
+    over_budget: crate::policy::OverBudgetAction::Drop,
+    admission: crate::policy::AdmissionPolicy::DropOldest,
+};
 
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
@@ -68,6 +81,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
         NodeCapabilities::default(),
         node_policy,
         [PlacementAcceptance::default()],
+        INGRESS_POLICY,
     );
 
     let map = MapNode::new(
@@ -209,6 +223,7 @@ fn std_pipeline_runs_with_std_runtime() {
         NodeCapabilities::default(),
         node_policy,
         [PlacementAcceptance::default()],
+        INGRESS_POLICY,
     );
 
     let map = MapNode::new(

@@ -13,7 +13,7 @@ fn main() {
     GraphBuilder::new("SimpleExampleGraph", GraphVisibility::Public)
         .node(
             Node::new(0)
-                .ty::<TestCounterSourceU32_2<NoStdLinuxMonotonicClock>>()
+                .ty::<TestCounterSourceU32_2<NoStdLinuxMonotonicClock, 32>>()
                 .in_ports(0)
                 .out_ports(1)
                 .in_payload::<()>()

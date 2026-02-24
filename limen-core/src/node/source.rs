@@ -23,7 +23,7 @@ use crate::errors::NodeError;
 use crate::errors::QueueError;
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
-use crate::node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult};
+use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
 use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy};
 use crate::prelude::{BatchView, EdgeDescriptor, PlatformClock, Telemetry};
 use crate::types::{EdgeIndex, NodeIndex, PortId};
@@ -73,6 +73,11 @@ where
     /// `EdgeOccupancy.watermark` using the same thresholds as real edges.
     fn ingress_occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy;
 
+    /// Return the creation tick of the `index`'th ingress item (0-based) without
+    /// dequeuing it. Implementations must be non-blocking and non-destructive.
+    /// Return `None` if metadata is unavailable or `index` is out-of-range.
+    fn peek_ingress_creation_tick(&self, item_index: usize) -> Option<u64>;
+
     /// Return output placement acceptances for zero-copy compatibility.
     fn output_acceptance(&self) -> [PlacementAcceptance; OUT];
 
@@ -93,6 +98,9 @@ where
 
     /// Provide the node policy bundle (batching/budget/deadlines).
     fn policy(&self) -> NodePolicy;
+
+    /// Provude the ingress edge policy for this source node.
+    fn ingress_policy(&self) -> EdgePolicy;
 }
 
 /// A thin adapter that exposes a `Source` as a `Node<0, OUT, (), OutP>`.
@@ -202,12 +210,28 @@ where
         Ok(())
     }
 
-    /// Poll the source once and emit at most one message to an output port.
-    ///
-    /// Returns:
-    /// * `MadeProgress` if a message was produced and enqueued.
-    /// * `Backpressured` if output admission rejected the message.
-    /// * `NoInput` if the source had nothing to produce at this moment.
+    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+        &mut self,
+        _msg: &Message<()>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        if let Some((port, msg)) = self.src.try_produce() {
+            match out_ctx.out_try_push(port, msg) {
+                EnqueueResult::Enqueued => Ok(StepResult::MadeProgress),
+                EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
+                    Ok(StepResult::Backpressured)
+                }
+            }
+        } else {
+            Ok(StepResult::NoInput)
+        }
+    }
+
     #[inline]
     fn step<'g, 't, 'ck, InQ, OutQ, C, T>(
         &mut self,
@@ -226,6 +250,104 @@ where
                     Ok(StepResult::Backpressured)
                 }
             }
+        } else {
+            Ok(StepResult::NoInput)
+        }
+    }
+
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+        &mut self,
+        ctx: &mut StepContext<'graph, 'telemetry, 'clock, 0, OUT, (), OutP, InQ, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge<Item = Message<()>>,
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        let ingress_occ = self
+            .source_ref()
+            .ingress_occupancy(&self.source_ref().ingress_policy());
+        if *ingress_occ.items() == 0 {
+            return Ok(StepResult::NoInput);
+        }
+
+        let policy = self.policy();
+
+        let fixed_opt = *policy.batching().fixed_n();
+        let delta_opt = *policy.batching().max_delta_t();
+
+        let has_batch = match (fixed_opt, delta_opt) {
+            (Some(fixed_n), None) => *ingress_occ.items() >= fixed_n,
+            (None, Some(_max_delta_t)) => {
+                // Span constraint only: a non-empty queue can always produce a span-valid batch of size 1.
+                true
+            }
+            (Some(fixed_n), Some(max_delta_t)) => {
+                // Must be able to form a full fixed_n batch first.
+                if *ingress_occ.items() < fixed_n {
+                    // Not enough items to form the fixed-size batch.
+                    false
+                } else {
+                    // Use the Source-provided non-blocking peek to get creation ticks.
+                    let first_tick_opt = self.src.peek_ingress_creation_tick(0);
+                    let last_tick_opt = self
+                        .src
+                        .peek_ingress_creation_tick(fixed_n.saturating_sub(1));
+
+                    match (first_tick_opt, last_tick_opt) {
+                        (Some(first_ticks), Some(last_ticks)) => {
+                            let span = last_ticks.saturating_sub(first_ticks);
+                            // Compare numeric span against configured max_delta_t.
+                            // If max_delta_t is a wrapper, adjust accessor as needed
+                            // (e.g. `max_delta_t.as_u64()`).
+                            span <= *max_delta_t.as_u64()
+                        }
+                        // If ticks unavailable, we cannot validate span -> not ready.
+                        _ => false,
+                    }
+                }
+            }
+            (None, None) => {
+                // No batching configured: treat as single-message readiness (queue non-empty here).
+                true
+            }
+        };
+
+        if !has_batch {
+            return Ok(StepResult::NoInput);
+        }
+
+        // Desired batch size: fixed_n when present, otherwise 1.
+        let batch_n: usize = fixed_opt.unwrap_or(1);
+
+        // Attempt to produce up to batch_n messages (consume only after validation).
+        let mut made_progress = false;
+
+        for _ in 0..batch_n {
+            match self.src.try_produce() {
+                Some((port, msg)) => {
+                    match ctx.out_try_push(port, msg) {
+                        EnqueueResult::Enqueued => {
+                            made_progress = true;
+                            // continue attempting more items
+                        }
+                        EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
+                            // We produced an item but couldn't push it due to backpressure.
+                            // Return Backpressured so caller knows not all items were delivered.
+                            return Ok(StepResult::Backpressured);
+                        }
+                    }
+                }
+                None => {
+                    // Source had no more items right now.
+                    break;
+                }
+            }
+        }
+
+        if made_progress {
+            Ok(StepResult::MadeProgress)
         } else {
             Ok(StepResult::NoInput)
         }

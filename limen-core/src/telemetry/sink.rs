@@ -129,6 +129,8 @@ pub fn fmt_event<W: fmt::Write>(w: &mut W, e: &TelemetryEvent) -> fmt::Result {
             w.write_str(" ts_end=")?;
             write_u64(w, *ev.timestamp_end_ns())?;
             w.write_str(" dur=")?;
+            w.write_str(" msg_processed=")?;
+            write_u64(w, *ev.processed_count())?;
             write_u64(w, *ev.duration_ns())?;
             w.write_str(" dl=")?;
             if let Some(d) = *ev.deadline_ns() {

@@ -58,3 +58,13 @@ pub mod node;
 pub mod runtime;
 
 pub mod prelude;
+
+// current PR notes:
+//
+// - what is nmax / what shoud it be?
+//   - pop_input_messages_as_batch has nmax as well as node policy fixed_n. this should be the  actual nodes max batch, where does this come from?
+//
+// - batch policy, sliding window should only have stride, size comes from nmax.
+//
+// - privatise outstepcontext and other internal helpers
+//

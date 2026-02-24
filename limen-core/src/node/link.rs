@@ -5,7 +5,7 @@ use crate::{
     errors::{NodeError, NodeErrorKind},
     memory::PlacementAcceptance,
     message::{payload::Payload, Message},
-    node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult},
+    node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult},
     policy::NodePolicy,
     prelude::{
         NodeStepError, NodeStepTelemetry, PlatformClock, Telemetry, TelemetryEvent, TelemetryKey,
@@ -179,20 +179,20 @@ where
         self.node.start(clock, telemetry)
     }
 
-    #[inline]
-    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+        msg: &Message<InP>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
         OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
-        // If metrics are completely disabled for this Telemetry type, just delegate.
+        // If metrics are completely disabled for this Telemetry type, delegate to the
+        // appropriate node entrypoint (batch vs single-message).
         if !T::METRICS_ENABLED {
-            return self.node.step(ctx);
+            return self.node.process_message(msg, out_ctx);
         }
 
         // For now we keep a single graph instance identifier, as in the runtime.
@@ -204,9 +204,11 @@ where
         let deadline_policy = policy.deadline();
 
         // ---- Execute node step + measure latency ----
-        let timestamp_start_ns = ctx.now_nanos();
-        let result = self.node.step(ctx);
-        let timestamp_end_ns = ctx.now_nanos();
+        let timestamp_start_ns = out_ctx.now_nanos();
+
+        let result = self.node.process_message(msg, out_ctx);
+
+        let timestamp_end_ns = out_ctx.now_nanos();
         let duration_ns = timestamp_end_ns.saturating_sub(timestamp_start_ns);
 
         // ---- Compute deadline budget in nanoseconds (duration-based) ----
@@ -216,7 +218,7 @@ where
         if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns() {
             budget_ns_opt = Some(*default_deadline_ns.as_u64());
         } else if let Some(tick_budget) = budget_policy.tick_budget() {
-            let budget_ns = ctx.ticks_to_nanos(*tick_budget);
+            let budget_ns = out_ctx.ticks_to_nanos(*tick_budget);
             budget_ns_opt = Some(budget_ns);
         }
 
@@ -241,7 +243,7 @@ where
         // ---- Telemetry updates (latency, processed, deadline, NodeStep event) ----
 
         // Access the telemetry sink from the context.
-        let telemetry = ctx.telemetry_mut();
+        let telemetry = out_ctx.telemetry_mut();
 
         // Latency metric (per node, per step).
         // This assumes `NodeIndex` is a tuple struct where `.0` yields a numeric index.
@@ -311,6 +313,324 @@ where
                 timestamp_start_ns,
                 timestamp_end_ns,
                 duration_ns,
+                1,
+                deadline_ns,
+                deadline_missed,
+                error_kind,
+            ));
+
+            telemetry.push_event(event);
+        }
+
+        result
+    }
+
+    #[inline]
+    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+        &mut self,
+        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge<Item = Message<InP>>,
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        // Determine whether the node's policy indicates batch-mode behavior.
+        let policy = self.node.policy();
+        let batching_enabled = {
+            let nb = policy.batching();
+
+            (nb.fixed_n().unwrap_or(1) > 1) || nb.max_delta_t().is_some()
+        };
+
+        // If metrics are completely disabled for this Telemetry type, delegate to the
+        // appropriate node entrypoint (batch vs single-message).
+        if !T::METRICS_ENABLED {
+            if batching_enabled {
+                return self.node.step_batch(ctx);
+            } else {
+                return self.node.step(ctx);
+            }
+        }
+
+        // For now we keep a single graph instance identifier, as in the runtime.
+        const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
+
+        // Cache static policy (copy) for deadline/budget checks.
+        let policy = self.node.policy();
+        let budget_policy = policy.budget();
+        let deadline_policy = policy.deadline();
+
+        // ---- Execute node step + measure latency ----
+        let timestamp_start_ns = ctx.now_nanos();
+
+        let result = if batching_enabled {
+            self.node.step_batch(ctx)
+        } else {
+            self.node.step(ctx)
+        };
+
+        let timestamp_end_ns = ctx.now_nanos();
+        let duration_ns = timestamp_end_ns.saturating_sub(timestamp_start_ns);
+
+        // ---- Compute deadline budget in nanoseconds (duration-based) ----
+
+        let mut budget_ns_opt: Option<u64> = None;
+
+        if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns() {
+            budget_ns_opt = Some(*default_deadline_ns.as_u64());
+        } else if let Some(tick_budget) = budget_policy.tick_budget() {
+            let budget_ns = ctx.ticks_to_nanos(*tick_budget);
+            budget_ns_opt = Some(budget_ns);
+        }
+
+        let slack_ns: u64 = match deadline_policy.slack_tolerance_ns() {
+            Some(slack) => *slack.as_u64(),
+            None => 0,
+        };
+
+        let mut deadline_ns: Option<u64> = None;
+        let mut deadline_missed = false;
+
+        if let Some(budget_ns) = budget_ns_opt {
+            // Represent this as an absolute deadline in the event.
+            deadline_ns = Some(timestamp_start_ns.saturating_add(budget_ns));
+
+            // Pure duration-based miss check, incorporating slack.
+            if duration_ns > budget_ns.saturating_add(slack_ns) {
+                deadline_missed = true;
+            }
+        }
+
+        // ---- Telemetry updates (latency, processed, deadline, NodeStep event) ----
+
+        // Access the telemetry sink from the context.
+        let telemetry = ctx.telemetry_mut();
+
+        // Latency metric (per node, per step).
+        // This assumes `NodeIndex` is a tuple struct where `.0` yields a numeric index.
+        telemetry.record_latency_ns(
+            TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::Latency),
+            duration_ns,
+        );
+
+        // Deadline miss counter (only if we computed a budget and exceeded it).
+        if deadline_missed {
+            telemetry.incr_counter(
+                TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::DeadlineMiss),
+                1,
+            );
+        }
+
+        // Processed counter: count *steps* that actually made progress / completed.
+        if let Ok(step_result) = &result {
+            use crate::node::StepResult::*;
+            match step_result {
+                MadeProgress | Terminal | YieldUntil(_) => {
+                    telemetry.incr_counter(
+                        TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::Processed),
+                        policy.batching().fixed_n().unwrap_or(1) as u64,
+                    );
+                }
+                NoInput | Backpressured | WaitingOnExternal => {
+                    // Not counted as processed.
+                }
+            }
+        }
+
+        // Optional structured NodeStep event.
+        if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
+            let error_kind = match &result {
+                Ok(step_result) => {
+                    use crate::node::StepResult::*;
+                    match step_result {
+                        NoInput => Some(NodeStepError::NoInput),
+                        Backpressured => Some(NodeStepError::Backpressured),
+                        WaitingOnExternal => Some(NodeStepError::ExternalUnavailable),
+                        // For progress/terminal/yield, only flag OverBudget if we
+                        // actually missed the duration-based deadline.
+                        MadeProgress | Terminal | YieldUntil(_) => {
+                            if deadline_missed {
+                                Some(NodeStepError::OverBudget)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    Some(match error.kind() {
+                        NodeErrorKind::NoInput => NodeStepError::NoInput,
+                        NodeErrorKind::Backpressured => NodeStepError::Backpressured,
+                        // Any other error kind is treated as a generic execution failure.
+                        _ => NodeStepError::ExecutionFailed,
+                    })
+                }
+            };
+
+            let event = TelemetryEvent::node_step(NodeStepTelemetry::new(
+                GRAPH_ID,
+                self.id,
+                self.name,
+                timestamp_start_ns,
+                timestamp_end_ns,
+                duration_ns,
+                policy.batching().fixed_n().unwrap_or(1) as u64,
+                deadline_ns,
+                deadline_missed,
+                error_kind,
+            ));
+
+            telemetry.push_event(event);
+        }
+
+        result
+    }
+
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+        &mut self,
+        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge<Item = Message<InP>>,
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        // Determine whether the node's policy indicates batch-mode behavior.
+        let policy = self.node.policy();
+        let batching_enabled = {
+            let nb = policy.batching();
+
+            (nb.fixed_n().unwrap_or(1) > 1) || nb.max_delta_t().is_some()
+        };
+
+        // If metrics are completely disabled for this Telemetry type, delegate to the
+        // appropriate node entrypoint (batch vs single-message).
+        if !T::METRICS_ENABLED {
+            return self.node.step_batch(ctx);
+        }
+
+        // For now we keep a single graph instance identifier, as in the runtime.
+        const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
+
+        // Cache static policy (copy) for deadline/budget checks.
+        let policy = self.node.policy();
+        let budget_policy = policy.budget();
+        let deadline_policy = policy.deadline();
+
+        // ---- Execute node step + measure latency ----
+        let timestamp_start_ns = ctx.now_nanos();
+
+        let result = self.node.step_batch(ctx);
+
+        let timestamp_end_ns = ctx.now_nanos();
+        let duration_ns = timestamp_end_ns.saturating_sub(timestamp_start_ns);
+
+        // ---- Compute deadline budget in nanoseconds (duration-based) ----
+
+        let mut budget_ns_opt: Option<u64> = None;
+
+        if let Some(default_deadline_ns) = deadline_policy.default_deadline_ns() {
+            budget_ns_opt = Some(*default_deadline_ns.as_u64());
+        } else if let Some(tick_budget) = budget_policy.tick_budget() {
+            let budget_ns = ctx.ticks_to_nanos(*tick_budget);
+            budget_ns_opt = Some(budget_ns);
+        }
+
+        let slack_ns: u64 = match deadline_policy.slack_tolerance_ns() {
+            Some(slack) => *slack.as_u64(),
+            None => 0,
+        };
+
+        let mut deadline_ns: Option<u64> = None;
+        let mut deadline_missed = false;
+
+        if let Some(budget_ns) = budget_ns_opt {
+            // Represent this as an absolute deadline in the event.
+            deadline_ns = Some(timestamp_start_ns.saturating_add(budget_ns));
+
+            // Pure duration-based miss check, incorporating slack.
+            if duration_ns > budget_ns.saturating_add(slack_ns) {
+                deadline_missed = true;
+            }
+        }
+
+        // ---- Telemetry updates (latency, processed, deadline, NodeStep event) ----
+
+        // Access the telemetry sink from the context.
+        let telemetry = ctx.telemetry_mut();
+
+        // Latency metric (per node, per step).
+        // This assumes `NodeIndex` is a tuple struct where `.0` yields a numeric index.
+        telemetry.record_latency_ns(
+            TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::Latency),
+            duration_ns,
+        );
+
+        // Deadline miss counter (only if we computed a budget and exceeded it).
+        if deadline_missed {
+            telemetry.incr_counter(
+                TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::DeadlineMiss),
+                1,
+            );
+        }
+
+        // Processed counter: count *steps* that actually made progress / completed.
+        if let Ok(step_result) = &result {
+            use crate::node::StepResult::*;
+            match step_result {
+                MadeProgress | Terminal | YieldUntil(_) => {
+                    telemetry.incr_counter(
+                        TelemetryKey::node(*self.id.as_usize() as u32, TelemetryKind::Processed),
+                        policy.batching().fixed_n().unwrap_or(1) as u64,
+                    );
+                }
+                NoInput | Backpressured | WaitingOnExternal => {
+                    // Not counted as processed.
+                }
+            }
+        }
+
+        // Optional structured NodeStep event.
+        if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
+            let error_kind = match &result {
+                Ok(step_result) => {
+                    use crate::node::StepResult::*;
+                    match step_result {
+                        NoInput => Some(NodeStepError::NoInput),
+                        Backpressured => Some(NodeStepError::Backpressured),
+                        WaitingOnExternal => Some(NodeStepError::ExternalUnavailable),
+                        // For progress/terminal/yield, only flag OverBudget if we
+                        // actually missed the duration-based deadline.
+                        MadeProgress | Terminal | YieldUntil(_) => {
+                            if deadline_missed {
+                                Some(NodeStepError::OverBudget)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    Some(match error.kind() {
+                        NodeErrorKind::NoInput => NodeStepError::NoInput,
+                        NodeErrorKind::Backpressured => NodeStepError::Backpressured,
+                        // Any other error kind is treated as a generic execution failure.
+                        _ => NodeStepError::ExecutionFailed,
+                    })
+                }
+            };
+
+            let event = TelemetryEvent::node_step(NodeStepTelemetry::new(
+                GRAPH_ID,
+                self.id,
+                self.name,
+                timestamp_start_ns,
+                timestamp_end_ns,
+                duration_ns,
+                policy.batching().fixed_n().unwrap_or(1) as u64,
                 deadline_ns,
                 deadline_missed,
                 error_kind,

@@ -266,6 +266,9 @@ pub struct NodeStepTelemetry {
     /// Duration of the step in nanoseconds.
     duration_ns: u64,
 
+    /// Number of messages processed by this step (batch size or 1 for single-message).
+    processed_count: u64,
+
     /// Optional absolute deadline in nanoseconds for this step.
     deadline_ns: Option<u64>,
     /// Whether the deadline was missed during this step.
@@ -286,6 +289,7 @@ impl NodeStepTelemetry {
         timestamp_start_ns: u64,
         timestamp_end_ns: u64,
         duration_ns: u64,
+        processed_count: u64,
         deadline_ns: Option<u64>,
         deadline_missed: bool,
         error_kind: Option<NodeStepError>,
@@ -297,6 +301,7 @@ impl NodeStepTelemetry {
             timestamp_start_ns,
             timestamp_end_ns,
             duration_ns,
+            processed_count,
             deadline_ns,
             deadline_missed,
             error_kind,
@@ -337,6 +342,12 @@ impl NodeStepTelemetry {
     #[inline]
     pub const fn duration_ns(&self) -> &u64 {
         &self.duration_ns
+    }
+
+    /// Returns the number of messages processed by this step.
+    #[inline]
+    pub const fn processed_count(&self) -> &u64 {
+        &self.processed_count
     }
 
     /// Returns the optional absolute deadline for this step in nanoseconds.

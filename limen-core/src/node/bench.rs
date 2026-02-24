@@ -263,6 +263,35 @@ where
     fn policy(&self) -> NodePolicy {
         self.node_policy
     }
+
+    /// Peek the creation tick of the `item_index`'th ingress item (0 = oldest).
+    /// Non-blocking and non-destructive. Returns `None` if metadata is not
+    /// available (no backlog) or `item_index` is out of range.
+    #[inline]
+    fn peek_ingress_creation_tick(&self, item_index: usize) -> Option<u64> {
+        // If no backlog, nothing to peek.
+        if self.backlog_items == 0 {
+            return None;
+        }
+
+        // Out-of-range indices -> unavailable.
+        if item_index >= self.backlog_items {
+            return None;
+        }
+
+        // Synthesize stable creation ticks for the backlog:
+        // - anchor at "now" and place the oldest backlog item at `now - backlog_items`
+        // - subsequent items are +1 tick apart. This is deterministic and sufficient
+        //   for unit-testing batching/span logic.
+        //
+        // Note: `Ticks` must provide an accessor to u64; use the correct one
+        // for your project. Replace `as_u64()` if your `Ticks` type uses
+        // another method.
+        let now_ticks = self.clock.now_ticks();
+        let now_u64 = now_ticks.as_u64();
+        let oldest = now_u64.saturating_sub(self.backlog_items as u64);
+        Some(oldest + item_index as u64)
+    }
 }
 
 // -----------------------------------------------------------------------------

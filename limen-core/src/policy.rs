@@ -174,20 +174,6 @@ impl BatchingPolicy {
     pub const fn window_kind(&self) -> WindowKind {
         self.window_kind
     }
-
-    /// Convenience: whether partial batches (via max_delta_t) are permitted.
-    #[inline]
-    pub const fn allows_partial(&self) -> bool {
-        self.max_delta_t.is_some()
-    }
-
-    /// Convenience: effective 'want' for occupancy decisions.
-    ///
-    /// Returns `Some(n)` when a fixed-N exists, otherwise `None` meaning "no fixed N".
-    #[inline]
-    pub const fn want(&self) -> Option<usize> {
-        self.fixed_n
-    }
 }
 
 impl Default for BatchingPolicy {

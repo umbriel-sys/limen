@@ -11,12 +11,12 @@ pub mod source;
 #[cfg(any(test, feature = "bench"))]
 pub mod bench;
 
-use crate::edge::{Edge, EdgeOccupancy};
+use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};
 use crate::errors::{NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
 use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy, SlidingWindow, WindowKind};
-use crate::prelude::{PlatformClock, TelemetryKey, TelemetryKind};
+use crate::prelude::{BatchView, PlatformClock, TelemetryKey, TelemetryKind};
 use crate::telemetry::Telemetry;
 use crate::types::Ticks;
 
@@ -230,6 +230,20 @@ where
         self.inputs[i].try_peek()
     }
 
+    /// Passthrough to the input queue's `try_peek_at`.
+    ///
+    /// Returns the queue backend's `PeekResponse<'_, Message<InP>>` so callers can
+    /// handle both borrowed and owned peek paths.
+    #[inline]
+    pub fn in_try_peek_at(
+        &self,
+        i: usize,
+        index: usize,
+    ) -> Result<crate::edge::PeekResponse<'_, Message<InP>>, QueueError> {
+        debug_assert!(i < IN);
+        self.inputs[i].try_peek_at(index)
+    }
+
     /// Return a snapshot of occupancy of the specified input queue.
     #[inline]
     pub fn in_occupancy(&mut self, i: usize) -> EdgeOccupancy {
@@ -419,7 +433,7 @@ where
         port: usize,
         nmax: usize,
         node_policy: &NodePolicy,
-    ) -> Result<crate::prelude::BatchView<'_, Message<InP>>, QueueError> {
+    ) -> Result<BatchView<'_, Message<InP>>, QueueError> {
         debug_assert!(port < IN);
 
         if nmax == 0 {
@@ -437,7 +451,7 @@ where
                 *nb.max_delta_t(),
                 // clamp sliding window size/stride if needed
                 match nb.window_kind() {
-                    WindowKind::Disjoint => crate::policy::WindowKind::Disjoint,
+                    WindowKind::Disjoint => WindowKind::Disjoint,
                     WindowKind::Sliding(sw) => {
                         let size = core::cmp::min(*sw.size(), nmax);
                         let stride = core::cmp::min(*sw.stride(), size);
@@ -456,8 +470,8 @@ where
         // that borrow the same field while batch_view is alive.
         match self.inputs[port].try_pop_batch(&requested_policy) {
             Ok(mut batch_view) => {
-                let batch_lin = batch_view.len();
-                if batch_lin == 0 {
+                let batch_len = batch_view.len();
+                if batch_len == 0 {
                     return Err(QueueError::Empty);
                 }
 
@@ -485,11 +499,11 @@ where
                     let telemetry = &mut self.telemetry;
                     telemetry.incr_counter(
                         TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
-                        batch_lin as u64,
+                        batch_len as u64,
                     );
 
                     // Compute post-pop occupancy numbers (saturating to avoid underflow).
-                    let after_items = occ_before.items().saturating_sub(batch_lin);
+                    let after_items = occ_before.items().saturating_sub(batch_len);
 
                     // NOTE: Bytes not currently returned in telemetry.
                     // let after_bytes = occ_before.bytes().saturating_sub(removed_bytes);
@@ -509,6 +523,269 @@ where
             // Propagate queue errors as-is.
             Err(e) => Err(e),
         }
+    }
+
+    /// Minimal helper: pop a batch *and* construct an OutStepContext in the same `&mut self` borrow.
+    ///
+    /// Returning both the `BatchView<'ctx, Message<InP>>` (which borrows inputs)
+    /// and the `OutStepContext<'graph, 'ctx, 'clock, ...>` (which borrows outputs/telemetry)
+    /// from the *same* `&'ctx mut self` is the safe way to obtain two disjoint mutable
+    /// borrows that the caller can use simultaneously (the borrow checker accepts it).
+    #[inline]
+    pub fn pop_input_messages_as_batch_with_out<'ctx>(
+        &'ctx mut self,
+        port: usize,
+        nmax: usize,
+        node_policy: &NodePolicy,
+    ) -> Result<
+        (
+            BatchView<'ctx, Message<InP>>,
+            OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>,
+        ),
+        QueueError,
+    > {
+        debug_assert!(port < IN);
+
+        if nmax == 0 {
+            return Err(QueueError::Unsupported);
+        }
+
+        // Build clamped batching policy from node policy.
+        let requested_policy = {
+            let nb = *node_policy.batching();
+
+            BatchingPolicy::with_window(
+                nb.fixed_n().map(|f| core::cmp::min(f, nmax)),
+                *nb.max_delta_t(),
+                match nb.window_kind() {
+                    WindowKind::Disjoint => WindowKind::Disjoint,
+                    WindowKind::Sliding(sw) => {
+                        let size = core::cmp::min(*sw.size(), nmax);
+                        let stride = core::cmp::min(*sw.stride(), size);
+                        WindowKind::Sliding(SlidingWindow::new(size, stride))
+                    }
+                },
+            )
+        };
+
+        // SAMPLE pre-pop occupancy by calling the edge occupancy directly.
+        let occ_before = self.inputs[port].occupancy(&self.in_policies[port]);
+
+        match self.inputs[port].try_pop_batch(&requested_policy) {
+            Ok(mut batch_view) => {
+                let batch_len = batch_view.len();
+                if batch_len == 0 {
+                    return Err(QueueError::Empty);
+                }
+
+                if let Some(header) = batch_view.first_header_mut() {
+                    header.set_first_in_batch();
+                }
+                if let Some(header) = batch_view.last_header_mut() {
+                    header.set_last_in_batch();
+                }
+
+                if T::METRICS_ENABLED {
+                    let telemetry = &mut self.telemetry;
+                    telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
+                        batch_len as u64,
+                    );
+                    let after_items = occ_before.items().saturating_sub(batch_len);
+                    telemetry.set_gauge(
+                        TelemetryKey::edge(self.in_edge_ids[port], TelemetryKind::QueueDepth),
+                        after_items as u64,
+                    );
+                }
+
+                // Construct OutStepContext **now**, from the same &mut self borrow.
+                let out_policies = self.out_policies;
+                let out_edge_ids = self.out_edge_ids;
+                let node_id = self.node_id;
+                let clock = self.clock;
+                let telemetry: &'ctx mut T = &mut *self.telemetry;
+                let outputs: &'ctx mut [&'graph mut OutQ; OUT] = &mut self.outputs;
+
+                let out_ctx = OutStepContext {
+                    outputs,
+                    out_policies,
+                    out_edge_ids,
+                    node_id,
+                    clock,
+                    telemetry,
+                    _marker: core::marker::PhantomData,
+                };
+
+                Ok((batch_view, out_ctx))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Construct an `OutStepContext` by borrowing only the output-related
+    /// fields and telemetry from `self`.
+    ///
+    /// The returned proxy is tied to the mutable borrow of `self` (the `'ctx`
+    /// lifetime) so it cannot outlive the `StepContext` that produced it.
+    #[inline]
+    pub fn to_out_step_context<'ctx>(
+        &'ctx mut self,
+    ) -> OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>
+    where
+        EdgePolicy: Copy,
+    {
+        // Copy small `Copy` arrays (EdgePolicy, u32) into the proxy for convenience.
+        let out_policies = self.out_policies;
+        let out_edge_ids = self.out_edge_ids;
+        let node_id = self.node_id;
+        let clock = self.clock;
+
+        // Reborrow telemetry for the `'ctx` lifetime and borrow the outputs array
+        // for the `'ctx` lifetime while preserving the inner `&'graph mut OutQ`
+        // element lifetimes.
+        let telemetry = &mut *self.telemetry;
+        let outputs: &'ctx mut [&'graph mut OutQ; OUT] = &mut self.outputs;
+
+        OutStepContext {
+            outputs,
+            out_policies,
+            out_edge_ids,
+            node_id,
+            clock,
+            telemetry,
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+/// A `StepContext` *view* that only exposes outputs / clock / telemetry.
+///
+/// Explicitly **does not** provide access to input queues/policies. This is
+/// intended to be constructed from `StepContext::to_out_step_context(&mut self)`
+/// and used while a borrowed `BatchView` or other input borrow is live.
+///
+/// Lifetime `'ctx` is the mutable borrow lifetime of the `StepContext` used
+/// to construct this proxy. `'clock` is the clock lifetime passed through.
+pub struct OutStepContext<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, C, T>
+where
+    OutP: Payload,
+    OutQ: Edge<Item = Message<OutP>>,
+    C: PlatformClock + Sized,
+    T: Telemetry + Sized,
+{
+    /// Mutable borrow of the outputs array from the original StepContext.
+    outputs: &'ctx mut [&'graph mut OutQ; OUT],
+
+    /// Copy of per-output policies (EdgePolicy: Copy).
+    out_policies: [EdgePolicy; OUT],
+
+    /// Copy of output edge ids (u32 Copy).
+    out_edge_ids: [u32; OUT],
+
+    /// Node id for telemetry.
+    node_id: u32,
+
+    /// Borrow the clock (shared).
+    clock: &'clock C,
+
+    /// Mutable borrow of telemetry from the StepContext (reborrowed).
+    telemetry: &'ctx mut T,
+
+    /// Phantom to keep OutP visible to the compiler.
+    _marker: core::marker::PhantomData<OutP>,
+}
+
+impl<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, C, T>
+    OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>
+where
+    OutP: Payload,
+    OutQ: Edge<Item = Message<OutP>>,
+    C: PlatformClock + Sized,
+    T: Telemetry + Sized,
+{
+    /// Push to an output queue, emitting telemetry similar to `StepContext::out_try_push`.
+    #[inline]
+    pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> EnqueueResult {
+        debug_assert!(o < OUT);
+        let res = self.outputs[o].try_push(m, &self.out_policies[o]);
+        if T::METRICS_ENABLED {
+            match res {
+                EnqueueResult::Enqueued => {
+                    self.telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
+                        1,
+                    );
+                    // update queue depth gauge by sampling occupancy from the queue
+                    let occ = self.outputs[o].occupancy(&self.out_policies[o]);
+                    self.telemetry.set_gauge(
+                        TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
+                        *occ.items() as u64,
+                    );
+                }
+                _ => {
+                    self.telemetry
+                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
+                }
+            }
+        }
+        res
+    }
+
+    /// Snapshot occupancy for the given output edge.
+    #[inline]
+    pub fn out_occupancy(&mut self, o: usize) -> EdgeOccupancy {
+        debug_assert!(o < OUT);
+        let occ = self.outputs[o].occupancy(&self.out_policies[o]);
+        if T::METRICS_ENABLED {
+            self.telemetry.set_gauge(
+                TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
+                *occ.items() as u64,
+            );
+        }
+        occ
+    }
+
+    /// Return the policy for the given output (copy).
+    #[inline]
+    pub fn out_policy(&mut self, o: usize) -> EdgePolicy {
+        debug_assert!(o < OUT);
+        self.out_policies[o]
+    }
+
+    /// Access the platform clock used for timing and conversions.
+    #[inline]
+    pub fn clock(&self) -> &C {
+        self.clock
+    }
+
+    /// Borrow the telemetry sink to emit custom counters/gauges/histograms.
+    #[inline]
+    pub fn telemetry_mut(&mut self) -> &mut T {
+        self.telemetry
+    }
+
+    /// Current monotonic tick value from the platform clock.
+    #[inline]
+    pub fn now_ticks(&self) -> Ticks {
+        self.clock.now_ticks()
+    }
+
+    /// Current time in nanoseconds per the clock’s tick-to-ns mapping.
+    #[inline]
+    pub fn now_nanos(&self) -> u64 {
+        self.clock.ticks_to_nanos(self.clock.now_ticks())
+    }
+
+    /// Convert clock ticks to nanoseconds using the clock’s scale.
+    #[inline]
+    pub fn ticks_to_nanos(&self, t: Ticks) -> u64 {
+        self.clock.ticks_to_nanos(t)
+    }
+
+    /// Convert nanoseconds to clock ticks using the clock’s scale.
+    #[inline]
+    pub fn nanos_to_ticks(&self, ns: u64) -> Ticks {
+        self.clock.nanos_to_ticks(ns)
     }
 }
 
@@ -548,6 +825,22 @@ where
     where
         T: Telemetry;
 
+    // Note: we intentionally use an *anonymous* borrow `'_` for the second
+    // lifetime parameter of OutStepContext. This ensures each call to
+    // `process_message(..., &mut out)` creates a *fresh* short-lived mutable
+    // borrow of `out`, allowing repeated re-borrows inside a loop over a
+    // batch. If we tied this borrow to the batch lifetime, the borrow would
+    // last the whole batch and prevent reborrowing.
+    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+        &mut self,
+        msg: &Message<InP>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized;
+
     /// Execute one cooperative step using the provided context.
     ///
     /// The input and output queues are exposed through the context, along with
@@ -562,7 +855,156 @@ where
         InQ: Edge<Item = Message<InP>>,
         OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized;
+        T: Telemetry + Sized,
+    {
+        // 1) pick a ready input port according to the node policy
+        let node_policy = self.policy();
+        let mut port_opt: Option<usize> = None;
+        for port in 0..IN {
+            if ctx.input_edge_has_batch(port, &node_policy) {
+                port_opt = Some(port);
+                break;
+            }
+        }
+
+        let port = match port_opt {
+            None => return Ok(StepResult::NoInput),
+            Some(p) => p,
+        };
+
+        // 2) attempt to pop a single message from the selected port
+        match ctx.in_try_pop(port) {
+            Ok(msg) => {
+                // Create an output-only proxy that borrows only outputs & telemetry
+                // (disjoint from input-borrow held by popped message if any).
+                let mut out = ctx.to_out_step_context();
+                // Delegate per-message work using the proxy.
+                self.process_message(&msg, &mut out)
+            }
+
+            // Map queue errors to either StepResult or NodeError as appropriate.
+            Err(QueueError::Empty) => Ok(StepResult::NoInput),
+
+            // Backpressure / hard-cap: surface as node-level backpressure error.
+            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
+                Err(NodeError::backpressured())
+            }
+
+            // Poisoned lock / unsupported operation: treat as execution failure.
+            Err(QueueError::Poisoned) | Err(QueueError::Unsupported) => {
+                Err(NodeError::execution_failed())
+            }
+        }
+    }
+
+    /// Default batched-step implementation that honors all NodePolicy batching
+    /// variants while delegating actual consumption to the implementor's
+    /// single-message `step()` method.
+    ///
+    /// Key rules implemented:
+    /// - fixed_n, no max_delta_t  => attempt min(nmax, fixed_n) step() calls
+    /// - no fixed_n, max_delta_t  => attempt 1 step() call
+    /// - no fixed_n, no max_delta_t => attempt 1 step() call
+    /// - fixed_n + max_delta_t => require the first fixed_n items' creation_tick
+    ///   span to be <= max_delta_t (verified by peeks) and then attempt
+    ///   exactly fixed_n step() calls
+    /// - WindowKind::Disjoint => keep calling step() until the input port is empty
+    /// - WindowKind::Sliding => call step() `stride` times (or up to nmax), and
+    ///   peek remaining items as necessary to validate span when fixed_n+max_delta_t.
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+        &mut self,
+        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge<Item = Message<InP>>,
+        OutQ: Edge<Item = Message<OutP>>,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        // 1) Find a ready input port according to the node policy.
+        let node_policy = self.policy();
+        let mut port_opt: Option<usize> = None;
+        for port in 0..IN {
+            if ctx.input_edge_has_batch(port, &node_policy) {
+                port_opt = Some(port);
+                break;
+            }
+        }
+
+        // Nothing ready.
+        let port = match port_opt {
+            None => return Ok(StepResult::NoInput),
+            Some(p) => p,
+        };
+
+        // 2) Use the node policy's nmax as the batch maximum.
+        // Replace `.nmax()` with your actual accessor if it's named differently.
+        let nmax = node_policy.batching().fixed_n().unwrap_or(1);
+
+        // 3) Attempt the canonical batch pop that honors sliding/disjoint/fixed+delta semantics.
+        match ctx.pop_input_messages_as_batch_with_out(port, nmax, &node_policy) {
+            Ok((batch_view, mut out)) => {
+                // Defensive: if the batch is empty treat as NoInput.
+                let batch_len = batch_view.len();
+                if batch_len == 0 {
+                    return Ok(StepResult::NoInput);
+                }
+
+                // Consume the BatchView so the borrow on the input queue ends while we call
+                // `process_message(..., ctx)`. This requires `BatchView` to provide an
+                // owning iterator (`into_iter()` returning owned Message<InP>) or similar.
+                // If your BatchView.into_iter() yields `&Message<InP>` you will need to
+                // clone or otherwise obtain owned messages before dropping the BatchView.
+                let mut any_made = false;
+
+                // Note: move/consume batch_view here to drop its internal borrows while iterating.
+                for msg in batch_view.iter() {
+                    // `msg` is assumed to be `Message<InP>` (owned). We pass a reference to the
+                    // per-message hook; the hook may use `ctx` to emit outputs and telemetry.
+                    let msg_ref: &Message<InP> = &msg;
+
+                    // Put the mutable borrow of `out` into a *short, inner scope* so
+                    // the borrow ends before the next loop iteration.
+                    let res = {
+                        // `out_tmp` lives only until the end of this block.
+                        let out_tmp = &mut out;
+                        self.process_message(msg_ref, out_tmp)
+                    };
+
+                    match res {
+                        Ok(StepResult::MadeProgress) => any_made = true,
+                        Ok(StepResult::NoInput) => {
+                            // Unlikely when processing an explicit item — treat as no-op.
+                        }
+                        Ok(StepResult::Backpressured) => return Ok(StepResult::Backpressured),
+                        Ok(StepResult::WaitingOnExternal) => {
+                            return Ok(StepResult::WaitingOnExternal)
+                        }
+                        Ok(StepResult::YieldUntil(t)) => return Ok(StepResult::YieldUntil(t)),
+                        Ok(StepResult::Terminal) => return Ok(StepResult::Terminal),
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                if any_made {
+                    Ok(StepResult::MadeProgress)
+                } else {
+                    Ok(StepResult::NoInput)
+                }
+            }
+
+            // Map queue errors consistently with the single-message `step()` mapping:
+            Err(QueueError::Empty) => Ok(StepResult::NoInput),
+            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
+                Err(NodeError::backpressured())
+            }
+            Err(QueueError::Poisoned) => Err(NodeError::execution_failed().with_code(1)),
+            // We do not provide a fallback here: Unsupported indicates the backend cannot
+            // supply the batch path; surface as execution failure so implementers know
+            // they must override if needed for that backend.
+            Err(QueueError::Unsupported) => Err(NodeError::execution_failed().with_code(2)),
+        }
+    }
 
     /// Handle watchdog timeouts by applying over-budget policy (degrade/default/skip).
     fn on_watchdog_timeout<C, T>(

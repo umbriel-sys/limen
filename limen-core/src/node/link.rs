@@ -158,6 +158,12 @@ where
         self.node.policy()
     }
 
+    /// **TEST ONLY** method used to override batching policis for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy) {
+        self.node.set_policy(policy);
+    }
+
     #[inline]
     fn node_kind(&self) -> NodeKind {
         self.node.node_kind()

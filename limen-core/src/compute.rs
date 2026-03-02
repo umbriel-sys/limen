@@ -11,6 +11,7 @@
 use crate::errors::InferenceError;
 use crate::memory::MemoryClass;
 use crate::message::payload::Payload;
+use crate::prelude::Batch;
 
 /// Capability descriptor of a compute backend.
 #[non_exhaustive]
@@ -120,9 +121,15 @@ pub trait ComputeModel<InP: Payload, OutP: Payload> {
 
     /// Optional: batched inference. Default loops `infer_one`.
     #[inline]
-    fn infer_batch(&mut self, inps: &[InP], outs: &mut [OutP]) -> Result<(), InferenceError> {
-        for (i, o) in inps.iter().zip(outs.iter_mut()) {
-            self.infer_one(i, o)?;
+    fn infer_batch(
+        &mut self,
+        inps: Batch<'_, InP>,
+        outs: &mut [OutP],
+    ) -> Result<(), InferenceError> {
+        // Default: call infer_one using references into the Batch's messages.
+        for (m, o) in inps.messages().iter().zip(outs.iter_mut()) {
+            // Message::payload() returns &InP so we pass a reference, no move/clones.
+            self.infer_one(m.payload(), o)?;
         }
         Ok(())
     }

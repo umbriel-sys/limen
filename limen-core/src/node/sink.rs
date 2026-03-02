@@ -60,7 +60,7 @@ where
     /// "no input available now".
     #[inline]
     fn select_input(&mut self, occ: &[EdgeOccupancy; IN]) -> Option<usize> {
-        occ.iter().position(|o| o.items() > &0)
+        occ.iter().position(|o| *o.items() > 0)
     }
 }
 
@@ -142,6 +142,12 @@ where
     #[inline]
     fn policy(&self) -> NodePolicy {
         self.policy
+    }
+
+    /// **TEST ONLY** method used to override batching policies for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy) {
+        self.policy = policy;
     }
 
     #[inline]

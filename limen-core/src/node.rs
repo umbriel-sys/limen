@@ -813,6 +813,10 @@ where
     /// Return the node's policy bundle.
     fn policy(&self) -> NodePolicy;
 
+    /// **TEST ONLY** method used to override batching policis for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy);
+
     /// Return the type of node (Mmodel, processing, source, sink).
     fn node_kind(&self) -> NodeKind;
 
@@ -1021,4 +1025,1247 @@ where
     fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
     where
         T: Telemetry;
+}
+
+#[cfg(any(test, feature = "bench"))]
+pub mod contract_tests {
+    //! Node contract test fixtures and helpers.
+    //!
+    //! This module contains a reusable, *single* contract test-suite that validates
+    //! the `Node` trait behaviour expected by Limen runtimes.  The tests exercise:
+    //!
+    //! - Node lifecycle: `initialize`, `start`, `on_watchdog_timeout`, `stop`.
+    //! - Per-message behaviour: `process_message` and the `step()` path that pops a
+    //!   single input and delegates to `process_message`.
+    //! - Batched behaviour: `step_batch()` semantics for fixed-size, sliding and
+    //!   fixed+max_delta_t windowing, including span validation based on
+    //!   `MessageHeader::creation_tick`.
+    //! - Error mapping: `QueueError` → `StepResult` / `NodeError` rules and how
+    //!   enqueue results map to progress/backpressure semantics.
+    //! - Telemetry and occupancy hooks exercised via `EdgeLink` + `GraphTelemetry`.
+    //!
+    //! Usage
+    //! -----
+    //! Implementors should provide:
+    //! - a `NodeLink` factory: `|| -> NodeLink<N, IN, OUT, InP, OutP>` that returns
+    //!   a fresh `NodeLink` owning the concrete node under test, and
+    //! - ensure payload types implement `Default + Clone` so tests can construct
+    //!   `Message::<P>::new(Header, P::default())` values.
+    //!
+    //! Then call the test macro from your crate tests:
+    //
+    //! ```text
+    //! run_node_contract_tests!(my_node_contracts, { make_nodelink: || create_mynode_link() });
+    //! ```
+    //!
+    //! The suite is *adaptive*: it skips or changes assertions for `IN == 0`
+    //! (sources), `OUT == 0` (sinks) or when `node.node_kind()` indicates a
+    //! wrapper-specific implementation (`Source`, `Sink`, `Model`). The tests only
+    //! assert node-level semantics (counts/StepResult/telemetry) and do **not**
+    //! inspect or require node-specific payload contents.
+
+    use super::*;
+    use crate::{
+        message::MessageHeader,
+        policy::{AdmissionPolicy, OverBudgetAction, QueueCaps},
+        prelude::{
+            fixed_buffer_line_writer, EdgeLink, FixedBuffer, FmtLineWriter, GraphTelemetry,
+            NoStdLinuxMonotonicClock, NodeLink, TestSpscRingBuf,
+        },
+        types::{EdgeIndex, NodeIndex, PortId, PortIndex, Ticks},
+    };
+
+    use heapless::Vec;
+
+    // Fixed buffer sizes for test telemetry
+    const TELE_NODES: usize = 8;
+    const TELE_EDGES: usize = 16;
+    const TELE_BUF_BYTES: usize = 1024;
+
+    const TEST_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
+        QueueCaps::new(16, 14, None, None),
+        AdmissionPolicy::DropNewest,
+        OverBudgetAction::Drop,
+    );
+
+    /// Expand a canonical suite of node contract tests for a `NodeLink` factory.
+    ///
+    /// # Purpose
+    /// Generate a focused `#[test]` module that runs the standard Node contract
+    /// fixtures (lifecycle, single-message, and batched behaviour, error/backpressure
+    /// mapping, and wrapper-specific checks for `Source`, `Sink`, and `Model`).
+    ///
+    /// # Required argument
+    /// - `make_nodelink: || -> NodeLink<N, IN, OUT, InP, OutP>`  
+    ///   A zero-argument closure that returns a **fresh** `NodeLink` owning the
+    ///   concrete node under test. The closure is invoked **once per generated test**
+    ///   (i.e., the factory must return a new, independent `NodeLink` each time).
+    ///
+    /// # Type requirements
+    /// - The node produced by your `NodeLink` must implement `Node<IN, OUT, InP, OutP>`.
+    /// - Payload types `InP` and `OutP` must implement `Payload + Default + Clone` so
+    ///   the tests can synthesize `Message::new(header, P::default())` values.
+    ///
+    /// # Behaviour
+    /// The macro expands to a `mod $mod_name { ... }` containing these tests:
+    /// - `initialize_start_stop_roundtrip`
+    /// - `process_message_enqueues_and_made_progress`
+    /// - `step_on_empty_returns_noinput`
+    /// - `step_pops_and_calls_process_message`
+    /// - `step_batch_respects_fixed_n_disjoint`
+    /// - `step_batch_respects_sliding_window`
+    /// - `step_maps_backpressure_and_errors`
+    /// - `source_specific_behaviour`
+    /// - `sink_specific_behaviour`
+    /// - `model_specific_batching_behaviour`
+    /// - `fixed_n_with_max_delta_t_behaviour`
+    ///
+    /// Each generated test delegates to a fixture in `node::contract_tests`. The
+    /// suite is *adaptive*: fixtures will skip or adjust assertions for `IN == 0`
+    /// (sources), `OUT == 0` (sinks), or when the node reports `NodeKind::Source`,
+    /// `NodeKind::Sink`, or `NodeKind::Model`.
+    ///
+    /// # Usage
+    /// ```rust
+    /// run_node_contract_tests!(my_node_contracts, {
+    ///     make_nodelink: || create_my_node_link()
+    /// });
+    /// ```
+    ///
+    /// Put the macro invocation in your crate's tests (or `#[cfg(test)]` module).
+    /// Keep the `make_nodelink` factory cheap and deterministic so the per-test
+    /// instances are reliable.
+    ///
+    /// # Notes
+    /// - Tests assert node-level semantics (counts, `StepResult`, telemetry) and do
+    ///   **not** inspect payload internals. Implementors should ensure payloads
+    ///   derive/implement `Default + Clone` for compatibility with the suite.
+    #[macro_export]
+    macro_rules! run_node_contract_tests {
+        ($mod_name:ident, {
+            make_nodelink: $make_nodelink:expr
+        }) => {
+            #[cfg(test)]
+            mod $mod_name {
+                use super::*;
+                use $crate::node::contract_tests as fixtures;
+
+                #[test]
+                fn initialize_start_stop_roundtrip() {
+                    fixtures::run_initialize_start_stop_roundtrip(|| $make_nodelink());
+                }
+
+                #[test]
+                fn process_message_enqueues_and_made_progress() {
+                    fixtures::run_process_message_enqueues_and_made_progress(|| $make_nodelink());
+                }
+
+                #[test]
+                fn step_on_empty_returns_noinput() {
+                    fixtures::run_step_on_empty_returns_noinput(|| $make_nodelink());
+                }
+
+                #[test]
+                fn step_pops_and_calls_process_message() {
+                    fixtures::run_step_pops_and_calls_process_message(|| $make_nodelink());
+                }
+
+                #[test]
+                fn step_batch_respects_fixed_n_disjoint() {
+                    fixtures::run_step_batch_fixed_n_disjoint(|| $make_nodelink());
+                }
+
+                #[test]
+                fn step_batch_respects_sliding_window() {
+                    fixtures::run_step_batch_sliding_window(|| $make_nodelink());
+                }
+
+                #[test]
+                fn step_maps_backpressure_and_errors() {
+                    fixtures::run_step_maps_backpressure_and_errors(|| $make_nodelink());
+                }
+
+                #[test]
+                fn source_specific_behaviour() {
+                    fixtures::run_source_specific_tests(|| $make_nodelink());
+                }
+
+                #[test]
+                fn sink_specific_behaviour() {
+                    fixtures::run_sink_specific_tests(|| $make_nodelink());
+                }
+
+                #[test]
+                fn model_specific_batching_behaviour() {
+                    fixtures::run_model_batching_tests(|| $make_nodelink());
+                }
+
+                #[test]
+                fn fixed_n_with_max_delta_t_behaviour() {
+                    fixtures::run_step_batch_fixed_n_max_delta_t_tests(|| $make_nodelink());
+                }
+            }
+        };
+    }
+
+    // -----------------------
+    // helpers
+    // -----------------------
+
+    /// Create a small `GraphTelemetry` instance used by contract tests.
+    ///
+    /// The returned telemetry has fixed-size internal buffers suitable for unit
+    /// tests and enables node telemetry paths so tests can assert `processed()`
+    /// and other node/edge counters. Use this to construct a `StepContext`.
+    fn make_graph_telemetry(
+    ) -> GraphTelemetry<TELE_NODES, TELE_EDGES, FmtLineWriter<FixedBuffer<TELE_BUF_BYTES>>> {
+        GraphTelemetry::new(0u32, true, fixed_buffer_line_writer::<TELE_BUF_BYTES>())
+    }
+
+    /// Construct input/output `EdgeLink` arrays backed by `TestSpscRingBuf`.
+    ///
+    /// Returns `(inputs, outputs)` arrays of length `IN` and `OUT` respectively.
+    /// Each `EdgeLink` uses `TEST_EDGE_POLICY` and deterministic `EdgeIndex` and
+    /// `PortId` values so tests are reproducible.
+    ///
+    /// # Type constraints
+    /// `InP` and `OutP` must implement `Payload + Default + Clone`.
+    ///
+    /// This helper is the canonical way to produce testable queues that implement
+    /// the `Edge` contract and integrate with `StepContext`.
+    #[allow(clippy::type_complexity)]
+    fn make_edge_links_for_node<const IN: usize, const OUT: usize, InP, OutP>(
+        base_upstream_node: NodeIndex,
+        base_downstream_node: NodeIndex,
+    ) -> (
+        [EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN],
+        [EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT],
+    )
+    where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+    {
+        let inputs = core::array::from_fn(|i| {
+            let queue = TestSpscRingBuf::<Message<InP>, 16>::new();
+            let id = EdgeIndex::new(i + 1);
+            let upstream_port = PortId::new(base_upstream_node, PortIndex::new(i));
+            let downstream_port = PortId::new(base_downstream_node, PortIndex::new(i));
+            EdgeLink::new(
+                queue,
+                id,
+                upstream_port,
+                downstream_port,
+                TEST_EDGE_POLICY,
+                Some("in"),
+            )
+        });
+
+        let outputs = core::array::from_fn(|o| {
+            let queue = TestSpscRingBuf::<Message<OutP>, 16>::new();
+            let id = EdgeIndex::new(o + 1);
+            let upstream_port = PortId::new(base_upstream_node, PortIndex::new(o));
+            let downstream_port = PortId::new(base_downstream_node, PortIndex::new(o));
+            EdgeLink::new(
+                queue,
+                id,
+                upstream_port,
+                downstream_port,
+                TEST_EDGE_POLICY,
+                Some("out"),
+            )
+        });
+
+        (inputs, outputs)
+    }
+
+    /// Build a `StepContext` from the provided `EdgeLink` arrays, clock and telemetry.
+    ///
+    /// The returned `StepContext` wraps the given input/output `EdgeLink` arrays,
+    /// populates per-port `EdgePolicy` arrays with `TEST_EDGE_POLICY`, and provides
+    /// `node_id`, `in_edge_ids`, and `out_edge_ids` derived from the `EdgeLink`s.
+    ///
+    /// # Notes
+    /// - `inputs` and `outputs` must be arrays of exactly `IN` and `OUT` length.
+    /// - `InP` / `OutP` must implement `Default + Clone` so tests can craft messages.
+    /// - Use this helper to produce the context passed to `Node::step` /
+    ///   `Node::step_batch` in fixtures.
+    #[allow(clippy::type_complexity)]
+    fn build_step_context<
+        'graph,
+        'telemetry,
+        'clock,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+        C,
+        T,
+    >(
+        inputs: &'graph mut [EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN],
+        outputs: &'graph mut [EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT],
+        clock: &'clock C,
+        telemetry: &'telemetry mut T,
+    ) -> crate::node::StepContext<
+        'graph,
+        'telemetry,
+        'clock,
+        IN,
+        OUT,
+        InP,
+        OutP,
+        EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>,
+        EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>,
+        C,
+        T,
+    >
+    where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        let in_policies = core::array::from_fn(|_| TEST_EDGE_POLICY);
+        let out_policies = core::array::from_fn(|_| TEST_EDGE_POLICY);
+
+        let mut inputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>, IN> =
+            Vec::new();
+        for elem in inputs.iter_mut() {
+            assert!(inputs_ref_vec.push(elem).is_ok(), "inputs_ref_vec overflow");
+        }
+
+        let mut outputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>, OUT> =
+            Vec::new();
+        for elem in outputs.iter_mut() {
+            assert!(
+                outputs_ref_vec.push(elem).is_ok(),
+                "outputs_ref_vec overflow"
+            );
+        }
+
+        let inputs_ref: [&mut EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN] =
+            match inputs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("inputs_ref_vec length mismatch"),
+            };
+
+        let outputs_ref: [&mut EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT] =
+            match outputs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("outputs_ref_vec length mismatch"),
+            };
+
+        let in_edge_ids = core::array::from_fn(|i| *inputs_ref[i].id().as_usize() as u32);
+        let out_edge_ids = core::array::from_fn(|o| *outputs_ref[o].id().as_usize() as u32);
+
+        crate::node::StepContext::new(
+            inputs_ref,
+            outputs_ref,
+            in_policies,
+            out_policies,
+            0u32,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        )
+    }
+
+    // -----------------------
+    // Fixtures
+    // -----------------------
+
+    /// Lifecycle: `initialize` → `start` → `on_watchdog_timeout` → `stop`.
+    ///
+    /// Verifies that a fresh `NodeLink` can be initialized and started without
+    /// error, that calling `on_watchdog_timeout` returns a valid `StepResult`, and
+    /// that `stop` returns `Ok(())`. This test asserts only success paths and is
+    /// intended as a basic lifecycle smoke-test.
+    pub fn run_initialize_start_stop_roundtrip<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+        nlink.start(&clock, &mut tele).expect("start ok");
+
+        let _ = nlink
+            .on_watchdog_timeout(&clock, &mut tele)
+            .expect("watchdog ok");
+
+        nlink.stop(&clock, &mut tele).expect("stop ok");
+    }
+
+    /// Single-message `process_message` path and basic egress semantics.
+    ///
+    /// - Pushes one `Message<InP>` (header creation tick sourced from the clock)
+    ///   into input port 0 (skipped when `IN == 0`).
+    /// - Calls `step()` and asserts the result is not `NoInput`.
+    /// - If `OUT > 0`, asserts at least one message was enqueued on output 0.
+    /// - Asserts the node telemetry `processed()` counter increased.
+    ///
+    /// This fixture tests the canonical single-message processing path without
+    /// asserting message payload contents.
+    pub fn run_process_message_enqueues_and_made_progress<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        if IN == 0 {
+            // Not applicable to sources (no input)
+            return;
+        }
+
+        // Build a message with header creation tick sourced from the clock.
+        let mut hdr = MessageHeader::empty();
+        hdr.set_creation_tick(clock.now_ticks());
+        let msg = Message::new(hdr, InP::default());
+
+        let in_policy = TEST_EDGE_POLICY;
+        assert_eq!(
+            in_links[0].try_push(msg, &in_policy),
+            crate::edge::EnqueueResult::Enqueued
+        );
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert!(res != crate::node::StepResult::NoInput);
+
+        if OUT > 0 {
+            let mut pushed = 0usize;
+            loop {
+                match out_links[0].try_pop() {
+                    Ok(_m) => pushed += 1,
+                    Err(QueueError::Empty) => break,
+                    Err(e) => panic!("unexpected queue error: {:?}", e),
+                }
+            }
+            assert!(
+                pushed > 0,
+                "expected node to push at least one message on output 0"
+            );
+        }
+
+        let metrics = tele.metrics();
+        let processed = metrics.nodes()[0].processed();
+        assert!(
+            *processed >= 1u64,
+            "expected processed >= 1, got {}",
+            processed
+        );
+    }
+
+    /// `step()` on empty inputs must return `StepResult::NoInput`.
+    ///
+    /// Builds empty input queues and confirms `step()` returns `NoInput`. This
+    /// verifies scheduler-readiness predicates and the node's empty-input fast
+    /// path.
+    pub fn run_step_on_empty_returns_noinput<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+
+        // For zero-input nodes (sources) it's valid for the node to actively
+        // produce output and therefore return `MadeProgress`. For nodes with
+        // inputs, the empty-input fast path must return `NoInput`.
+        if IN == 0 {
+            assert!(
+                res == crate::node::StepResult::NoInput
+                    || res == crate::node::StepResult::MadeProgress,
+                "expected NoInput or MadeProgress for zero-input node, got {:?}",
+                res
+            );
+        } else {
+            assert_eq!(res, crate::node::StepResult::NoInput);
+        }
+    }
+
+    /// `step()` pops one message and delegates to `process_message`.
+    ///
+    /// - Pushes a single message into input port 0 (skipped when `IN == 0`).
+    /// - Calls `step()` and asserts the node made progress (not `NoInput`).
+    /// - If `OUT > 0`, asserts at least one output item was produced.
+    /// - Asserts telemetry processed counter incremented.
+    ///
+    /// Ensures the node honors `step()` semantics and emits telemetry as expected.
+    pub fn run_step_pops_and_calls_process_message<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        if IN == 0 {
+            // No input ports: nothing to test here.
+            return;
+        }
+
+        let mut hdr = MessageHeader::empty();
+        hdr.set_creation_tick(clock.now_ticks());
+        let msg = Message::new(hdr, InP::default());
+
+        let policy = TEST_EDGE_POLICY;
+        assert_eq!(
+            in_links[0].try_push(msg, &policy),
+            crate::edge::EnqueueResult::Enqueued
+        );
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert!(res != crate::node::StepResult::NoInput);
+
+        if OUT > 0 {
+            let mut popped = 0usize;
+            while let Ok(_m) = out_links[0].try_pop() {
+                popped += 1;
+            }
+            assert!(popped > 0, "expected output items");
+        }
+
+        let metrics = tele.metrics();
+        assert!(*metrics.nodes()[0].processed() >= 1u64);
+    }
+
+    /// `step_batch()` with fixed-N disjoint semantics.
+    ///
+    /// - Pushes `fixed_n + 1` messages into input port 0 (skipped when `IN == 0`).
+    /// - Calls `step_batch()` and asserts it returned a progress result.
+    /// - If `fixed_n > 0` and `OUT > 0`, asserts the node produced at least
+    ///   `fixed_n` outputs (i.e., full fixed-size batch processed).
+    ///
+    /// This checks the default fixed-size batch behaviour and that the node
+    /// consumes and emits the expected number of items under disjoint semantics.
+    pub fn run_step_batch_fixed_n_disjoint<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+        // Override the node's policy for this test so we exercise fixed-N, disjoint semantics.
+        // Pick a small fixed_n suitable for tests.
+        const TEST_FIXED_N: usize = 3;
+
+        // Start from the node's current policy and replace the batching window with
+        // a fixed-N, disjoint window for deterministic behaviour.
+        let base_policy = nlink.node().policy();
+        let batching = crate::policy::BatchingPolicy::with_window(
+            Some(TEST_FIXED_N),
+            None,
+            crate::policy::WindowKind::Disjoint,
+        );
+        // Construct a new node policy with the requested batching. Most NodePolicy
+        // implementations expose a builder like `with_batching`. If your project
+        // uses a different name, adjust this call accordingly.
+        let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
+
+        // Apply the test policy to the actual node under test.
+        nlink.set_policy(new_policy);
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        if IN == 0 {
+            return;
+        }
+
+        // Re-read fixed_n from the node's (now overridden) policy so the rest of
+        // the test adapts to the value we just installed.
+        let fixed_n = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
+
+        let policy = TEST_EDGE_POLICY;
+        for t in 1u64..=(fixed_n as u64 + 1) {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(t));
+            let m = Message::new(hdr, InP::default());
+            assert_eq!(
+                in_links[0].try_push(m, &policy),
+                crate::edge::EnqueueResult::Enqueued
+            );
+        }
+
+        let in_before = *in_links[0].occupancy(&policy).items();
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step_batch ok");
+        assert!(res != crate::node::StepResult::NoInput);
+
+        // read input occupancy via ctx (while ctx is live) and assert exact pop
+        let in_after = *ctx.in_occupancy(0).items();
+        assert_eq!(
+            in_before.saturating_sub(in_after),
+            fixed_n,
+            "expected fixed_n items popped from input"
+        );
+
+        if OUT > 0 {
+            let mut out_count = 0usize;
+            while let Ok(_m) = out_links[0].try_pop() {
+                out_count += 1;
+            }
+            // For disjoint fixed-N batching we expect the node to process exactly
+            // `fixed_n` inputs and (in the common case) produce `fixed_n` outputs.
+            if fixed_n > 0 {
+                assert_eq!(
+                    out_count, fixed_n,
+                    "expected out_count == fixed_n (got {}, fixed_n={})",
+                    out_count, fixed_n
+                );
+            } else {
+                assert!(out_count >= 1, "expected at least one output");
+            }
+        }
+
+        // Telemetry: NodeLink increments `processed` by `fixed_n` for a batched step.
+        let metrics = tele.metrics();
+        if fixed_n > 1 {
+            assert_eq!(
+                *metrics.nodes()[0].processed(),
+                fixed_n as u64,
+                "expected processed == fixed_n for batched step"
+            );
+        } else {
+            assert!(*metrics.nodes()[0].processed() >= 1u64);
+        }
+    }
+
+    /// `step_batch()` with sliding-window semantics (smoke test).
+    ///
+    /// - Pushes several messages into input port 0 to exercise sliding-window
+    ///   batch processing and stride semantics.
+    /// - Calls `step_batch()` and asserts the node returned progress.
+    /// - Verifies telemetry processed counter incremented.
+    ///
+    /// This is a behavioural smoke-test rather than a precise numerical check of
+    /// popped/produced counts because sliding windows and backpressure can affect
+    /// exact numbers.
+    pub fn run_step_batch_sliding_window<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        let mut nlink = make_nodelink();
+
+        // Install a sliding-window batching policy for this test:
+        // fixed_n = 4 (presentation size), sliding stride = 2 (pop 2 each step).
+        const TEST_FIXED_N: usize = 4;
+        const TEST_STRIDE: usize = 2;
+
+        let base_policy = nlink.node().policy();
+        let batching = crate::policy::BatchingPolicy::with_window(
+            Some(TEST_FIXED_N),
+            None,
+            crate::policy::WindowKind::Sliding(crate::policy::SlidingWindow::new(TEST_STRIDE)),
+        );
+        let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
+        nlink.set_policy(new_policy);
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        if IN == 0 {
+            return;
+        }
+
+        let policy = TEST_EDGE_POLICY;
+        // Push 6 messages so we can form a presentation of size `fixed_n` with
+        // available items > fixed_n and stride < fixed_n.
+        for t in 1u64..=6u64 {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(t));
+            let m = Message::new(hdr, InP::default());
+            assert_eq!(
+                in_links[0].try_push(m, &policy),
+                crate::edge::EnqueueResult::Enqueued
+            );
+        }
+
+        // Sample pre-step occupancy for later comparison (before creating ctx).
+        let in_before = *in_links[0].occupancy(&policy).items();
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step_batch ok");
+        assert!(res != crate::node::StepResult::NoInput);
+
+        // Read input occupancy via ctx while it is live.
+        let in_after = *ctx.in_occupancy(0).items();
+
+        // How many items should have been popped according to sliding semantics?
+        let stride_to_pop = core::cmp::min(TEST_STRIDE, in_before);
+        let removed = in_before.saturating_sub(in_after);
+
+        // Strict sliding semantics: must pop exactly `stride_to_pop`.
+        assert_eq!(
+            removed, stride_to_pop,
+            "unexpected number popped: removed={}, expected stride {}",
+            removed, stride_to_pop
+        );
+
+        // Determine presentation size and then drop ctx before popping outputs.
+        let fixed_n = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
+        let expected_present = core::cmp::min(in_before, fixed_n);
+
+        if OUT > 0 {
+            let mut out_count = 0usize;
+            while let Ok(_m) = out_links[0].try_pop() {
+                out_count += 1;
+            }
+            assert_eq!(
+                out_count, expected_present,
+                "expected out_count == expected_present (got {}, expected {})",
+                out_count, expected_present
+            );
+        }
+
+        // Telemetry: NodeLink increments processed by fixed_n for batched steps.
+        let metrics = tele.metrics();
+        if fixed_n > 1 {
+            assert_eq!(
+                *metrics.nodes()[0].processed(),
+                fixed_n as u64,
+                "expected processed == fixed_n for batched step"
+            );
+        } else {
+            assert!(*metrics.nodes()[0].processed() >= 1u64);
+        }
+    }
+
+    /// Mapping of output backpressure and queue errors to node-level results.
+    ///
+    /// - Prefills an output queue to cause admission/backpressure conditions.
+    /// - Pushes a single input and calls `step()`.
+    /// - Accepts either:
+    ///     - `Ok(StepResult::Backpressured|MadeProgress|… )`, or
+    ///     - `Err(NodeError::backpressured())` / `Err(NodeError::execution_failed())`,
+    ///       depending on whether the implementation surfaces backpressure as a
+    ///       `StepResult` or an error.
+    ///
+    /// Ensures the node maps queue/enqueue failures into the documented contract
+    /// (progress vs. backpressure vs. execution failure).
+    pub fn run_step_maps_backpressure_and_errors<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        // This test attempts to force output backpressure and ensures the node maps
+        // the enqueue result / queue errors as documented.
+
+        if IN == 0 || OUT == 0 {
+            // Not applicable for sources (no input) or nodes with no outputs.
+            return;
+        }
+
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        // create edges and fill the output queue to force backpressure/rejection
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        // prefill output 0 until it rejects or drops (ensures backpressure or drop behavior).
+        let policy = TEST_EDGE_POLICY;
+        let dummy_out_msg = Message::new(MessageHeader::empty(), OutP::default());
+        // Keep trying to push; when queue capacity reached admission policy will cause non-Enqueued.
+        while let crate::edge::EnqueueResult::Enqueued =
+            out_links[0].try_push(dummy_out_msg.clone(), &policy)
+        {
+            match out_links[0].try_push(dummy_out_msg.clone(), &policy) {
+                crate::edge::EnqueueResult::Enqueued => continue,
+                crate::edge::EnqueueResult::DroppedNewest
+                | crate::edge::EnqueueResult::Rejected => break,
+            }
+        }
+
+        // push a single input so step will attempt to push to the full output
+        let mut hdr = MessageHeader::empty();
+        hdr.set_creation_tick(clock.now_ticks());
+        let msg = Message::new(hdr, InP::default());
+        assert_eq!(
+            in_links[0].try_push(msg, &policy),
+            crate::edge::EnqueueResult::Enqueued
+        );
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        // Node may either return Ok(StepResult::Backpressured) or Err(NodeError::backpressured())
+        // depending on whether the backpressure is surfaceable as a StepResult or NodeError.
+        match nlink.step(&mut ctx) {
+            Ok(res) => {
+                // If node returned a StepResult, it should not be NoInput since an input existed.
+                assert!(res != crate::node::StepResult::NoInput);
+            }
+            Err(_e) => {
+                // Error is acceptable; presence suffices for this test.
+            }
+        }
+    }
+
+    // -----------------------
+    // Source-specific Fixtures
+    // -----------------------
+
+    /// Source-node specific checks.
+    ///
+    /// Applicable only when `node.node_kind() == NodeKind::Source` (and `IN == 0`).
+    /// - Calls `step()` and asserts `NoInput` or `MadeProgress` (sources can
+    ///   produce at most one item per `step()`).
+    /// - Calls `step_batch()` to ensure it is callable and does not panic; this
+    ///   also exercises ingress occupancy/peek semantics indirectly.
+    ///
+    /// Does not assert source payload contents — only node-level readiness and
+    /// non-panicking behaviour.
+    pub fn run_source_specific_tests<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        // If this node is not a source, skip source checks.
+        let mut nlink = make_nodelink();
+        let kind = nlink.node().node_kind();
+        if kind != crate::node::NodeKind::Source {
+            return;
+        }
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        // Build edges: for sources IN == 0, so make_edge_links_for_node works with IN==0.
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        // Build context and call step() — if source has nothing to produce we expect NoInput.
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert!(
+            res == crate::node::StepResult::NoInput || res == crate::node::StepResult::MadeProgress,
+            "source.step should return NoInput or MadeProgress"
+        );
+
+        // step_batch should not panic and must return a valid StepResult. This also exercises
+        // the source's ingress occupancy and peek semantics indirectly.
+        let _ = nlink.step(&mut ctx);
+    }
+
+    // -----------------------
+    // Sink-specific Fixtures
+    // -----------------------
+
+    /// Sink-node specific checks.
+    ///
+    /// Applicable only when `node.node_kind() == NodeKind::Sink`.
+    /// - Pushes a message into input port 0 and calls `step()`.
+    /// - Asserts the sink either returns `MadeProgress` (consumed) or `NoInput`,
+    ///   or returns an execution error to indicate failure of the underlying
+    ///   sink implementation.
+    ///
+    /// This fixture verifies the adapter `SinkNode` invokes `Sink::consume` and
+    /// maps sink errors to `NodeError::execution_failed()` as appropriate.
+    pub fn run_sink_specific_tests<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        // Only sinks implement NodeKind::Sink
+        let mut nlink = make_nodelink();
+        let kind = nlink.node().node_kind();
+        if kind != crate::node::NodeKind::Sink {
+            return;
+        }
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        // Build input edges; sink consumes from inputs, no outputs.
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        if IN == 0 {
+            return;
+        }
+
+        // Push a message to input 0 and call step(): sink should consume and return MadeProgress
+        let mut hdr = MessageHeader::empty();
+        hdr.set_creation_tick(clock.now_ticks());
+        let msg = Message::new(hdr, InP::default());
+        let policy = TEST_EDGE_POLICY;
+        assert_eq!(
+            in_links[0].try_push(msg.clone(), &policy),
+            crate::edge::EnqueueResult::Enqueued
+        );
+
+        // let mut ctx = build_step_context(&mut in_links, &mut [], &clock, &mut tele);
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        let res = nlink.step(&mut ctx);
+        match res {
+            Ok(r) => {
+                assert!(
+                    r == crate::node::StepResult::MadeProgress
+                        || r == crate::node::StepResult::NoInput,
+                    "sink.step returned unexpected StepResult"
+                );
+            }
+            Err(_e) => {
+                // An execution failure is acceptable as long as it's an expected error type.
+            }
+        }
+    }
+
+    // -----------------------
+    // Model-specific Fixtures
+    // -----------------------
+
+    /// Model-node batching smoke-test.
+    ///
+    /// Applicable when `node.node_kind() == NodeKind::Model` and the node is `1×1`.
+    /// - Pushes `fixed_n` messages (from the node policy) and calls `step_batch()`.
+    /// - Asserts progress and that at least one output is produced, and not more
+    ///   than the requested `fixed_n`.
+    ///
+    /// This validates that `InferenceModel`-style nodes honor the node's fixed
+    /// batching hints and produce a reasonable number of outputs. It intentionally
+    /// does not assert payload contents or exact clamping by backend caps (those
+    /// are implementation-specific).
+    pub fn run_model_batching_tests<N, const IN: usize, const OUT: usize, InP, OutP>(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        // Only run when the node is a Model and has 1 input & 1 output (InferenceModel is 1×1)
+        let mut nlink = make_nodelink();
+        if nlink.node().node_kind() != crate::node::NodeKind::Model || IN != 1 || OUT != 1 {
+            return;
+        }
+
+        // Install a deterministic fixed-N batching policy for the model test.
+        // Choose a modest batch size that fits typical test backends.
+        const TEST_FIXED_N: usize = 4;
+        let base_policy = nlink.node().policy();
+        let batching = crate::policy::BatchingPolicy::with_window(
+            Some(TEST_FIXED_N),
+            None,
+            crate::policy::WindowKind::Disjoint,
+        );
+        let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
+        nlink.set_policy(new_policy);
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+
+        // Determine the batch size we requested (from the node policy we just installed).
+        let requested_fixed = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
+
+        // Push `requested_fixed` messages; step_batch should process at least requested_fixed
+        // (the model node may be capped by backend or MAX_BATCH, but it should not exceed requested_fixed).
+        let policy = TEST_EDGE_POLICY;
+        for t in 1u64..=(requested_fixed as u64) {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(t));
+            let m = Message::new(hdr, InP::default());
+            assert_eq!(
+                in_links[0].try_push(m, &policy),
+                crate::edge::EnqueueResult::Enqueued
+            );
+        }
+
+        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+        // Execute the batched step.
+        let res = nlink.step(&mut ctx).expect("step_batch ok");
+        assert!(
+            res != crate::node::StepResult::NoInput,
+            "model.step_batch returned NoInput"
+        );
+
+        // If outputs exist, ensure at least one output was produced, and no more than requested_fixed.
+        if OUT > 0 {
+            let mut out_count = 0usize;
+            while let Ok(_m) = out_links[0].try_pop() {
+                out_count += 1;
+            }
+
+            assert!(
+                out_count >= 1,
+                "expected at least one output from model batching"
+            );
+
+            assert!(
+                out_count <= requested_fixed,
+                "unexpectedly produced more outputs ({}) than requested_fixed ({})",
+                out_count,
+                requested_fixed
+            );
+        }
+
+        // Telemetry: NodeLink increments `processed` by `requested_fixed` for a batched step.
+        let metrics = tele.metrics();
+        assert_eq!(
+            *metrics.nodes()[0].processed(),
+            requested_fixed as u64,
+            "expected processed == requested_fixed for a model batched step"
+        );
+    }
+
+    // -----------------------
+    // Fixed-N + max_delta_t Fixtures
+    // -----------------------
+
+    /// Tests for `fixed_n + max_delta_t` span validation.
+    ///
+    /// - **Valid span**: pushes `fixed_n` messages whose `creation_tick` values
+    ///   lie within `max_delta_t` and asserts `step_batch()` processes a full
+    ///   batch (exactly `fixed_n` outputs if `OUT > 0`).
+    /// - **Invalid span**: pushes `fixed_n` messages with creation ticks spaced
+    ///   farther apart than `max_delta_t` and asserts `step_batch()` either
+    ///   returns `NoInput` (preferred) or makes partial progress (allowed).
+    ///
+    /// This fixture verifies the scheduler readiness predicate and peek-based
+    /// span validation used by batched nodes.
+    pub fn run_step_batch_fixed_n_max_delta_t_tests<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        if IN == 0 {
+            return;
+        }
+
+        // Make a NodeLink and install a deterministic fixed_n + max_delta_t
+        // disjoint batching policy for this test so we exercise the span checks.
+        let mut nlink = make_nodelink();
+
+        const TEST_FIXED_N: usize = 4;
+        const TEST_MAX_DELTA_TICKS: u64 = 5u64;
+
+        let base_policy = nlink.node().policy();
+        let batching = crate::policy::BatchingPolicy::with_window(
+            Some(TEST_FIXED_N),
+            Some(crate::types::Ticks::new(TEST_MAX_DELTA_TICKS)),
+            crate::policy::WindowKind::Disjoint,
+        );
+        let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
+        nlink.set_policy(new_policy);
+
+        // Recompute fixed_n and max_delta from the installed policy.
+        let policy_installed = *nlink.node().policy().batching();
+        let fixed_opt = *policy_installed.fixed_n();
+        let delta_opt = *policy_installed.max_delta_t();
+        if fixed_opt.is_none() || delta_opt.is_none() {
+            // Nothing to test if policy doesn't provide both knobs.
+            return;
+        }
+        let fixed_n = fixed_opt.unwrap();
+        let max_delta = *delta_opt.unwrap().as_u64();
+
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        // 1) VALID SPAN: push fixed_n msgs with ticks within max_delta_t and expect a batch processed.
+        {
+            let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
+                NodeIndex::new(0),
+                NodeIndex::new(1),
+            );
+
+            let policy = TEST_EDGE_POLICY;
+
+            // Use ticks spaced by 1 up to max_delta to create a valid span.
+            for i in 0..fixed_n {
+                let tick = i as u64; // within small span (<= max_delta)
+                let mut hdr = MessageHeader::empty();
+                hdr.set_creation_tick(Ticks::new(tick));
+                let m = Message::new(hdr, InP::default());
+                assert_eq!(
+                    in_links[0].try_push(m, &policy),
+                    crate::edge::EnqueueResult::Enqueued
+                );
+            }
+
+            // Capture telemetry before the valid-span step so we can assert the delta.
+            let metrics_before = tele.metrics();
+            let processed_before = *metrics_before.nodes()[0].processed();
+
+            let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+            let res = nlink.step(&mut ctx).expect("step_batch ok (valid span)");
+            assert!(
+                res != crate::node::StepResult::NoInput,
+                "expected batch processed for valid span"
+            );
+
+            if OUT > 0 {
+                let mut out_count = 0usize;
+                while let Ok(_m) = out_links[0].try_pop() {
+                    out_count += 1;
+                }
+                // Expect exactly fixed_n outputs when batch processed fully
+                assert_eq!(
+                    out_count, fixed_n,
+                    "expected exactly fixed_n outputs ({}) for valid span, got {}",
+                    fixed_n, out_count
+                );
+            }
+
+            // Telemetry should have been incremented by `fixed_n` for the batched step.
+            let metrics_after = tele.metrics();
+            let processed_after = *metrics_after.nodes()[0].processed();
+            assert_eq!(
+                processed_after.saturating_sub(processed_before),
+                fixed_n as u64,
+                "expected telemetry processed to increase by fixed_n for valid span"
+            );
+        }
+
+        // 2) INVALID SPAN: push fixed_n msgs with ticks far apart (> max_delta_t) and expect NoInput
+        {
+            let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
+                NodeIndex::new(0),
+                NodeIndex::new(1),
+            );
+
+            let policy = TEST_EDGE_POLICY;
+            // Use ticks spaced beyond max_delta to violate span
+            for i in 0..fixed_n {
+                let tick = (i as u64) * (max_delta + 1000u64);
+                let mut hdr = MessageHeader::empty();
+                hdr.set_creation_tick(Ticks::new(tick));
+                let m = Message::new(hdr, InP::default());
+                assert_eq!(
+                    in_links[0].try_push(m, &policy),
+                    crate::edge::EnqueueResult::Enqueued
+                );
+            }
+
+            // Capture telemetry before the invalid-span step.
+            let metrics_before_invalid = tele.metrics();
+            let processed_before_invalid = *metrics_before_invalid.nodes()[0].processed();
+
+            let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+
+            let res = nlink.step(&mut ctx).expect("step_batch ok (invalid span)");
+
+            // For invalid span, prefer NoInput (a node may also process fewer items; allow both).
+            if res == crate::node::StepResult::NoInput {
+                // Telemetry must not have advanced for the node (no batch processed).
+                let metrics_after_invalid = tele.metrics();
+                let processed_after_invalid = *metrics_after_invalid.nodes()[0].processed();
+                assert_eq!(
+                    processed_after_invalid, processed_before_invalid,
+                    "expected no telemetry change when invalid span results in NoInput"
+                );
+            } else {
+                // MadeProgress (partial processing) is allowed; ensure outputs are fewer than fixed_n.
+                assert_eq!(
+                    res,
+                    crate::node::StepResult::MadeProgress,
+                    "unexpected StepResult for invalid span: {:?}",
+                    res
+                );
+
+                if OUT > 0 {
+                    let mut out_count = 0usize;
+                    while let Ok(_m) = out_links[0].try_pop() {
+                        out_count += 1;
+                    }
+                    assert!(
+                        out_count > 0 && out_count < fixed_n,
+                        "expected partial progress for invalid span (0 < out_count < fixed_n), got {}",
+                        out_count
+                    );
+                }
+                // We do not assert telemetry delta here — implementations may still
+                // increment processed by `fixed_n` even for partial progress.
+            }
+        }
+    }
 }

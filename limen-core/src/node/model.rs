@@ -22,8 +22,6 @@ use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext,
 use crate::policy::NodePolicy;
 use crate::prelude::{PlatformClock, Telemetry};
 
-use heapless::Vec as HeaplessVec;
-
 // alloc-backed buffers only when the feature is enabled
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -151,6 +149,12 @@ where
 
     fn policy(&self) -> NodePolicy {
         self.node_policy
+    }
+
+    /// **TEST ONLY** method used to override batching policis for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy) {
+        self.node_policy = policy;
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -295,63 +299,64 @@ where
         nmax: usize,
     ) -> Result<StepResult, NodeError>
     where
-        // NOTE: for stack arrays without `alloc`, we require `Copy + Default` on InP.
+        // NOTE: for stack arrays without `alloc`, we require `Default` on InP
+        // so we can `mem::take()` payloads out of borrowed Messages.
         InP: Payload,
         InQ: Edge<Item = Message<InP>>,
         OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
-        // Fixed-capacity, stack-allocated scratch (no alloc).
-        let mut headers: [MessageHeader; MAX_BATCH] =
-            core::array::from_fn(|_| MessageHeader::empty());
-        let mut in_buf: HeaplessVec<InP, { MAX_BATCH }> = HeaplessVec::new();
-        let mut out_buf: [OutP; MAX_BATCH] = core::array::from_fn(|_| OutP::default());
+        // Use the StepContext batch helper that enforces sliding/disjoint semantics.
+        match cx.pop_input_messages_as_batch_with_out(0, nmax, &self.node_policy) {
+            Ok((batch_view, mut out)) => {
+                let batch_len = batch_view.len();
+                if batch_len == 0 {
+                    return Ok(StepResult::NoInput);
+                }
 
-        while in_buf.len() < nmax {
-            match cx.in_try_pop(0) {
-                Ok(m) => {
-                    let (h, p) = m.into_parts();
-                    let idx = in_buf.len();
-                    headers[idx] = h;
-                    // `nmax <= MAX_BATCH` should guarantee capacity; if this ever
-                    // fails, it indicates a logic error. Avoid imposing `Debug`
-                    // on `InP` by not using `.expect(..)`.
-                    if let Err(_overflowed) = in_buf.push(p) {
-                        debug_assert!(
-                            false,
-                            "heapless capacity exceeded (nmax <= MAX_BATCH invariant broken)"
-                        );
-                        return Err(NodeError::execution_failed().with_code(1));
+                // Stack scratch buffers (MAX_BATCH).
+                let mut headers: [MessageHeader; MAX_BATCH] =
+                    core::array::from_fn(|_| MessageHeader::empty());
+                let mut out_buf: [OutP; MAX_BATCH] = core::array::from_fn(|_| OutP::default());
+
+                // Convert the BatchView into the public Batch<'_, InP> (borrowed view).
+                // The Batch references the messages inside `batch_view`.
+                let batch = batch_view.as_batch();
+                let msgs = batch.messages();
+                let n = msgs.len();
+
+                if n == 0 {
+                    return Ok(StepResult::NoInput);
+                }
+
+                // Copy headers (MessageHeader is Copy). The batch helper has already
+                // set FIRST/LAST flags for us.
+                for i in 0..n {
+                    headers[i] = *msgs[i].header();
+                }
+
+                // Call the backend with a borrowed Batch<'_, InP> so backends receive
+                // `&InP` references directly. No allocation, no moves/clones.
+                self.model
+                    .infer_batch(batch, &mut out_buf[..n])
+                    .map_err(map_inference_err)?;
+
+                // Emit outputs using the provided OutStepContext.
+                for i in 0..n {
+                    let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
+                    match out.out_try_push(0, out_msg) {
+                        EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {}
+                        EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
                     }
                 }
-                Err(QueueError::Empty) | Err(QueueError::Backpressured) => break,
-                Err(e) => return Err(map_queue_err(e)),
+
+                Ok(StepResult::MadeProgress)
             }
+            Err(QueueError::Empty) => Ok(StepResult::NoInput),
+            Err(QueueError::Backpressured) => Err(NodeError::backpressured()),
+            Err(e) => Err(map_queue_err(e)),
         }
-
-        let n = in_buf.len();
-
-        if n == 0 {
-            return Ok(StepResult::NoInput);
-        }
-
-        // Mark batch boundary flags.
-        headers[0].set_first_in_batch();
-        headers[n - 1].set_last_in_batch();
-
-        self.model
-            .infer_batch(in_buf.as_slice(), &mut out_buf[..n])
-            .map_err(map_inference_err)?;
-
-        for i in 0..n {
-            let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-            match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => { /* progress */ }
-                EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-            };
-        }
-        Ok(StepResult::MadeProgress)
     }
 
     #[cfg(feature = "alloc")]
@@ -361,49 +366,51 @@ where
         nmax: usize,
     ) -> Result<StepResult, NodeError>
     where
+        InP: Payload,
         InQ: Edge<Item = Message<InP>>,
         OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
-        let mut headers: Vec<MessageHeader> = Vec::with_capacity(nmax);
-        let mut in_buf: Vec<InP> = Vec::with_capacity(nmax);
-
-        while headers.len() < nmax {
-            match cx.in_try_pop(0) {
-                Ok(m) => {
-                    let (h, p) = m.into_parts();
-                    headers.push(h);
-                    in_buf.push(p);
+        match cx.pop_input_messages_as_batch_with_out(0, nmax, &self.node_policy) {
+            Ok((batch_view, mut out)) => {
+                let batch_len = batch_view.len();
+                if batch_len == 0 {
+                    return Ok(StepResult::NoInput);
                 }
-                Err(QueueError::Empty) | Err(QueueError::Backpressured) => break,
-                Err(e) => return Err(map_queue_err(e)),
+
+                // Convert to borrowed Batch and acquire message slice.
+                let batch = batch_view.as_batch();
+                let msgs = batch.messages();
+                let n = msgs.len();
+
+                let mut headers: Vec<MessageHeader> = Vec::with_capacity(n);
+
+                // Copy headers from the borrowed messages.
+                for msg in msgs.iter() {
+                    headers.push(*msg.header());
+                }
+
+                // Prepare output buffer and run inference using the borrowed Batch.
+                let mut out_buf: Vec<OutP> = Vec::with_capacity(n);
+                out_buf.resize_with(n, || OutP::default());
+                self.model
+                    .infer_batch(batch, &mut out_buf)
+                    .map_err(map_inference_err)?;
+
+                for i in 0..n {
+                    let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
+                    match out.out_try_push(0, out_msg) {
+                        EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {}
+                        EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
+                    }
+                }
+
+                Ok(StepResult::MadeProgress)
             }
+            Err(QueueError::Empty) => Ok(StepResult::NoInput),
+            Err(QueueError::Backpressured) => Err(NodeError::backpressured()),
+            Err(e) => Err(map_queue_err(e)),
         }
-
-        if headers.is_empty() {
-            return Ok(StepResult::NoInput);
-        }
-
-        // Mark batch boundary flags.
-        headers[0].set_first_in_batch();
-        let last = headers.len() - 1;
-        headers[last].set_last_in_batch();
-
-        // Prepare outputs and run batched inference.
-        let mut out_buf: Vec<OutP> = Vec::with_capacity(headers.len());
-        out_buf.resize_with(headers.len(), || OutP::default());
-        self.model
-            .infer_batch(&in_buf, &mut out_buf)
-            .map_err(map_inference_err)?;
-
-        for i in 0..headers.len() {
-            let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-            match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => { /* progress */ }
-                EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-            };
-        }
-        Ok(StepResult::MadeProgress)
     }
 }

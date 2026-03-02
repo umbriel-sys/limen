@@ -355,7 +355,11 @@ impl ComputeModel<u32, u32> for TestU32Model {
     }
 
     #[inline]
-    fn infer_batch(&mut self, inputs: &[u32], outputs: &mut [u32]) -> Result<(), InferenceError> {
+    fn infer_batch(
+        &mut self,
+        inputs: crate::message::batch::Batch<'_, u32>,
+        outputs: &mut [u32],
+    ) -> Result<(), InferenceError> {
         #[cfg(feature = "std")]
         let mut random_seed: u32 = {
             let now = std::time::SystemTime::now()
@@ -367,13 +371,18 @@ impl ComputeModel<u32, u32> for TestU32Model {
         let mut random_seed = 1;
         random_test_node_delay(&mut random_seed, 1000);
 
-        if outputs.len() < inputs.len() {
+        let in_msgs = inputs.messages();
+        let in_len = in_msgs.len();
+
+        if outputs.len() < in_len {
             return Err(InferenceError::new(InferenceErrorKind::ExecutionFailed, 0));
         }
-        // copy inputs → outputs (identity)
-        for (o, i) in outputs.iter_mut().zip(inputs.iter()) {
-            *o = *i;
+
+        // copy inputs → outputs (identity) using references into Batch's messages
+        for (o, m) in outputs.iter_mut().zip(in_msgs.iter()) {
+            *o = *m.payload();
         }
+
         Ok(())
     }
 
@@ -554,4 +563,108 @@ impl Sink<u32, 1> for TestSinkNodeU32_2 {
     fn policy(&self) -> NodePolicy {
         self.node_policy
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::MessageFlags;
+    use crate::policy::{AdmissionPolicy, OverBudgetAction, QueueCaps};
+    use crate::prelude::NoStdLinuxMonotonicClock;
+    use crate::types::{NodeIndex, SequenceNumber, TraceId};
+
+    const TEST_INGRESS_POLICY: EdgePolicy = EdgePolicy::new(
+        QueueCaps::new(16, 14, None, None),
+        AdmissionPolicy::DropNewest,
+        OverBudgetAction::Drop,
+    );
+
+    // ------------- 1) Source node ----------------
+    //
+    // Runs the node contract tests for TestCounterSourceU32_2.
+    crate::run_node_contract_tests!(test_counter_source_contract, {
+        make_nodelink: || {
+            // Build a clock instance to pass into the constructor.
+            let clock = NoStdLinuxMonotonicClock::new();
+
+            // Static node params (tweak if you want different behaviour)
+            let start_value = 0u32;
+            let trace_id = TraceId::new(1);
+            let seq = SequenceNumber::new(1);
+            let deadline = None;
+            let qos = crate::types::QoSClass::BestEffort;
+            let flags = MessageFlags::empty();
+            let node_caps = crate::node::NodeCapabilities::default();
+            let node_policy = crate::policy::NodePolicy::default();
+            let output_accept = [crate::memory::PlacementAcceptance::default(); 1];
+            let ingress_policy = TEST_INGRESS_POLICY;
+
+            // Make the source instance (BACKLOG_CAP choose e.g. 8).
+            let src: TestCounterSourceU32_2<_, 16> = TestCounterSourceU32_2::new(
+                clock,
+                start_value,
+                trace_id,
+                seq,
+                deadline,
+                qos,
+                flags,
+                node_caps,
+                node_policy,
+                output_accept,
+                ingress_policy,
+            );
+
+            // Convert Source -> SourceNode using the convenience.
+            // into_sourcenode consumes `src` and returns SourceNode<_, u32, 1>.
+            let src_node = src.into_sourcenode(crate::policy::NodePolicy::default());
+
+            // Construct a NodeLink owning the SourceNode. Use NodeIndex::new(0) and a static name.
+            crate::node::link::NodeLink::new(src_node, NodeIndex::new(0), Some("test-counter-source"))
+        }
+    });
+
+    // ------------- 2) Model node ----------------
+    //
+    // Runs the node contract tests for the identity inference model node.
+    crate::run_node_contract_tests!(test_identity_model_contract, {
+        make_nodelink: || {
+            // Build node params
+            let node_caps = crate::node::NodeCapabilities::default();
+            let node_policy = crate::policy::NodePolicy::default();
+            let input_accept = [crate::memory::PlacementAcceptance::default(); 1];
+            let output_accept = [crate::memory::PlacementAcceptance::default(); 1];
+
+            // Construct the model-backed inference node (MAX_BATCH choose a reasonable constant)
+            let node = TestIdentityModelNodeU32_2::<8>::new_identity(
+                node_caps,
+                node_policy,
+                input_accept,
+                output_accept,
+            )
+            .expect("create identity model node");
+
+            // Wrap as a NodeLink with NodeIndex::new(1)
+            crate::node::link::NodeLink::new(node, NodeIndex::new(0), Some("test-identity-model"))
+        }
+    });
+
+    // ------------- 3) Sink node ----------------
+    //
+    // Runs the node contract tests for TestSinkNodeU32_2 wrapped in SinkNode.
+    crate::run_node_contract_tests!(test_sink_node_contract, {
+        make_nodelink: || {
+            let node_caps = crate::node::NodeCapabilities::default();
+            let node_policy = crate::policy::NodePolicy::default();
+            let input_accept = [crate::memory::PlacementAcceptance::default(); 1];
+
+            // Create sink instance; provide a simple printer that ignores the string in tests.
+            let sink = TestSinkNodeU32_2::new(node_caps, node_policy, input_accept, |_s| {});
+
+            // Wrap into SinkNode via From::from (or SinkNode::new)
+            let sink_node = crate::node::sink::SinkNode::from(sink);
+
+            // Construct a NodeLink owning the SinkNode with NodeIndex::new(2)
+            crate::node::link::NodeLink::new(sink_node, NodeIndex::new(0), Some("test-sink"))
+        }
+    });
 }

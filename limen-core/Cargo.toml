@@ -10,12 +10,15 @@ authors.workspace = true
 [features]
 default = []
 alloc = []
-std = ["alloc", "dep:ringbuf"]
+std = ["alloc", "dep:ringbuf", "checked-memory-manager-refs"]
 spsc_raw = ["std"] # enables SpscAtomicRing (unsafe)
+
+# Opt-in checked runtime borrow/ref checking for single-threaded managers.
+checked-memory-manager-refs = []
 
 # (Work)bench:
 # - Enables test features and implementations for downstream crates.
-bench = []
+bench = ["checked-memory-manager-refs"]
 
 [dependencies]
 heapless = { workspace = true }

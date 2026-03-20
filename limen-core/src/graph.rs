@@ -14,12 +14,12 @@ pub mod validate;
 pub mod bench;
 
 use crate::node::Node;
-use crate::prelude::{PlatformClock, Telemetry};
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 use crate::{
     edge::{link::EdgeDescriptor, Edge, EdgeOccupancy},
     errors::{GraphError, NodeError},
     graph::validate::{GraphDescBuf, GraphValidator},
-    message::{payload::Payload, Message},
+    message::payload::Payload,
     node::{link::NodeDescriptor, StepContext, StepResult},
     policy::{EdgePolicy, NodePolicy},
 };
@@ -79,10 +79,16 @@ pub trait GraphNodeTypes<const I: usize, const IN: usize, const OUT: usize> {
     type OutP: Payload;
 
     /// Queue type used for input ports.
-    type InQ: Edge<Item = Message<Self::InP>>;
+    type InQ: Edge;
 
     /// Queue type used for output ports.
-    type OutQ: Edge<Item = Message<Self::OutP>>;
+    type OutQ: Edge;
+
+    /// Memory manager type for input ports.
+    type InM: MemoryManager<Self::InP>;
+
+    /// Memory manager type for output ports.
+    type OutM: MemoryManager<Self::OutP>;
 }
 
 /// Builder for per-node execution contexts.
@@ -120,6 +126,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
         <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
         <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
         <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+        <Self as GraphNodeTypes<I, IN, OUT>>::InM,
+        <Self as GraphNodeTypes<I, IN, OUT>>::OutM,
         C,
         T,
     >
@@ -147,6 +155,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
                 <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
                 <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
                 <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InM,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutM,
                 C,
                 T,
             >,
@@ -173,7 +183,7 @@ pub trait GraphNodeOwnedEndpointHandoff<const I: usize, const IN: usize, const O
         > + Send
         + 'static;
 
-    /// Take ownership of node `I` and produce owned endpoint queues + policies.
+    /// Take ownership of node `I` and produce owned endpoint queues, managers, and policies.
     #[allow(clippy::complexity)]
     fn take_node_and_endpoints(
         &mut self,
@@ -181,19 +191,25 @@ pub trait GraphNodeOwnedEndpointHandoff<const I: usize, const IN: usize, const O
         Self::NodeOwned,
         [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
         [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+        [<Self as GraphNodeTypes<I, IN, OUT>>::InM; IN],
+        [<Self as GraphNodeTypes<I, IN, OUT>>::OutM; OUT],
         [EdgePolicy; IN],
         [EdgePolicy; OUT],
     )
     where
         <Self as GraphNodeTypes<I, IN, OUT>>::InQ: Send + 'static,
-        <Self as GraphNodeTypes<I, IN, OUT>>::OutQ: Send + 'static;
+        <Self as GraphNodeTypes<I, IN, OUT>>::OutQ: Send + 'static,
+        <Self as GraphNodeTypes<I, IN, OUT>>::InM: Send + 'static,
+        <Self as GraphNodeTypes<I, IN, OUT>>::OutM: Send + 'static;
 
-    /// (Optional) Reattach ownership after the worker is done.
+    ///  Reattach ownership after the worker is done.
     fn put_node_and_endpoints(
         &mut self,
         node: Self::NodeOwned,
         inputs: [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
         outputs: [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
+        in_managers: [<Self as GraphNodeTypes<I, IN, OUT>>::InM; IN],
+        out_managers: [<Self as GraphNodeTypes<I, IN, OUT>>::OutM; OUT],
     );
 }
 

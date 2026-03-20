@@ -12,12 +12,12 @@
 //!   never have to mention the adapter type.
 
 use crate::edge::{Edge, EdgeOccupancy};
-use crate::errors::{NodeError, QueueError};
+use crate::errors::NodeError;
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
 use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
 use crate::policy::NodePolicy;
-use crate::prelude::{PlatformClock, Telemetry};
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 
 use core::marker::PhantomData;
 
@@ -122,7 +122,7 @@ where
 impl<S, InP, const IN: usize> Node<IN, 0, InP, ()> for SinkNode<S, InP, IN>
 where
     S: Sink<InP, IN>,
-    InP: Payload,
+    InP: Payload + Copy,
 {
     #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
@@ -173,15 +173,17 @@ where
         Ok(())
     }
 
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    #[inline]
+    fn process_message<'graph, 'clock, OutQ, OutM, C, Tel>(
         &mut self,
         msg: &Message<InP>,
-        _out_ctx: &mut OutStepContext<'graph, '_, 'clock, 0, (), OutQ, C, T>,
+        _out_ctx: &mut OutStepContext<'graph, '_, 'clock, 0, (), OutQ, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        OutQ: Edge<Item = Message<()>>,
+        OutQ: Edge,
+        OutM: MemoryManager<()>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         self.sink
             .consume(msg)
@@ -190,15 +192,17 @@ where
     }
 
     #[inline]
-    fn step<'g, 't, 'ck, InQ, OutQ, C, T>(
+    fn step<'g, 't, 'ck, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        cx: &mut StepContext<'g, 't, 'ck, IN, 0, InP, (), InQ, OutQ, C, T>,
+        cx: &mut StepContext<'g, 't, 'ck, IN, 0, InP, (), InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<()>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<()>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         // Snapshot occupancies and let the sink choose an input.
         let occ: [EdgeOccupancy; IN] = core::array::from_fn(|i| cx.in_occupancy(i));
@@ -207,131 +211,87 @@ where
             None => return Ok(StepResult::NoInput),
         };
 
-        // Pop one message from the selected input.
-        let msg = match cx.in_try_pop(port) {
-            Ok(m) => m,
-            Err(QueueError::Empty) => return Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
-            Err(QueueError::AtOrAboveHardCap)
-            | Err(QueueError::Unsupported)
-            | Err(QueueError::Poisoned) => return Err(NodeError::execution_failed()),
-        };
-
-        self.sink
-            .consume(&msg)
-            .map(|_| StepResult::MadeProgress)
-            .map_err(|_| NodeError::execution_failed())
-    }
-
-    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
-        &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, 0, InP, (), InQ, OutQ, C, T>,
-    ) -> Result<StepResult, NodeError>
-    where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<()>>,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized,
-    {
-        // 1) Find a ready input port according to the node policy.
-        let node_policy = self.policy();
-        let mut port_opt: Option<usize> = None;
-        for port in 0..IN {
-            if ctx.input_edge_has_batch(port, &node_policy) {
-                port_opt = Some(port);
-                break;
-            }
-        }
-
-        // Nothing ready.
-        let port = match port_opt {
-            None => return Ok(StepResult::NoInput),
-            Some(p) => p,
-        };
-
-        // 2) Use the node policy's nmax as the batch maximum.
-        // Replace `.nmax()` with your actual accessor if it's named differently.
-        let nmax = node_policy.batching().fixed_n().unwrap_or(1);
-
-        // 3) Attempt the canonical batch pop that honors sliding/disjoint/fixed+delta semantics.
-        match ctx.pop_input_messages_as_batch_with_out(port, nmax, &node_policy) {
-            Ok((batch_view, mut out)) => {
-                // Defensive: if the batch is empty treat as NoInput.
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Ok(StepResult::NoInput);
-                }
-
-                // Consume the BatchView so the borrow on the input queue ends while we call
-                // `process_message(..., ctx)`. This requires `BatchView` to provide an
-                // owning iterator (`into_iter()` returning owned Message<InP>) or similar.
-                // If your BatchView.into_iter() yields `&Message<InP>` you will need to
-                // clone or otherwise obtain owned messages before dropping the BatchView.
-                let mut any_made = false;
-
-                // Note: move/consume batch_view here to drop its internal borrows while iterating.
-                for msg in batch_view.iter() {
-                    // `msg` is assumed to be `Message<InP>` (owned). We pass a reference to the
-                    // per-message hook; the hook may use `ctx` to emit outputs and telemetry.
-                    let msg_ref: &Message<InP> = msg;
-
-                    // Put the mutable borrow of `out` into a *short, inner scope* so
-                    // the borrow ends before the next loop iteration.
-                    let res = {
-                        // `out_tmp` lives only until the end of this block.
-                        let out_tmp = &mut out;
-                        self.process_message(msg_ref, out_tmp)
-                    };
-
-                    match res {
-                        Ok(StepResult::MadeProgress) => any_made = true,
-                        Ok(StepResult::NoInput) => {
-                            // Unlikely when processing an explicit item — treat as no-op.
-                        }
-                        Ok(StepResult::Backpressured) => return Ok(StepResult::Backpressured),
-                        Ok(StepResult::WaitingOnExternal) => {
-                            return Ok(StepResult::WaitingOnExternal)
-                        }
-                        Ok(StepResult::YieldUntil(t)) => return Ok(StepResult::YieldUntil(t)),
-                        Ok(StepResult::Terminal) => return Ok(StepResult::Terminal),
-                        Err(e) => return Err(e),
-                    }
-                }
-
-                if any_made {
-                    Ok(StepResult::MadeProgress)
-                } else {
-                    Ok(StepResult::NoInput)
-                }
-            }
-
-            // Map queue errors consistently with the single-message `step()` mapping:
-            Err(QueueError::Empty) => Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
-                Err(NodeError::backpressured())
-            }
-            Err(QueueError::Poisoned) => Err(NodeError::execution_failed().with_code(1)),
-            // We do not provide a fallback here: Unsupported indicates the backend cannot
-            // supply the batch path; surface as execution failure so implementers know
-            // they must override if needed for that backend.
-            Err(QueueError::Unsupported) => Err(NodeError::execution_failed().with_code(2)),
-        }
+        cx.pop_and_process(port, |msg, _out| {
+            self.sink
+                .consume(msg)
+                .map(|_| StepResult::MadeProgress)
+                .map_err(|_| NodeError::execution_failed())
+        })
     }
 
     #[inline]
-    fn on_watchdog_timeout<C, T>(&mut self, clock: &C, _t: &mut T) -> Result<StepResult, NodeError>
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
+        &mut self,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            0,
+            InP,
+            (),
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<()>,
+        C: PlatformClock + Sized,
+        Tel: Telemetry + Sized,
+    {
+        let node_policy = self.policy();
+        let port = match (0..IN).find(|&p| ctx.input_edge_has_batch(p, &node_policy)) {
+            Some(p) => p,
+            None => return Ok(StepResult::NoInput),
+        };
+        let nmax = node_policy.batching().fixed_n().unwrap_or(1);
+
+        ctx.pop_batch_and_process(port, nmax, &node_policy, |iter, out| {
+            let mut any_made = false;
+            for guard in iter {
+                match self.process_message(&*guard, out)? {
+                    StepResult::MadeProgress => any_made = true,
+                    StepResult::NoInput => {}
+                    StepResult::Backpressured => return Ok(StepResult::Backpressured),
+                    StepResult::WaitingOnExternal => {
+                        return Ok(StepResult::WaitingOnExternal);
+                    }
+                    StepResult::YieldUntil(t) => return Ok(StepResult::YieldUntil(t)),
+                    StepResult::Terminal => return Ok(StepResult::Terminal),
+                }
+            }
+            if any_made {
+                Ok(StepResult::MadeProgress)
+            } else {
+                Ok(StepResult::NoInput)
+            }
+        })
+    }
+
+    #[inline]
+    fn on_watchdog_timeout<C, Tel>(
+        &mut self,
+        clock: &C,
+        _t: &mut Tel,
+    ) -> Result<StepResult, NodeError>
     where
         C: PlatformClock + Sized,
-        T: Telemetry,
+        Tel: Telemetry,
     {
-        // Sinks typically block on external IO; yield cooperatively.
         Ok(StepResult::YieldUntil(clock.now_ticks()))
     }
 
     #[inline]
-    fn stop<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<(), NodeError>
+    fn stop<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(())
     }

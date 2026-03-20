@@ -240,6 +240,40 @@ impl EdgeIndex {
     }
 }
 
+// ***** Memory *****
+
+/// A lightweight handle to a message stored in a [`MemoryManager`].
+///
+/// Edges carry `MessageToken` values instead of full `Message<P>` payloads.
+/// The token is an index into a manager's slot array. Tokens are `Copy`,
+/// `Clone`, `Default`, and `Hash` — they satisfy all edge implementation
+/// bounds (e.g., `StaticRing` needs `T: Default + Clone`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct MessageToken(u32);
+
+impl MessageToken {
+    /// Sentinel value representing an invalid / unallocated token.
+    pub const INVALID: Self = Self(u32::MAX);
+
+    /// Construct a token from a raw slot index.
+    #[inline]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Return the slot index as `usize`.
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Return `true` if this token is the sentinel `INVALID` value.
+    #[inline]
+    pub const fn is_invalid(self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
 // ***** Payload *****
 
 /// Supported primitive data types for tensors and values.

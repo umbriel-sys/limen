@@ -8,8 +8,8 @@ use crate::{
     node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult},
     policy::NodePolicy,
     prelude::{
-        NodeStepError, NodeStepTelemetry, PlatformClock, Telemetry, TelemetryEvent, TelemetryKey,
-        TelemetryKind,
+        MemoryManager, NodeStepError, NodeStepTelemetry, PlatformClock, Telemetry, TelemetryEvent,
+        TelemetryKey, TelemetryKind,
     },
     types::{NodeIndex, PortId, PortIndex},
 };
@@ -185,13 +185,14 @@ where
         self.node.start(clock, telemetry)
     }
 
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    fn process_message<'graph, 'clock, OutQ, OutM, C, T>(
         &mut self,
         msg: &Message<InP>,
-        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, OutM, C, T>,
     ) -> Result<StepResult, NodeError>
     where
-        OutQ: Edge<Item = Message<OutP>>,
+        OutQ: Edge,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
@@ -332,13 +333,29 @@ where
     }
 
     #[inline]
-    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, T>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            OUT,
+            InP,
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            T,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
@@ -494,13 +511,29 @@ where
         result
     }
 
-    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, T>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            OUT,
+            InP,
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            T,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {

@@ -1,31 +1,30 @@
 //! (Work)bench [test] Queue implementation.
 //!
 //! A small, safe, no-alloc SPSC ring buffer intended for tests. This
-//! implementation stores `T` directly in a `[T; N]` array so it can return
-//! contiguous `&mut [T]` batch slices without unsafe code. To allow safe
-//! initialization of the array we require `T: Default + Clone` on the impl.
+//! implementation stores `MessageToken` directly in a `[MessageToken; N]`
+//! array so it can return contiguous `&mut [MessageToken]` batch slices
+//! without unsafe code. Byte-accounting is done via `HeaderStore` lookups.
+//!
+//! This test queue mirrors the semantics of `StaticRing` (the new static
+//! MessageToken-based ring) so it can be exercised by the same Edge contract
+//! tests.
 
-use crate::edge::{Edge, EdgeOccupancy, EnqueueResult, PeekResponse};
+use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};
 use crate::errors::QueueError;
-use crate::message::batch::BatchView;
-use crate::message::payload::Payload;
-use crate::message::Message;
 use crate::policy::{AdmissionDecision, EdgePolicy};
+use crate::prelude::{BatchView, HeaderStore};
+use crate::types::MessageToken;
 
 use core::mem;
 
 /// A simple, no-alloc, no-unsafe SPSC ring buffer for tests that honors `EdgePolicy`.
 ///
 /// Notes:
-/// - Byte accounting is estimated as `len * size_of::<T>()`, which is
-///   sufficient for tests with fixed-size items (e.g., `Message<u32>`).
-/// - `AdmissionPolicy::DeadlineAndQoSAware` maps over-budget cases to either
-///   `DroppedNewest` (when `OverBudgetAction::Drop`) or `Rejected` for the
-///   other actions, since those behaviors live outside a queue.
+/// - Byte accounting is provided by the `HeaderStore` lookups (payload_size_bytes).
 /// - `AdmissionPolicy::Block` returns `Rejected` in this test queue (no blocking).
-pub struct TestSpscRingBuf<T, const N: usize> {
-    /// Backing storage: always initialized with `T::default()`.
-    buf: [T; N],
+pub struct TestSpscRingBuf<const N: usize> {
+    /// Backing storage: always initialized with `MessageToken::default()`.
+    buf: [MessageToken; N],
 
     /// Index of the front element (logical head).
     head: usize,
@@ -40,12 +39,12 @@ pub struct TestSpscRingBuf<T, const N: usize> {
     bytes: usize,
 }
 
-impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
+impl<const N: usize> TestSpscRingBuf<N> {
     /// Create a new empty ring.
     #[inline]
     pub fn new() -> Self {
         Self {
-            buf: core::array::from_fn(|_| T::default()),
+            buf: core::array::from_fn(|_| MessageToken::default()),
             head: 0,
             tail: 0,
             len: 0,
@@ -63,7 +62,7 @@ impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
     ///
     /// Overwrites the slot at `tail` (which should be a default placeholder).
     #[inline]
-    fn push_raw(&mut self, item: T) {
+    fn push_raw(&mut self, item: MessageToken) {
         self.buf[self.tail] = item;
         self.tail = (self.tail + 1) % N;
         self.len += 1;
@@ -71,11 +70,11 @@ impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
 
     /// Internal: pop an item from the head (assumes len > 0).
     ///
-    /// Replaces the vacated slot with `T::default()` and returns the previous
+    /// Replaces the vacated slot with `MessageToken::default()` and returns the previous
     /// value stored there.
     #[inline]
-    fn pop_raw(&mut self) -> T {
-        let item = mem::take(&mut self.buf[self.head]);
+    fn pop_raw(&mut self) -> MessageToken {
+        let item = mem::replace(&mut self.buf[self.head], MessageToken::default());
         self.head = (self.head + 1) % N;
         self.len -= 1;
         item
@@ -84,7 +83,7 @@ impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
     /// Normalize the ring so the live region is contiguous at `buf[0..len]`.
     ///
     /// Moves items in-place using `mem::replace`, leaving default placeholders
-    /// in unused slots. After normalization `head == 0` and `tail == len % N`.
+    /// in unused slots. After normalization `head == 0` and `tail == (head + len) % N`.
     fn normalize(&mut self) {
         if self.len == 0 {
             // Empty ring: canonicalize indices.
@@ -102,14 +101,14 @@ impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
         for i in 0..self.len {
             let src_idx = (self.head + i) % N;
             // Extract src value into tmp, leaving default in src slot.
-            let tmp = mem::take(&mut self.buf[src_idx]);
+            let tmp = mem::replace(&mut self.buf[src_idx], MessageToken::default());
             // Place the extracted value into destination slot `i`.
             self.buf[i] = tmp;
         }
 
         // Ensure remaining slots are defaulted (not strictly required but clearer).
         for i in self.len..N {
-            let _ = mem::take(&mut self.buf[i]);
+            let _ = mem::replace(&mut self.buf[i], MessageToken::default());
         }
 
         self.head = 0;
@@ -117,15 +116,21 @@ impl<T: Default + Clone, const N: usize> TestSpscRingBuf<T, N> {
     }
 }
 
-impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Message<P>, N> {
-    type Item = Message<P>;
-
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
+impl<const N: usize> Edge for TestSpscRingBuf<N> {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
         // Compute a pure admission decision from the policy.
-        let decision = self.get_admission_decision(policy, &item);
+        let decision = self.get_admission_decision(policy, token, headers);
 
-        // Helper: size of incoming item in bytes.
-        let item_bytes = *item.header().payload_size_bytes();
+        // Helper: size of incoming item in bytes via HeaderStore.
+        let item_bytes = headers
+            .peek_header(token)
+            .map(|h| *h.payload_size_bytes())
+            .unwrap_or(0);
 
         match decision {
             AdmissionDecision::Admit => {
@@ -135,7 +140,7 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
                 }
 
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
+                self.push_raw(token);
                 EnqueueResult::Enqueued
             }
 
@@ -158,7 +163,11 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
                         break;
                     }
                     let ev = self.pop_raw();
-                    self.bytes = self.bytes.saturating_sub(*ev.header().payload_size_bytes());
+                    let ev_bytes = headers
+                        .peek_header(ev)
+                        .map(|h| *h.payload_size_bytes())
+                        .unwrap_or(0);
+                    self.bytes = self.bytes.saturating_sub(ev_bytes);
                 }
 
                 // After evicting, ensure hard caps / fullness are satisfied.
@@ -168,7 +177,7 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
 
                 // Now try to enqueue.
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
+                self.push_raw(token);
                 EnqueueResult::Enqueued
             }
 
@@ -176,7 +185,11 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
                 // Evict until the caps report below-hard or queue empties.
                 while policy.caps.at_or_above_hard(self.len, self.bytes) && self.len > 0 {
                     let ev = self.pop_raw();
-                    self.bytes = self.bytes.saturating_sub(*ev.header().payload_size_bytes());
+                    let ev_bytes = headers
+                        .peek_header(ev)
+                        .map(|h| *h.payload_size_bytes())
+                        .unwrap_or(0);
+                    self.bytes = self.bytes.saturating_sub(ev_bytes);
                 }
 
                 // If the single item cannot fit even into an empty queue, reject.
@@ -191,22 +204,24 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
 
                 // Accept the item now that we've made room.
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
+                self.push_raw(token);
                 EnqueueResult::Enqueued
             }
         }
     }
 
-    /// Try to pop a single message.
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    /// Try to pop a single token.
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
         if self.len == 0 {
             return Err(QueueError::Empty);
         }
-        let item = self.pop_raw();
-        self.bytes = self
-            .bytes
-            .saturating_sub(*item.header().payload_size_bytes());
-        Ok(item)
+        let token = self.pop_raw();
+        let tok_bytes = headers
+            .peek_header(token)
+            .map(|h| *h.payload_size_bytes())
+            .unwrap_or(0);
+        self.bytes = self.bytes.saturating_sub(tok_bytes);
+        Ok(token)
     }
 
     /// Snapshot occupancy for telemetry / admission decisions.
@@ -221,39 +236,39 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
         }
     }
 
-    /// Peek at the front item without removing it.
-    ///
-    /// Returns `PeekResponse::Borrowed(&Message<P>)` for zero-copy paths.
-    fn try_peek(&self) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Peek at the front token without removing it.
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         if self.len == 0 {
             return Err(QueueError::Empty);
         }
-        Ok(PeekResponse::Borrowed(&self.buf[self.head]))
+        Ok(self.buf[self.head])
     }
 
     #[inline]
-    fn try_peek_at(&self, index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
-        if index >= self.len {
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
+        if self.len == 0 || index >= self.len {
             return Err(QueueError::Empty);
         }
 
         let idx = (self.head + index) % N;
-        Ok(PeekResponse::Borrowed(&self.buf[idx]))
+        Ok(self.buf[idx])
     }
 
-    /// Pop a batch of items according to `BatchingPolicy`.
+    /// Pop a batch of tokens according to `BatchingPolicy`.
     ///
     /// - Disjoint windows: pop up to `fixed_n` or `max_delta_t`.
     /// - Sliding windows: return `size` items but only pop/advance `stride` items.
     /// - `fixed_n` and `max_delta_t` combine: stop when either limit reached.
     /// - No `fixed_n` or `max_delta_t`: treat as `fixed_n` = 1.
-    fn try_pop_batch(
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         use crate::policy::WindowKind;
 
         if self.len == 0 {
@@ -271,7 +286,7 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
         let delta_t_opt = *policy.max_delta_t();
         let window_kind = policy.window_kind();
 
-        // If both caps are absent, treat as fixed_n = 1 (per your tightened semantics).
+        // If both caps are absent, treat as fixed_n = 1 (per tightened semantics).
         let effective_fixed: Option<usize> = if fixed_opt.is_none() && delta_t_opt.is_none() {
             Some(1)
         } else {
@@ -281,19 +296,25 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
         // Compute how many items are within max_delta_t relative to the front, if any.
         let mut delta_count = self.len;
         if let Some(cap) = delta_t_opt {
-            // Use creation_tick for age calculation.
-            let front_ticks: crate::types::Ticks = *self.buf[0].header().creation_tick();
-            let mut c = 0usize;
-            while c < self.len {
-                let tick = *self.buf[c].header().creation_tick();
-                let delta = tick.saturating_sub(front_ticks);
-                if delta <= cap {
-                    c += 1;
-                } else {
-                    break;
+            // Use creation_tick for age calculation via HeaderStore.
+            if let Ok(front_header) = headers.peek_header(self.buf[0]) {
+                let front_ticks = *front_header.creation_tick();
+                let mut c = 0usize;
+                while c < self.len {
+                    if let Ok(h) = headers.peek_header(self.buf[c]) {
+                        let tick = *h.creation_tick();
+                        let delta = tick.saturating_sub(front_ticks);
+                        if delta <= cap {
+                            c += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
+                delta_count = c;
             }
-            delta_count = c;
         }
 
         // Helper to apply effective fixed-N cap (if present).
@@ -321,8 +342,9 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
             // Subtract bytes for the popped items.
             let mut dropped_bytes = 0usize;
             for i in 0..take_n {
-                dropped_bytes =
-                    dropped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
+                if let Ok(h) = headers.peek_header(self.buf[i]) {
+                    dropped_bytes = dropped_bytes.saturating_add(*h.payload_size_bytes());
+                }
             }
             self.bytes = self.bytes.saturating_sub(dropped_bytes);
 
@@ -356,8 +378,9 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
             // Subtract bytes only for the popped items.
             let mut popped_bytes = 0usize;
             for i in 0..stride_to_pop {
-                popped_bytes =
-                    popped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
+                if let Ok(h) = headers.peek_header(self.buf[i]) {
+                    popped_bytes = popped_bytes.saturating_add(*h.payload_size_bytes());
+                }
             }
             self.bytes = self.bytes.saturating_sub(popped_bytes);
 
@@ -383,8 +406,9 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
         // Subtract bytes for the popped items.
         let mut dropped_bytes = 0usize;
         for i in 0..take_n {
-            dropped_bytes =
-                dropped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
+            if let Ok(h) = headers.peek_header(self.buf[i]) {
+                dropped_bytes = dropped_bytes.saturating_add(*h.payload_size_bytes());
+            }
         }
         self.bytes = self.bytes.saturating_sub(dropped_bytes);
 
@@ -393,7 +417,7 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for TestSpscRingBuf<Mess
     }
 }
 
-impl<T: Default + Clone, const N: usize> Default for TestSpscRingBuf<T, N> {
+impl<const N: usize> Default for TestSpscRingBuf<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -403,8 +427,8 @@ impl<T: Default + Clone, const N: usize> Default for TestSpscRingBuf<T, N> {
 mod tests {
     use super::*;
 
-    // Runs the full Edge contract suite against StaticRing<Message<u32>, 16>.
+    // Runs the full Edge contract suite against TestSpscRingBuf<MessageToken, 16>.
     crate::run_edge_contract_tests!(test_spsc_ring_buf_contract, || {
-        TestSpscRingBuf::<Message<u32>, 16>::new()
+        TestSpscRingBuf::<16>::new()
     });
 }

@@ -1,11 +1,14 @@
 //! Minimal, zero-cost payload descriptors for generic Rust data.
 
-use crate::memory::{BufferDescriptor, MemoryClass};
+use crate::memory::BufferDescriptor;
 use core::mem;
 
-/// Trait for payload types that can provide byte length and memory class.
+/// Trait for payload types that can provide byte length.
+///
+/// Memory class (placement) is a property of the [`MemoryManager`], not the
+/// payload. The payload only knows its byte size.
 pub trait Payload {
-    /// Return the buffer descriptor (byte size & memory class).
+    /// Return the buffer descriptor (byte size).
     fn buffer_descriptor(&self) -> BufferDescriptor;
 }
 
@@ -15,7 +18,7 @@ pub trait Payload {
 impl<T> Payload for [T] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(self.len() * mem::size_of::<T>(), MemoryClass::Host)
+        BufferDescriptor::new(self.len() * mem::size_of::<T>())
     }
 }
 
@@ -23,14 +26,14 @@ impl<T> Payload for [T] {
 impl<'a, T> Payload for &'a [T] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(self.len() * mem::size_of::<T>(), MemoryClass::Host)
+        BufferDescriptor::new(self.len() * mem::size_of::<T>())
     }
 }
 
 impl<T, const N: usize> Payload for [T; N] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(N * mem::size_of::<T>(), MemoryClass::Host)
+        BufferDescriptor::new(N * mem::size_of::<T>())
     }
 }
 
@@ -38,7 +41,7 @@ impl<T, const N: usize> Payload for [T; N] {
 impl<'a, T, const N: usize> Payload for &'a [T; N] {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(N * mem::size_of::<T>(), MemoryClass::Host)
+        BufferDescriptor::new(N * mem::size_of::<T>())
     }
 }
 
@@ -47,13 +50,13 @@ impl<'a, T, const N: usize> Payload for &'a [T; N] {
 impl Payload for () {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(0, MemoryClass::Host)
+        BufferDescriptor::new(0)
     }
 }
 
 impl Payload for u32 {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
-        BufferDescriptor::new(mem::size_of::<u32>(), MemoryClass::Host)
+        BufferDescriptor::new(mem::size_of::<u32>())
     }
 }

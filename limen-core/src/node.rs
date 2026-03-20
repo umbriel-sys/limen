@@ -16,7 +16,7 @@ use crate::errors::{NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
 use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy, SlidingWindow, WindowKind};
-use crate::prelude::{BatchView, PlatformClock, TelemetryKey, TelemetryKind};
+use crate::prelude::{BatchMessageIter, MemoryManager, PlatformClock, TelemetryKey, TelemetryKind};
 use crate::telemetry::Telemetry;
 use crate::types::Ticks;
 
@@ -105,11 +105,11 @@ pub enum StepResult {
     Terminal,
 }
 
-/// A context provided to nodes during `step`, abstracting queues and services.
+/// A context provided to nodes during `step`, abstracting queues, managers,
+/// and services.
 ///
-/// The context is generic over input/output payload and queue types to avoid
-/// trait objects. Implementations in runtimes will construct instances of this
-/// context and pass them to nodes.
+/// The context is generic over input/output payload, queue, **memory manager**,
+/// clock, and telemetry types to avoid trait objects.
 pub struct StepContext<
     'graph,
     'telemetry,
@@ -120,6 +120,8 @@ pub struct StepContext<
     OutP,
     InQ,
     OutQ,
+    InM,
+    OutM,
     C,
     T,
 > where
@@ -132,6 +134,10 @@ pub struct StepContext<
     inputs: [&'graph mut InQ; IN],
     /// Arrays of outbound queues by output port index.
     outputs: [&'graph mut OutQ; OUT],
+    /// Memory managers for each input port (one per edge).
+    in_managers: [&'graph mut InM; IN],
+    /// Memory managers for each output port (one per edge).
+    out_managers: [&'graph mut OutM; OUT],
     /// Edge policies for each input.
     in_policies: [EdgePolicy; IN],
     /// Edge policies for each output.
@@ -152,19 +158,34 @@ pub struct StepContext<
     _marker: core::marker::PhantomData<(InP, OutP)>,
 }
 
-impl<'graph, 'telemetry, 'clock, const IN: usize, const OUT: usize, InP, OutP, InQ, OutQ, C, T>
-    StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>
+impl<
+        'graph,
+        'telemetry,
+        'clock,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+        InQ,
+        OutQ,
+        InM,
+        OutM,
+        C,
+        T,
+    > StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, InM, OutM, C, T>
 where
     InP: Payload,
     OutP: Payload,
     C: PlatformClock + Sized,
     T: Telemetry + Sized,
 {
-    /// Create a new step context from queues, policies, and services.
+    /// Create a new step context from queues, managers, policies, and services.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         inputs: [&'graph mut InQ; IN],
         outputs: [&'graph mut OutQ; OUT],
+        in_managers: [&'graph mut InM; IN],
+        out_managers: [&'graph mut OutM; OUT],
         in_policies: [EdgePolicy; IN],
         out_policies: [EdgePolicy; OUT],
         node_id: u32,
@@ -176,6 +197,8 @@ where
         Self {
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -188,60 +211,264 @@ where
     }
 }
 
-impl<'graph, 'telemetry, 'clock, const IN: usize, const OUT: usize, InP, OutP, InQ, OutQ, C, T>
-    StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>
+impl<
+        'graph,
+        'telemetry,
+        'clock,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+        InQ,
+        OutQ,
+        InM,
+        OutM,
+        C,
+        T,
+    > StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, InM, OutM, C, T>
 where
     InP: Payload,
     OutP: Payload,
-    InQ: Edge<Item = Message<InP>>,
-    OutQ: Edge<Item = Message<OutP>>,
+    InQ: Edge,
+    OutQ: Edge,
+    InM: MemoryManager<InP>,
+    OutM: MemoryManager<OutP>,
     C: PlatformClock + Sized,
     T: Telemetry + Sized,
 {
-    /// Attempt to pop an item from the specified input queue.
+    // ---------------------------------------------------------------
+    // Input operations
+    // ---------------------------------------------------------------
+
+    /// Peek the front message header on the specified input port (non-consuming).
+    ///
+    /// Returns a guard that dereferences to `MessageHeader`. The guard must
+    /// be dropped before any mutable operation on the same manager slot.
     #[inline]
-    pub fn in_try_pop(&mut self, i: usize) -> Result<Message<InP>, QueueError> {
+    pub fn in_peek_header(&self, i: usize) -> Result<InM::HeaderGuard<'_>, QueueError> {
         debug_assert!(i < IN);
-        match self.inputs[i].try_pop() {
-            Ok(msg) => {
-                if T::METRICS_ENABLED {
-                    self.telemetry.incr_counter(
-                        TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
-                        1,
-                    );
-                    let _ = self.in_occupancy(i);
-                }
-                Ok(msg)
+        let token = self.inputs[i].try_peek()?;
+        self.in_managers[i]
+            .peek_header(token)
+            .map_err(|_| QueueError::Empty)
+    }
+
+    // ---------------------------------------------------------------
+    // Callback-based input operations
+    // ---------------------------------------------------------------
+
+    /// Pop one message from input `port`, call `f` with a shared reference
+    /// to it and an output context, then free the manager slot after `f` returns.
+    ///
+    /// Maps queue errors to `StepResult`/`NodeError`:
+    /// - `Empty` → `Ok(StepResult::NoInput)`
+    /// - `Backpressured`/`HardCap` → `Err(NodeError::backpressured())`
+    /// - `Poisoned`/`Unsupported` → `Err(NodeError::execution_failed())`
+    #[inline]
+    pub fn pop_and_process<F>(&mut self, port: usize, f: F) -> Result<StepResult, NodeError>
+    where
+        F: FnOnce(
+            &Message<InP>,
+            &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, OutM, C, T>,
+        ) -> Result<StepResult, NodeError>,
+    {
+        debug_assert!(port < IN);
+
+        let token = match self.inputs[port].try_pop(&*self.in_managers[port]) {
+            Ok(t) => t,
+            Err(QueueError::Empty) => return Ok(StepResult::NoInput),
+            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
+                return Err(NodeError::backpressured());
             }
-            Err(e) => Err(e),
+            Err(QueueError::Poisoned) | Err(QueueError::Unsupported) => {
+                return Err(NodeError::execution_failed());
+            }
+        };
+
+        let guard = self.in_managers[port]
+            .read(token)
+            .map_err(|_| NodeError::execution_failed())?;
+
+        // Disjoint field split — output fields + telemetry.
+        let out_policies = self.out_policies;
+        let out_edge_ids = self.out_edge_ids;
+        let node_id = self.node_id;
+        let clock = self.clock;
+        let telemetry: &mut T = &mut *self.telemetry;
+        let outputs = &mut self.outputs;
+        let out_managers = &mut self.out_managers;
+
+        let mut out = OutStepContext {
+            outputs,
+            out_managers,
+            out_policies,
+            out_edge_ids,
+            node_id,
+            clock,
+            telemetry,
+            _marker: core::marker::PhantomData,
+        };
+
+        let result = f(&*guard, &mut out)?;
+
+        drop(guard);
+        let _ = self.in_managers[port].free(token);
+
+        if T::METRICS_ENABLED {
+            self.telemetry.incr_counter(
+                TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
+                1,
+            );
+            let _ = self.in_occupancy(port);
         }
+
+        Ok(result)
     }
 
-    /// Attempt to peek at the front item without removing it.
+    /// Pop a batch from input `port`. Set batch flags on popped tokens.
+    /// Call `f` with a lazy message iterator and an output context.
+    /// After `f` returns, free all popped tokens (first `stride` items).
     ///
-    /// Returns a `PeekResponse<'_, Message<InP>>` so callers can handle
-    /// both borrowed (zero-copy) and owned (alloc/clone) peek paths.
+    /// The callback receives a `BatchMessageIter` that yields `ReadGuard`s
+    /// lazily — no upfront copy. Nodes can iterate one-at-a-time or collect
+    /// into a scratch buffer for batch inference.
+    ///
+    /// For sliding-window batches, only the first `stride` tokens are freed;
+    /// the rest were peeked and remain in the edge.
     #[inline]
-    pub fn in_try_peek(
-        &self,
-        i: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Message<InP>>, QueueError> {
-        debug_assert!(i < IN);
-        self.inputs[i].try_peek()
-    }
+    pub fn pop_batch_and_process<F>(
+        &mut self,
+        port: usize,
+        nmax: usize,
+        node_policy: &NodePolicy,
+        f: F,
+    ) -> Result<StepResult, NodeError>
+    where
+        F: FnOnce(
+            BatchMessageIter<'_, '_, InP, InM>,
+            &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, OutM, C, T>,
+        ) -> Result<StepResult, NodeError>,
+    {
+        debug_assert!(port < IN);
 
-    /// Passthrough to the input queue's `try_peek_at`.
-    ///
-    /// Returns the queue backend's `PeekResponse<'_, Message<InP>>` so callers can
-    /// handle both borrowed and owned peek paths.
-    #[inline]
-    pub fn in_try_peek_at(
-        &self,
-        i: usize,
-        index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Message<InP>>, QueueError> {
-        debug_assert!(i < IN);
-        self.inputs[i].try_peek_at(index)
+        if nmax == 0 {
+            return Err(NodeError::execution_failed());
+        }
+
+        // Build clamped batching policy from node policy.
+        let requested_policy = {
+            let nb = *node_policy.batching();
+            BatchingPolicy::with_window(
+                nb.fixed_n().map(|f| core::cmp::min(f, nmax)),
+                *nb.max_delta_t(),
+                match nb.window_kind() {
+                    WindowKind::Disjoint => WindowKind::Disjoint,
+                    WindowKind::Sliding(sw) => {
+                        let size = nb.fixed_n().map(|f| core::cmp::min(f, nmax)).unwrap_or(1);
+                        let stride = core::cmp::min(*sw.stride(), size);
+                        WindowKind::Sliding(SlidingWindow::new(stride))
+                    }
+                },
+            )
+        };
+
+        // Determine stride for free decisions.
+        let stride = match requested_policy.window_kind() {
+            WindowKind::Disjoint => usize::MAX, // free all
+            WindowKind::Sliding(sw) => *sw.stride(),
+        };
+
+        // Sample pre-pop occupancy before the batch borrows inputs[port].
+        let occ_before = self.inputs[port].occupancy(&self.in_policies[port]);
+
+        // Pop batch of tokens.
+        let batch =
+            match self.inputs[port].try_pop_batch(&requested_policy, &*self.in_managers[port]) {
+                Ok(b) => b,
+                Err(QueueError::Empty) => return Ok(StepResult::NoInput),
+                Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
+                    return Err(NodeError::backpressured());
+                }
+                Err(QueueError::Poisoned) => {
+                    return Err(NodeError::execution_failed().with_code(1));
+                }
+                Err(QueueError::Unsupported) => {
+                    return Err(NodeError::execution_failed().with_code(2));
+                }
+            };
+
+        let batch_len = batch.len();
+        if batch_len == 0 {
+            return Ok(StepResult::NoInput);
+        }
+        let actual_stride = core::cmp::min(stride, batch_len);
+
+        // Disjoint field split.
+        let in_mgr: &mut InM = &mut *self.in_managers[port];
+
+        // Phase 1: set batch boundary flags on popped tokens (WriteGuard, short-lived).
+        for (idx, &token) in batch.as_slice().iter().enumerate() {
+            if idx < actual_stride {
+                if let Ok(mut wg) = in_mgr.read_mut(token) {
+                    if idx == 0 {
+                        wg.header_mut().set_first_in_batch();
+                    }
+                    if idx == batch_len - 1 || batch_len == 1 {
+                        wg.header_mut().set_last_in_batch();
+                    }
+                }
+                // WriteGuard drops here — mutable borrow released per iteration.
+            }
+        }
+
+        // Phase 2: build iterator (shared ReadGuards) + OutStepContext, call callback.
+        // All WriteGuards are dropped, so shared borrows are safe.
+        let iter =
+            BatchMessageIter::new(batch.as_slice().iter(), &*in_mgr, actual_stride, batch_len);
+
+        let out_policies = self.out_policies;
+        let out_edge_ids = self.out_edge_ids;
+        let node_id = self.node_id;
+        let clock = self.clock;
+        let telemetry: &mut T = &mut *self.telemetry;
+        let outputs = &mut self.outputs;
+        let out_managers = &mut self.out_managers;
+
+        let mut out = OutStepContext {
+            outputs,
+            out_managers,
+            out_policies,
+            out_edge_ids,
+            node_id,
+            clock,
+            telemetry,
+            _marker: core::marker::PhantomData,
+        };
+
+        let result = f(iter, &mut out)?;
+
+        // Phase 3: free popped tokens (iterator + guards dropped, mutable borrow available).
+        for (idx, &token) in batch.as_slice().iter().enumerate() {
+            if idx < actual_stride {
+                let _ = in_mgr.free(token);
+            }
+        }
+
+        // Telemetry.
+        if T::METRICS_ENABLED {
+            let telemetry = &mut *out.telemetry;
+            telemetry.incr_counter(
+                TelemetryKey::node(node_id, TelemetryKind::IngressMsgs),
+                actual_stride as u64,
+            );
+            let after_items = occ_before.items().saturating_sub(actual_stride);
+            telemetry.set_gauge(
+                TelemetryKey::edge(self.in_edge_ids[port], TelemetryKind::QueueDepth),
+                after_items as u64,
+            );
+        }
+
+        Ok(result)
     }
 
     /// Return a snapshot of occupancy of the specified input queue.
@@ -265,27 +492,70 @@ where
         self.in_policies[i]
     }
 
-    /// Attempt to push an item to the specified output queue.
+    // ---------------------------------------------------------------
+    // Output operations
+    // ---------------------------------------------------------------
+
+    /// Push a message to the specified output port.
+    ///
+    /// Stores the message in the output memory manager, then pushes the
+    /// resulting token to the edge. Handles eviction: if DropOldest evicts
+    /// a token, the evicted token is freed from the manager.
     #[inline]
-    pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> crate::edge::EnqueueResult {
+    pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> EnqueueResult {
         debug_assert!(o < OUT);
-        let res = self.outputs[o].try_push(m, &self.out_policies[o]);
-        if T::METRICS_ENABLED {
-            match res {
-                crate::edge::EnqueueResult::Enqueued => {
+
+        // Store message in output manager → get token
+        let token = match self.out_managers[o].store(m) {
+            Ok(t) => t,
+            Err(_) => return EnqueueResult::Rejected, // No free slots
+        };
+
+        // Push token to output edge
+        let res = self.outputs[o].try_push(token, &self.out_policies[o], &*self.out_managers[o]);
+
+        match res {
+            EnqueueResult::Enqueued => {
+                if T::METRICS_ENABLED {
                     self.telemetry.incr_counter(
                         TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
                         1,
                     );
                     let _ = self.out_occupancy(o);
                 }
-                _ => {
+                EnqueueResult::Enqueued
+            }
+            EnqueueResult::DroppedNewest => {
+                // New message was dropped — free its token from manager
+                let _ = self.out_managers[o].free(token);
+                if T::METRICS_ENABLED {
                     self.telemetry
                         .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
                 }
+                EnqueueResult::DroppedNewest
+            }
+            EnqueueResult::Rejected => {
+                let _ = self.out_managers[o].free(token);
+                if T::METRICS_ENABLED {
+                    self.telemetry
+                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
+                }
+                EnqueueResult::Rejected
+            }
+            EnqueueResult::Evicted(evicted_token) => {
+                // An older message was evicted — free the evicted token
+                let _ = self.out_managers[o].free(evicted_token);
+                if T::METRICS_ENABLED {
+                    self.telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
+                        1,
+                    );
+                    let _ = self.out_occupancy(o);
+                }
+                // The new message was enqueued (eviction made room)
+                EnqueueResult::Enqueued
             }
         }
-        res
     }
 
     /// Return a snapshot of occupancy of the specified output queue.
@@ -302,12 +572,16 @@ where
         occ
     }
 
-    /// Return the policy of the specified input queue.
+    /// Return the policy of the specified output queue.
     #[inline]
     pub fn out_policy(&mut self, i: usize) -> EdgePolicy {
         debug_assert!(i < OUT);
         self.out_policies[i]
     }
+
+    // ---------------------------------------------------------------
+    // Clock / telemetry
+    // ---------------------------------------------------------------
 
     /// Access the platform clock used for timing and conversions.
     #[inline]
@@ -327,52 +601,32 @@ where
         self.clock.now_ticks()
     }
 
-    /// Current time in nanoseconds per the clock’s tick-to-ns mapping.
+    /// Current time in nanoseconds per the clock's tick-to-ns mapping.
     #[inline]
     pub fn now_nanos(&self) -> u64 {
         self.clock.ticks_to_nanos(self.clock.now_ticks())
     }
 
-    /// Convert clock ticks to nanoseconds using the clock’s scale.
+    /// Convert clock ticks to nanoseconds using the clock's scale.
     #[inline]
     pub fn ticks_to_nanos(&self, t: Ticks) -> u64 {
         self.clock.ticks_to_nanos(t)
     }
 
-    /// Convert nanoseconds to clock ticks using the clock’s scale.
+    /// Convert nanoseconds to clock ticks using the clock's scale.
     #[inline]
     pub fn nanos_to_ticks(&self, ns: u64) -> Ticks {
         self.clock.nanos_to_ticks(ns)
     }
 
+    // ---------------------------------------------------------------
+    // Batch readiness
+    // ---------------------------------------------------------------
+
     /// Return `true` if the input edge `port` can produce a batch under `policy`.
     ///
-    /// # Semantics
-    ///
-    /// This method provides a *scheduler readiness* predicate aligned with Limen’s
-    /// batching policy interpretation:
-    ///
-    /// - `BatchingPolicy::max_delta_t` is a **span constraint** on the batch contents,
-    ///   not a wall-clock timeout. A candidate batch `[0..k)` is span-valid when:
-    ///
-    ///   `creation_tick[k - 1] - creation_tick[0] <= max_delta_t`
-    ///
-    ///   i.e., all items in the batch lie within `max_delta_t` ticks of the **front
-    ///   (oldest) item**.
-    ///
-    /// - When `fixed_n` is set and `max_delta_t` is not set, readiness requires
-    ///   `occupancy >= fixed_n`.
-    ///
-    /// - When `max_delta_t` is set and `fixed_n` is not set, readiness requires only
-    ///   that the queue is non-empty (a span-valid batch of size 1 always exists).
-    ///
-    /// - When **both** `fixed_n` and `max_delta_t` are set, readiness requires that
-    ///   a **full batch of exactly `fixed_n` items** can be formed and that those
-    ///   `fixed_n` items satisfy the span constraint above. This requires peeking
-    ///   both the front item and the `(fixed_n - 1)`-th item without popping.
-    ///
-    /// Conservative behaviour: if peeks fail (concurrent/fallible backends), returns
-    /// `false` rather than assuming readiness.
+    /// Uses the input manager's `HeaderStore` to peek creation ticks for
+    /// span validation when both `fixed_n` and `max_delta_t` are set.
     #[inline]
     pub fn input_edge_has_batch(&mut self, port: usize, policy: &NodePolicy) -> bool {
         debug_assert!(port < IN);
@@ -387,268 +641,57 @@ where
 
         match (fixed_opt, delta_opt) {
             (Some(fixed_n), None) => *occ.items() >= fixed_n,
-            (None, Some(_max_delta_t)) => {
-                // Span constraint only: a non-empty queue can always produce a span-valid batch of size 1.
-                true
-            }
+            (None, Some(_max_delta_t)) => true,
             (Some(fixed_n), Some(max_delta_t)) => {
-                // Must be able to form a full fixed_n batch first.
                 if *occ.items() < fixed_n {
                     return false;
                 }
-
-                // Peek front (index 0) and the last item of the fixed-size batch (index fixed_n - 1).
-                let first = match self.inputs[port].try_peek_at(0) {
-                    Ok(v) => v,
+                // Peek front and last token, look up creation ticks via HeaderStore.
+                let first_token = match self.inputs[port].try_peek_at(0) {
+                    Ok(t) => t,
+                    Err(_) => return false,
+                };
+                let last_token = match self.inputs[port].try_peek_at(fixed_n - 1) {
+                    Ok(t) => t,
                     Err(_) => return false,
                 };
 
-                let last = match self.inputs[port].try_peek_at(fixed_n - 1) {
-                    Ok(v) => v,
+                let first_ticks = match self.in_managers[port].peek_header(first_token) {
+                    Ok(h) => *h.creation_tick(),
                     Err(_) => return false,
                 };
-
-                let first_ticks = *first.as_ref().header().creation_tick();
-                let last_ticks = *last.as_ref().header().creation_tick();
+                let last_ticks = match self.in_managers[port].peek_header(last_token) {
+                    Ok(h) => *h.creation_tick(),
+                    Err(_) => return false,
+                };
 
                 let span = last_ticks.saturating_sub(first_ticks);
                 span <= max_delta_t
             }
-            (None, None) => {
-                // No batching configured: treat as single-message readiness (queue non-empty here).
-                true
-            }
-        }
-    }
-
-    /// Pop up to `nmax` messages from input port `port` as a batch.
-    ///
-    /// Uses node-level `node_policy` to construct a clamped `BatchingPolicy`.
-    /// Only the edge's `try_pop_batch` path is used; we propagate edge errors.
-    /// Telemetry and occupancy gauges are updated *after* the pop by computing
-    /// the post-pop occupancy from a sampled pre-pop occupancy and the
-    /// returned batch size/bytes.
-    pub fn pop_input_messages_as_batch(
-        &mut self,
-        port: usize,
-        nmax: usize,
-        node_policy: &NodePolicy,
-    ) -> Result<BatchView<'_, Message<InP>>, QueueError> {
-        debug_assert!(port < IN);
-
-        if nmax == 0 {
-            return Err(QueueError::Unsupported);
-        }
-
-        // Build clamped batching policy from node policy.
-        let requested_policy = {
-            let nb = *node_policy.batching();
-
-            BatchingPolicy::with_window(
-                // clamp fixed_n if present
-                nb.fixed_n().map(|f| core::cmp::min(f, nmax)),
-                // preserve max_delta_t as-is
-                *nb.max_delta_t(),
-                // clamp sliding window size/stride if needed
-                match nb.window_kind() {
-                    WindowKind::Disjoint => WindowKind::Disjoint,
-                    WindowKind::Sliding(sw) => {
-                        let size = nb.fixed_n().map(|f| core::cmp::min(f, nmax)).unwrap_or(1);
-                        let stride = core::cmp::min(*sw.stride(), size);
-                        WindowKind::Sliding(SlidingWindow::new(stride))
-                    }
-                },
-            )
-        };
-
-        // SAMPLE pre-pop occupancy by calling the edge occupancy directly.
-        // This borrows only the input queue immutably (no &mut self).
-        let occ_before = self.inputs[port].occupancy(&self.in_policies[port]);
-
-        // Ask the edge to pop a batch. This may return a Borrowed BatchView
-        // that mutably borrows the input queue; don't call &mut self helpers
-        // that borrow the same field while batch_view is alive.
-        match self.inputs[port].try_pop_batch(&requested_policy) {
-            Ok(mut batch_view) => {
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Err(QueueError::Empty);
-                }
-
-                // Compute bytes removed as batch payload/header bytes via BatchView's Payload impl.
-                //
-                // NOTE: Not currently required as bytes not returned in telemetry.
-                // let removed_bytes = {
-                //     // BatchView implements Payload for Message<P>, so we can call buffer_descriptor.
-                //     let desc = batch_view.buffer_descriptor();
-                //     *desc.bytes()
-                // };
-
-                // Mark batch boundaries (works for Owned and Borrowed).
-                if let Some(header) = batch_view.first_header_mut() {
-                    header.set_first_in_batch();
-                }
-                if let Some(header) = batch_view.last_header_mut() {
-                    header.set_last_in_batch();
-                }
-
-                // Update telemetry and occupancy gauge:
-                if T::METRICS_ENABLED {
-                    // Increment ingress messages counter by number returned.
-                    // Mutably borrow only the telemetry field (non-overlapping with input queue borrow).
-                    let telemetry = &mut self.telemetry;
-                    telemetry.incr_counter(
-                        TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
-                        batch_len as u64,
-                    );
-
-                    // Compute post-pop occupancy numbers (saturating to avoid underflow).
-                    let after_items = occ_before.items().saturating_sub(batch_len);
-
-                    // NOTE: Bytes not currently returned in telemetry.
-                    // let after_bytes = occ_before.bytes().saturating_sub(removed_bytes);
-
-                    // Note: we do not call self.in_occupancy(port) here because that
-                    // would borrow the input queue again. Instead we update the gauge
-                    // directly from calculated values.
-                    telemetry.set_gauge(
-                        TelemetryKey::edge(self.in_edge_ids[port], TelemetryKind::QueueDepth),
-                        after_items as u64,
-                    );
-                }
-
-                Ok(batch_view)
-            }
-
-            // Propagate queue errors as-is.
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Minimal helper: pop a batch *and* construct an OutStepContext in the same `&mut self` borrow.
-    ///
-    /// Returning both the `BatchView<'ctx, Message<InP>>` (which borrows inputs)
-    /// and the `OutStepContext<'graph, 'ctx, 'clock, ...>` (which borrows outputs/telemetry)
-    /// from the *same* `&'ctx mut self` is the safe way to obtain two disjoint mutable
-    /// borrows that the caller can use simultaneously (the borrow checker accepts it).
-    #[allow(clippy::type_complexity)]
-    #[inline]
-    pub fn pop_input_messages_as_batch_with_out<'ctx>(
-        &'ctx mut self,
-        port: usize,
-        nmax: usize,
-        node_policy: &NodePolicy,
-    ) -> Result<
-        (
-            BatchView<'ctx, Message<InP>>,
-            OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>,
-        ),
-        QueueError,
-    > {
-        debug_assert!(port < IN);
-
-        if nmax == 0 {
-            return Err(QueueError::Unsupported);
-        }
-
-        // Build clamped batching policy from node policy.
-        let requested_policy = {
-            let nb = *node_policy.batching();
-
-            BatchingPolicy::with_window(
-                nb.fixed_n().map(|f| core::cmp::min(f, nmax)),
-                *nb.max_delta_t(),
-                match nb.window_kind() {
-                    WindowKind::Disjoint => WindowKind::Disjoint,
-                    WindowKind::Sliding(sw) => {
-                        let size = nb.fixed_n().map(|f| core::cmp::min(f, nmax)).unwrap_or(1);
-                        let stride = core::cmp::min(*sw.stride(), size);
-                        WindowKind::Sliding(SlidingWindow::new(stride))
-                    }
-                },
-            )
-        };
-
-        // SAMPLE pre-pop occupancy by calling the edge occupancy directly.
-        let occ_before = self.inputs[port].occupancy(&self.in_policies[port]);
-
-        match self.inputs[port].try_pop_batch(&requested_policy) {
-            Ok(mut batch_view) => {
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Err(QueueError::Empty);
-                }
-
-                if let Some(header) = batch_view.first_header_mut() {
-                    header.set_first_in_batch();
-                }
-                if let Some(header) = batch_view.last_header_mut() {
-                    header.set_last_in_batch();
-                }
-
-                if T::METRICS_ENABLED {
-                    let telemetry = &mut self.telemetry;
-                    telemetry.incr_counter(
-                        TelemetryKey::node(self.node_id, TelemetryKind::IngressMsgs),
-                        batch_len as u64,
-                    );
-                    let after_items = occ_before.items().saturating_sub(batch_len);
-                    telemetry.set_gauge(
-                        TelemetryKey::edge(self.in_edge_ids[port], TelemetryKind::QueueDepth),
-                        after_items as u64,
-                    );
-                }
-
-                // Construct OutStepContext **now**, from the same &mut self borrow.
-                let out_policies = self.out_policies;
-                let out_edge_ids = self.out_edge_ids;
-                let node_id = self.node_id;
-                let clock = self.clock;
-                let telemetry: &'ctx mut T = &mut *self.telemetry;
-                let outputs: &'ctx mut [&'graph mut OutQ; OUT] = &mut self.outputs;
-
-                let out_ctx = OutStepContext {
-                    outputs,
-                    out_policies,
-                    out_edge_ids,
-                    node_id,
-                    clock,
-                    telemetry,
-                    _marker: core::marker::PhantomData,
-                };
-
-                Ok((batch_view, out_ctx))
-            }
-            Err(e) => Err(e),
+            (None, None) => true,
         }
     }
 
     /// Construct an `OutStepContext` by borrowing only the output-related
     /// fields and telemetry from `self`.
-    ///
-    /// The returned proxy is tied to the mutable borrow of `self` (the `'ctx`
-    /// lifetime) so it cannot outlive the `StepContext` that produced it.
     #[inline]
-    pub fn to_out_step_context<'ctx>(
+    fn to_out_step_context<'ctx>(
         &'ctx mut self,
-    ) -> OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>
+    ) -> OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, OutM, C, T>
     where
         EdgePolicy: Copy,
     {
-        // Copy small `Copy` arrays (EdgePolicy, u32) into the proxy for convenience.
         let out_policies = self.out_policies;
         let out_edge_ids = self.out_edge_ids;
         let node_id = self.node_id;
         let clock = self.clock;
-
-        // Reborrow telemetry for the `'ctx` lifetime and borrow the outputs array
-        // for the `'ctx` lifetime while preserving the inner `&'graph mut OutQ`
-        // element lifetimes.
         let telemetry = &mut *self.telemetry;
         let outputs: &'ctx mut [&'graph mut OutQ; OUT] = &mut self.outputs;
+        let out_managers: &'ctx mut [&'graph mut OutM; OUT] = &mut self.out_managers;
 
         OutStepContext {
             outputs,
+            out_managers,
             out_policies,
             out_edge_ids,
             node_id,
@@ -659,77 +702,104 @@ where
     }
 }
 
-/// A `StepContext` *view* that only exposes outputs / clock / telemetry.
+/// A `StepContext` *view* that only exposes outputs / managers / clock / telemetry.
 ///
-/// Explicitly **does not** provide access to input queues/policies. This is
-/// intended to be constructed from `StepContext::to_out_step_context(&mut self)`
-/// and used while a borrowed `BatchView` or other input borrow is live.
-///
-/// Lifetime `'ctx` is the mutable borrow lifetime of the `StepContext` used
-/// to construct this proxy. `'clock` is the clock lifetime passed through.
-pub struct OutStepContext<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, C, T>
+/// Explicitly **does not** provide access to input queues or input managers.
+pub struct OutStepContext<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, OutM, C, T>
 where
     OutP: Payload,
-    OutQ: Edge<Item = Message<OutP>>,
     C: PlatformClock + Sized,
     T: Telemetry + Sized,
 {
     /// Mutable borrow of the outputs array from the original StepContext.
     outputs: &'ctx mut [&'graph mut OutQ; OUT],
-
+    /// Mutable borrow of the output managers array.
+    out_managers: &'ctx mut [&'graph mut OutM; OUT],
     /// Copy of per-output policies (EdgePolicy: Copy).
     out_policies: [EdgePolicy; OUT],
-
-    /// Copy of output edge ids (u32 Copy).
+    /// Copy of output edge ids.
     out_edge_ids: [u32; OUT],
-
     /// Node id for telemetry.
     node_id: u32,
-
     /// Borrow the clock (shared).
     clock: &'clock C,
-
     /// Mutable borrow of telemetry from the StepContext (reborrowed).
     telemetry: &'ctx mut T,
-
     /// Phantom to keep OutP visible to the compiler.
     _marker: core::marker::PhantomData<OutP>,
 }
 
-impl<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, C, T>
-    OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, C, T>
+impl<'graph, 'ctx, 'clock, const OUT: usize, OutP, OutQ, OutM, C, T>
+    OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, OutM, C, T>
 where
     OutP: Payload,
-    OutQ: Edge<Item = Message<OutP>>,
+    OutQ: Edge,
+    OutM: MemoryManager<OutP>,
     C: PlatformClock + Sized,
     T: Telemetry + Sized,
 {
-    /// Push to an output queue, emitting telemetry similar to `StepContext::out_try_push`.
+    /// Push a message to an output queue via the memory manager.
+    ///
+    /// Stores the message in the manager, pushes the token to the edge,
+    /// and handles eviction (frees evicted tokens from the manager).
     #[inline]
     pub fn out_try_push(&mut self, o: usize, m: Message<OutP>) -> EnqueueResult {
         debug_assert!(o < OUT);
-        let res = self.outputs[o].try_push(m, &self.out_policies[o]);
-        if T::METRICS_ENABLED {
-            match res {
-                EnqueueResult::Enqueued => {
+
+        let token = match self.out_managers[o].store(m) {
+            Ok(t) => t,
+            Err(_) => return EnqueueResult::Rejected,
+        };
+
+        let res = self.outputs[o].try_push(token, &self.out_policies[o], &*self.out_managers[o]);
+
+        match res {
+            EnqueueResult::Enqueued => {
+                if T::METRICS_ENABLED {
                     self.telemetry.incr_counter(
                         TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
                         1,
                     );
-                    // update queue depth gauge by sampling occupancy from the queue
                     let occ = self.outputs[o].occupancy(&self.out_policies[o]);
                     self.telemetry.set_gauge(
                         TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
                         *occ.items() as u64,
                     );
                 }
-                _ => {
+                EnqueueResult::Enqueued
+            }
+            EnqueueResult::DroppedNewest => {
+                let _ = self.out_managers[o].free(token);
+                if T::METRICS_ENABLED {
                     self.telemetry
                         .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
                 }
+                EnqueueResult::DroppedNewest
+            }
+            EnqueueResult::Rejected => {
+                let _ = self.out_managers[o].free(token);
+                if T::METRICS_ENABLED {
+                    self.telemetry
+                        .incr_counter(TelemetryKey::node(self.node_id, TelemetryKind::Dropped), 1);
+                }
+                EnqueueResult::Rejected
+            }
+            EnqueueResult::Evicted(evicted_token) => {
+                let _ = self.out_managers[o].free(evicted_token);
+                if T::METRICS_ENABLED {
+                    self.telemetry.incr_counter(
+                        TelemetryKey::node(self.node_id, TelemetryKind::EgressMsgs),
+                        1,
+                    );
+                    let occ = self.outputs[o].occupancy(&self.out_policies[o]);
+                    self.telemetry.set_gauge(
+                        TelemetryKey::edge(self.out_edge_ids[o], TelemetryKind::QueueDepth),
+                        *occ.items() as u64,
+                    );
+                }
+                EnqueueResult::Enqueued
             }
         }
-        res
     }
 
     /// Snapshot occupancy for the given output edge.
@@ -753,37 +823,37 @@ where
         self.out_policies[o]
     }
 
-    /// Access the platform clock used for timing and conversions.
+    /// Access the platform clock.
     #[inline]
     pub fn clock(&self) -> &C {
         self.clock
     }
 
-    /// Borrow the telemetry sink to emit custom counters/gauges/histograms.
+    /// Borrow the telemetry sink.
     #[inline]
     pub fn telemetry_mut(&mut self) -> &mut T {
         self.telemetry
     }
 
-    /// Current monotonic tick value from the platform clock.
+    /// Current monotonic tick value.
     #[inline]
     pub fn now_ticks(&self) -> Ticks {
         self.clock.now_ticks()
     }
 
-    /// Current time in nanoseconds per the clock’s tick-to-ns mapping.
+    /// Current time in nanoseconds.
     #[inline]
     pub fn now_nanos(&self) -> u64 {
         self.clock.ticks_to_nanos(self.clock.now_ticks())
     }
 
-    /// Convert clock ticks to nanoseconds using the clock’s scale.
+    /// Convert clock ticks to nanoseconds.
     #[inline]
     pub fn ticks_to_nanos(&self, t: Ticks) -> u64 {
         self.clock.ticks_to_nanos(t)
     }
 
-    /// Convert nanoseconds to clock ticks using the clock’s scale.
+    /// Convert nanoseconds to clock ticks.
     #[inline]
     pub fn nanos_to_ticks(&self, ns: u64) -> Ticks {
         self.clock.nanos_to_ticks(ns)
@@ -795,9 +865,12 @@ where
 /// Nodes are parameterized by:
 /// - `IN`: number of input ports; `OUT`: number of output ports;
 /// - `InP`: input payload type; `OutP`: output payload type.
+///
+/// Queue and manager types are introduced on each method via `where` clauses
+/// rather than on the trait itself, keeping the trait payload-focused and
+/// avoiding an explosion of type parameters on the `impl`.
 pub trait Node<const IN: usize, const OUT: usize, InP, OutP>
 where
-    // TODO: Should this be message<payload>?
     InP: Payload,
     OutP: Payload,
 {
@@ -813,218 +886,162 @@ where
     /// Return the node's policy bundle.
     fn policy(&self) -> NodePolicy;
 
-    /// **TEST ONLY** method used to override batching policis for node contract tests.
+    /// **TEST ONLY** method used to override batching policies for node contract tests.
     #[cfg(any(test, feature = "bench"))]
     fn set_policy(&mut self, policy: NodePolicy);
 
-    /// Return the type of node (Mmodel, processing, source, sink).
+    /// Return the type of node (Model, processing, source, sink).
     fn node_kind(&self) -> NodeKind;
 
     /// Prepare internal state, acquire buffers, and register telemetry series.
-    fn initialize<C, T>(&mut self, clock: &C, telemetry: &mut T) -> Result<(), NodeError>
+    fn initialize<C, Tel>(&mut self, clock: &C, telemetry: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry;
+        Tel: Telemetry;
 
     /// Optional warm-up (e.g., compile kernels, prime pools). Default: no-op.
-    fn start<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    fn start<C, Tel>(&mut self, _clock: &C, _telemetry: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry;
+        Tel: Telemetry;
 
+    /// Per-message processing hook.
+    ///
     /// Note: we intentionally use an *anonymous* borrow `'_` for the second
     /// lifetime parameter of OutStepContext. This ensures each call to
     /// `process_message(..., &mut out)` creates a *fresh* short-lived mutable
     /// borrow of `out`, allowing repeated re-borrows inside a loop over a
-    /// batch. If we tied this borrow to the batch lifetime, the borrow would
-    /// last the whole batch and prevent reborrowing.
-    fn process_message<'graph, 'clock, OutQ, C, T>(
+    /// batch.
+    fn process_message<'graph, 'clock, OutQ, OutM, C, Tel>(
         &mut self,
         msg: &Message<InP>,
-        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        OutQ: Edge<Item = Message<OutP>>,
+        OutQ: Edge,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized;
+        Tel: Telemetry + Sized;
 
     /// Execute one cooperative step using the provided context.
     ///
-    /// The input and output queues are exposed through the context, along with
-    /// per-edge policies and services. Implementations should honor the node
-    /// policy (batching, budgets, deadlines) and return a `StepResult` to help
-    /// the scheduler make progress decisions.
-    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    /// The default implementation:
+    /// 1. Finds a ready input port via `input_edge_has_batch`.
+    /// 2. Pops a single message via `pop_and_process`.
+    /// 3. Delegates to `process_message` inside the callback.
+    fn step<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            OUT,
+            InP,
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
-        // 1) pick a ready input port according to the node policy
         let node_policy = self.policy();
-        let mut port_opt: Option<usize> = None;
-        for port in 0..IN {
-            if ctx.input_edge_has_batch(port, &node_policy) {
-                port_opt = Some(port);
-                break;
-            }
-        }
-
-        let port = match port_opt {
-            None => return Ok(StepResult::NoInput),
+        let port = match (0..IN).find(|&p| ctx.input_edge_has_batch(p, &node_policy)) {
             Some(p) => p,
+            None => return Ok(StepResult::NoInput),
         };
 
-        // 2) attempt to pop a single message from the selected port
-        match ctx.in_try_pop(port) {
-            Ok(msg) => {
-                // Create an output-only proxy that borrows only outputs & telemetry
-                // (disjoint from input-borrow held by popped message if any).
-                let mut out = ctx.to_out_step_context();
-                // Delegate per-message work using the proxy.
-                self.process_message(&msg, &mut out)
-            }
-
-            // Map queue errors to either StepResult or NodeError as appropriate.
-            Err(QueueError::Empty) => Ok(StepResult::NoInput),
-
-            // Backpressure / hard-cap: surface as node-level backpressure error.
-            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
-                Err(NodeError::backpressured())
-            }
-
-            // Poisoned lock / unsupported operation: treat as execution failure.
-            Err(QueueError::Poisoned) | Err(QueueError::Unsupported) => {
-                Err(NodeError::execution_failed())
-            }
-        }
+        ctx.pop_and_process(port, |msg, out| self.process_message(msg, out))
     }
 
     /// Default batched-step implementation that honors all NodePolicy batching
     /// variants while delegating actual consumption to the implementor's
-    /// single-message `step()` method.
+    /// single-message `process_message()` method.
     ///
-    /// Key rules implemented:
-    /// - fixed_n, no max_delta_t  => attempt min(nmax, fixed_n) step() calls
-    /// - no fixed_n, max_delta_t  => attempt 1 step() call
-    /// - no fixed_n, no max_delta_t => attempt 1 step() call
-    /// - fixed_n + max_delta_t => require the first fixed_n items' creation_tick
-    ///   span to be <= max_delta_t (verified by peeks) and then attempt
-    ///   exactly fixed_n step() calls
-    /// - WindowKind::Disjoint => keep calling step() until the input port is empty
-    /// - WindowKind::Sliding => call step() `stride` times (or up to nmax), and
-    ///   peek remaining items as necessary to validate span when fixed_n+max_delta_t.
-    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    /// The callback receives a `BatchMessageIter` and iterates each message,
+    /// calling `process_message` per item. Nodes that need all inputs
+    /// simultaneously (e.g. `InferenceModel`) should override this method
+    /// and collect from the iterator into a scratch buffer.
+    ///
+    /// Batch boundary flags (`first_in_batch`, `last_in_batch`) are set on
+    /// popped tokens before the callback is invoked.
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, IN, OUT, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            OUT,
+            InP,
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
-        // 1) Find a ready input port according to the node policy.
         let node_policy = self.policy();
-        let mut port_opt: Option<usize> = None;
-        for port in 0..IN {
-            if ctx.input_edge_has_batch(port, &node_policy) {
-                port_opt = Some(port);
-                break;
-            }
-        }
-
-        // Nothing ready.
-        let port = match port_opt {
-            None => return Ok(StepResult::NoInput),
+        let port = match (0..IN).find(|&p| ctx.input_edge_has_batch(p, &node_policy)) {
             Some(p) => p,
+            None => return Ok(StepResult::NoInput),
         };
-
-        // 2) Use the node policy's nmax as the batch maximum.
-        // Replace `.nmax()` with your actual accessor if it's named differently.
         let nmax = node_policy.batching().fixed_n().unwrap_or(1);
 
-        // 3) Attempt the canonical batch pop that honors sliding/disjoint/fixed+delta semantics.
-        match ctx.pop_input_messages_as_batch_with_out(port, nmax, &node_policy) {
-            Ok((batch_view, mut out)) => {
-                // Defensive: if the batch is empty treat as NoInput.
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Ok(StepResult::NoInput);
-                }
-
-                // Consume the BatchView so the borrow on the input queue ends while we call
-                // `process_message(..., ctx)`. This requires `BatchView` to provide an
-                // owning iterator (`into_iter()` returning owned Message<InP>) or similar.
-                // If your BatchView.into_iter() yields `&Message<InP>` you will need to
-                // clone or otherwise obtain owned messages before dropping the BatchView.
-                let mut any_made = false;
-
-                // Note: move/consume batch_view here to drop its internal borrows while iterating.
-                for msg in batch_view.iter() {
-                    // `msg` is assumed to be `Message<InP>` (owned). We pass a reference to the
-                    // per-message hook; the hook may use `ctx` to emit outputs and telemetry.
-                    let msg_ref: &Message<InP> = msg;
-
-                    // Put the mutable borrow of `out` into a *short, inner scope* so
-                    // the borrow ends before the next loop iteration.
-                    let res = {
-                        // `out_tmp` lives only until the end of this block.
-                        let out_tmp = &mut out;
-                        self.process_message(msg_ref, out_tmp)
-                    };
-
-                    match res {
-                        Ok(StepResult::MadeProgress) => any_made = true,
-                        Ok(StepResult::NoInput) => {
-                            // Unlikely when processing an explicit item — treat as no-op.
-                        }
-                        Ok(StepResult::Backpressured) => return Ok(StepResult::Backpressured),
-                        Ok(StepResult::WaitingOnExternal) => {
-                            return Ok(StepResult::WaitingOnExternal)
-                        }
-                        Ok(StepResult::YieldUntil(t)) => return Ok(StepResult::YieldUntil(t)),
-                        Ok(StepResult::Terminal) => return Ok(StepResult::Terminal),
-                        Err(e) => return Err(e),
+        ctx.pop_batch_and_process(port, nmax, &node_policy, |iter, out| {
+            let mut any_made = false;
+            for guard in iter {
+                match self.process_message(&*guard, out)? {
+                    StepResult::MadeProgress => any_made = true,
+                    StepResult::NoInput => {}
+                    StepResult::Backpressured => return Ok(StepResult::Backpressured),
+                    StepResult::WaitingOnExternal => {
+                        return Ok(StepResult::WaitingOnExternal);
                     }
-                }
-
-                if any_made {
-                    Ok(StepResult::MadeProgress)
-                } else {
-                    Ok(StepResult::NoInput)
+                    StepResult::YieldUntil(t) => return Ok(StepResult::YieldUntil(t)),
+                    StepResult::Terminal => return Ok(StepResult::Terminal),
                 }
             }
-
-            // Map queue errors consistently with the single-message `step()` mapping:
-            Err(QueueError::Empty) => Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) | Err(QueueError::AtOrAboveHardCap) => {
-                Err(NodeError::backpressured())
+            if any_made {
+                Ok(StepResult::MadeProgress)
+            } else {
+                Ok(StepResult::NoInput)
             }
-            Err(QueueError::Poisoned) => Err(NodeError::execution_failed().with_code(1)),
-            // We do not provide a fallback here: Unsupported indicates the backend cannot
-            // supply the batch path; surface as execution failure so implementers know
-            // they must override if needed for that backend.
-            Err(QueueError::Unsupported) => Err(NodeError::execution_failed().with_code(2)),
-        }
+        })
     }
 
     /// Handle watchdog timeouts by applying over-budget policy (degrade/default/skip).
-    fn on_watchdog_timeout<C, T>(
+    fn on_watchdog_timeout<C, Tel>(
         &mut self,
         _clock: &C,
-        _telemetry: &mut T,
+        _telemetry: &mut Tel,
     ) -> Result<StepResult, NodeError>
     where
         C: PlatformClock + Sized,
-        T: Telemetry;
+        Tel: Telemetry;
 
     /// Flush and release resources, if any. Default: no-op.
-    fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    fn stop<C, Tel>(&mut self, _clock: &C, _telemetry: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry;
+        Tel: Telemetry;
 }
 
 #[cfg(any(test, feature = "bench"))]
@@ -1070,7 +1087,7 @@ pub mod contract_tests {
         policy::{AdmissionPolicy, OverBudgetAction, QueueCaps},
         prelude::{
             fixed_buffer_line_writer, EdgeLink, FixedBuffer, FmtLineWriter, GraphTelemetry,
-            NoStdLinuxMonotonicClock, NodeLink, TestSpscRingBuf,
+            NoStdLinuxMonotonicClock, NodeLink, StaticMemoryManager, TestSpscRingBuf,
         },
         types::{EdgeIndex, NodeIndex, PortId, PortIndex, Ticks},
     };
@@ -1096,7 +1113,7 @@ pub mod contract_tests {
     /// mapping, and wrapper-specific checks for `Source`, `Sink`, and `Model`).
     ///
     /// # Required argument
-    /// - `make_nodelink: || -> NodeLink<N, IN, OUT, InP, OutP>`  
+    /// - `make_nodelink: || -> NodeLink<N, IN, OUT, InP, OutP>`
     ///   A zero-argument closure that returns a **fresh** `NodeLink` owning the
     ///   concrete node under test. The closure is invoked **once per generated test**
     ///   (i.e., the factory must return a new, independent `NodeLink` each time).
@@ -1238,15 +1255,15 @@ pub mod contract_tests {
         base_upstream_node: NodeIndex,
         base_downstream_node: NodeIndex,
     ) -> (
-        [EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN],
-        [EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT],
+        [EdgeLink<TestSpscRingBuf<16>>; IN],
+        [EdgeLink<TestSpscRingBuf<16>>; OUT],
     )
     where
-        InP: crate::message::payload::Payload + Default + Clone,
-        OutP: crate::message::payload::Payload + Default + Clone,
+        InP: Payload + Default,
+        OutP: Payload + Default,
     {
         let inputs = core::array::from_fn(|i| {
-            let queue = TestSpscRingBuf::<Message<InP>, 16>::new();
+            let queue = TestSpscRingBuf::<16>::new();
             let id = EdgeIndex::new(i + 1);
             let upstream_port = PortId::new(base_upstream_node, PortIndex::new(i));
             let downstream_port = PortId::new(base_downstream_node, PortIndex::new(i));
@@ -1261,7 +1278,7 @@ pub mod contract_tests {
         });
 
         let outputs = core::array::from_fn(|o| {
-            let queue = TestSpscRingBuf::<Message<OutP>, 16>::new();
+            let queue = TestSpscRingBuf::<16>::new();
             let id = EdgeIndex::new(o + 1);
             let upstream_port = PortId::new(base_upstream_node, PortIndex::new(o));
             let downstream_port = PortId::new(base_downstream_node, PortIndex::new(o));
@@ -1301,8 +1318,10 @@ pub mod contract_tests {
         C,
         T,
     >(
-        inputs: &'graph mut [EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN],
-        outputs: &'graph mut [EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT],
+        inputs: &'graph mut [EdgeLink<TestSpscRingBuf<16>>; IN],
+        outputs: &'graph mut [EdgeLink<TestSpscRingBuf<16>>; OUT],
+        in_managers: &'graph mut [StaticMemoryManager<InP, 16>; IN],
+        out_managers: &'graph mut [StaticMemoryManager<OutP, 16>; OUT],
         clock: &'clock C,
         telemetry: &'telemetry mut T,
     ) -> crate::node::StepContext<
@@ -1313,8 +1332,10 @@ pub mod contract_tests {
         OUT,
         InP,
         OutP,
-        EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>,
-        EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>,
+        EdgeLink<TestSpscRingBuf<16>>,
+        EdgeLink<TestSpscRingBuf<16>>,
+        StaticMemoryManager<InP, 16>,
+        StaticMemoryManager<OutP, 16>,
         C,
         T,
     >
@@ -1327,14 +1348,12 @@ pub mod contract_tests {
         let in_policies = core::array::from_fn(|_| TEST_EDGE_POLICY);
         let out_policies = core::array::from_fn(|_| TEST_EDGE_POLICY);
 
-        let mut inputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>, IN> =
-            Vec::new();
+        let mut inputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<16>>, IN> = Vec::new();
         for elem in inputs.iter_mut() {
             assert!(inputs_ref_vec.push(elem).is_ok(), "inputs_ref_vec overflow");
         }
 
-        let mut outputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>, OUT> =
-            Vec::new();
+        let mut outputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<16>>, OUT> = Vec::new();
         for elem in outputs.iter_mut() {
             assert!(
                 outputs_ref_vec.push(elem).is_ok(),
@@ -1342,16 +1361,44 @@ pub mod contract_tests {
             );
         }
 
-        let inputs_ref: [&mut EdgeLink<TestSpscRingBuf<Message<InP>, 16>, InP>; IN] =
-            match inputs_ref_vec.into_array() {
-                Ok(arr) => arr,
-                Err(_) => panic!("inputs_ref_vec length mismatch"),
-            };
+        let mut in_mgrs_ref_vec: Vec<&mut StaticMemoryManager<InP, 16>, IN> = Vec::new();
+        for elem in in_managers.iter_mut() {
+            assert!(
+                in_mgrs_ref_vec.push(elem).is_ok(),
+                "in_mgrs_ref_vec overflow"
+            );
+        }
 
-        let outputs_ref: [&mut EdgeLink<TestSpscRingBuf<Message<OutP>, 16>, OutP>; OUT] =
+        let mut out_mgrs_ref_vec: Vec<&mut StaticMemoryManager<OutP, 16>, OUT> = Vec::new();
+        for elem in out_managers.iter_mut() {
+            assert!(
+                out_mgrs_ref_vec.push(elem).is_ok(),
+                "out_mgrs_ref_vec overflow"
+            );
+        }
+
+        let inputs_ref: [&mut EdgeLink<TestSpscRingBuf<16>>; IN] = match inputs_ref_vec.into_array()
+        {
+            Ok(arr) => arr,
+            Err(_) => panic!("inputs_ref_vec length mismatch"),
+        };
+
+        let outputs_ref: [&mut EdgeLink<TestSpscRingBuf<16>>; OUT] =
             match outputs_ref_vec.into_array() {
                 Ok(arr) => arr,
                 Err(_) => panic!("outputs_ref_vec length mismatch"),
+            };
+
+        let in_mgrs_ref: [&mut StaticMemoryManager<InP, 16>; IN] =
+            match in_mgrs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("in_mgrs_ref_vec length mismatch"),
+            };
+
+        let out_mgrs_ref: [&mut StaticMemoryManager<OutP, 16>; OUT] =
+            match out_mgrs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("out_mgrs_ref_vec length mismatch"),
             };
 
         let in_edge_ids = core::array::from_fn(|i| *inputs_ref[i].id().as_usize() as u32);
@@ -1360,6 +1407,8 @@ pub mod contract_tests {
         crate::node::StepContext::new(
             inputs_ref,
             outputs_ref,
+            in_mgrs_ref,
+            out_mgrs_ref,
             in_policies,
             out_policies,
             0u32,
@@ -1432,24 +1481,34 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
         if IN == 0 {
-            // Not applicable to sources (no input)
             return;
         }
 
-        // Build a message with header creation tick sourced from the clock.
         let mut hdr = MessageHeader::empty();
         hdr.set_creation_tick(clock.now_ticks());
         let msg = Message::new(hdr, InP::default());
 
         let in_policy = TEST_EDGE_POLICY;
+        let token = in_mgrs[0].store(msg).expect("store ok");
         assert_eq!(
-            in_links[0].try_push(msg, &in_policy),
+            in_links[0].try_push(token, &in_policy, &in_mgrs[0]),
             crate::edge::EnqueueResult::Enqueued
         );
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step ok");
         assert!(res != crate::node::StepResult::NoInput);
@@ -1457,8 +1516,8 @@ pub mod contract_tests {
         if OUT > 0 {
             let mut pushed = 0usize;
             loop {
-                match out_links[0].try_pop() {
-                    Ok(_m) => pushed += 1,
+                match out_links[0].try_pop(&out_mgrs[0]) {
+                    Ok(_token) => pushed += 1,
                     Err(QueueError::Empty) => break,
                     Err(e) => panic!("unexpected queue error: {:?}", e),
                 }
@@ -1496,14 +1555,22 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step ok");
 
-        // For zero-input nodes (sources) it's valid for the node to actively
-        // produce output and therefore return `MadeProgress`. For nodes with
-        // inputs, the empty-input fast path must return `NoInput`.
         if IN == 0 {
             assert!(
                 res == crate::node::StepResult::NoInput
@@ -1544,9 +1611,12 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
         if IN == 0 {
-            // No input ports: nothing to test here.
             return;
         }
 
@@ -1555,19 +1625,27 @@ pub mod contract_tests {
         let msg = Message::new(hdr, InP::default());
 
         let policy = TEST_EDGE_POLICY;
+        let token = in_mgrs[0].store(msg).expect("store ok");
         assert_eq!(
-            in_links[0].try_push(msg, &policy),
+            in_links[0].try_push(token, &policy, &in_mgrs[0]),
             crate::edge::EnqueueResult::Enqueued
         );
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step ok");
         assert!(res != crate::node::StepResult::NoInput);
 
         if OUT > 0 {
             let mut popped = 0usize;
-            while let Ok(_m) = out_links[0].try_pop() {
+            while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                 popped += 1;
             }
             assert!(popped > 0, "expected output items");
@@ -1594,24 +1672,15 @@ pub mod contract_tests {
         N: crate::node::Node<IN, OUT, InP, OutP>,
     {
         let mut nlink = make_nodelink();
-        // Override the node's policy for this test so we exercise fixed-N, disjoint semantics.
-        // Pick a small fixed_n suitable for tests.
         const TEST_FIXED_N: usize = 3;
 
-        // Start from the node's current policy and replace the batching window with
-        // a fixed-N, disjoint window for deterministic behaviour.
         let base_policy = nlink.node().policy();
         let batching = crate::policy::BatchingPolicy::with_window(
             Some(TEST_FIXED_N),
             None,
             crate::policy::WindowKind::Disjoint,
         );
-        // Construct a new node policy with the requested batching. Most NodePolicy
-        // implementations expose a builder like `with_batching`. If your project
-        // uses a different name, adjust this call accordingly.
         let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
-
-        // Apply the test policy to the actual node under test.
         nlink.set_policy(new_policy);
 
         let clock = NoStdLinuxMonotonicClock::new();
@@ -1620,13 +1689,15 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
         if IN == 0 {
             return;
         }
 
-        // Re-read fixed_n from the node's (now overridden) policy so the rest of
-        // the test adapts to the value we just installed.
         let fixed_n = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
 
         let policy = TEST_EDGE_POLICY;
@@ -1634,20 +1705,27 @@ pub mod contract_tests {
             let mut hdr = MessageHeader::empty();
             hdr.set_creation_tick(Ticks::new(t));
             let m = Message::new(hdr, InP::default());
+            let token = in_mgrs[0].store(m).expect("store ok");
             assert_eq!(
-                in_links[0].try_push(m, &policy),
+                in_links[0].try_push(token, &policy, &in_mgrs[0]),
                 crate::edge::EnqueueResult::Enqueued
             );
         }
 
         let in_before = *in_links[0].occupancy(&policy).items();
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step_batch ok");
         assert!(res != crate::node::StepResult::NoInput);
 
-        // read input occupancy via ctx (while ctx is live) and assert exact pop
         let in_after = *ctx.in_occupancy(0).items();
         assert_eq!(
             in_before.saturating_sub(in_after),
@@ -1657,11 +1735,9 @@ pub mod contract_tests {
 
         if OUT > 0 {
             let mut out_count = 0usize;
-            while let Ok(_m) = out_links[0].try_pop() {
+            while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                 out_count += 1;
             }
-            // For disjoint fixed-N batching we expect the node to process exactly
-            // `fixed_n` inputs and (in the common case) produce `fixed_n` outputs.
             if fixed_n > 0 {
                 assert_eq!(
                     out_count, fixed_n,
@@ -1673,7 +1749,6 @@ pub mod contract_tests {
             }
         }
 
-        // Telemetry: NodeLink increments `processed` by `fixed_n` for a batched step.
         let metrics = tele.metrics();
         if fixed_n > 1 {
             assert_eq!(
@@ -1705,8 +1780,6 @@ pub mod contract_tests {
     {
         let mut nlink = make_nodelink();
 
-        // Install a sliding-window batching policy for this test:
-        // fixed_n = 4 (presentation size), sliding stride = 2 (pop 2 each step).
         const TEST_FIXED_N: usize = 4;
         const TEST_STRIDE: usize = 2;
 
@@ -1725,53 +1798,58 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
         if IN == 0 {
             return;
         }
 
         let policy = TEST_EDGE_POLICY;
-        // Push 6 messages so we can form a presentation of size `fixed_n` with
-        // available items > fixed_n and stride < fixed_n.
         for t in 1u64..=6u64 {
             let mut hdr = MessageHeader::empty();
             hdr.set_creation_tick(Ticks::new(t));
             let m = Message::new(hdr, InP::default());
+            let token = in_mgrs[0].store(m).expect("store ok");
             assert_eq!(
-                in_links[0].try_push(m, &policy),
+                in_links[0].try_push(token, &policy, &in_mgrs[0]),
                 crate::edge::EnqueueResult::Enqueued
             );
         }
 
-        // Sample pre-step occupancy for later comparison (before creating ctx).
         let in_before = *in_links[0].occupancy(&policy).items();
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step_batch ok");
         assert!(res != crate::node::StepResult::NoInput);
 
-        // Read input occupancy via ctx while it is live.
         let in_after = *ctx.in_occupancy(0).items();
 
-        // How many items should have been popped according to sliding semantics?
         let stride_to_pop = core::cmp::min(TEST_STRIDE, in_before);
         let removed = in_before.saturating_sub(in_after);
 
-        // Strict sliding semantics: must pop exactly `stride_to_pop`.
         assert_eq!(
             removed, stride_to_pop,
             "unexpected number popped: removed={}, expected stride {}",
             removed, stride_to_pop
         );
 
-        // Determine presentation size and then drop ctx before popping outputs.
         let fixed_n = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
         let expected_present = core::cmp::min(in_before, fixed_n);
 
         if OUT > 0 {
             let mut out_count = 0usize;
-            while let Ok(_m) = out_links[0].try_pop() {
+            while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                 out_count += 1;
             }
             assert_eq!(
@@ -1781,7 +1859,6 @@ pub mod contract_tests {
             );
         }
 
-        // Telemetry: NodeLink increments processed by fixed_n for batched steps.
         let metrics = tele.metrics();
         if fixed_n > 1 {
             assert_eq!(
@@ -1813,11 +1890,7 @@ pub mod contract_tests {
         OutP: crate::message::payload::Payload + Default + Clone,
         N: crate::node::Node<IN, OUT, InP, OutP>,
     {
-        // This test attempts to force output backpressure and ensures the node maps
-        // the enqueue result / queue errors as documented.
-
         if IN == 0 || OUT == 0 {
-            // Not applicable for sources (no input) or nodes with no outputs.
             return;
         }
 
@@ -1826,21 +1899,26 @@ pub mod contract_tests {
         let mut tele = make_graph_telemetry();
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
-        // create edges and fill the output queue to force backpressure/rejection
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
-        // prefill output 0 until it rejects or drops (ensures backpressure or drop behavior).
+        // prefill output 0 until it rejects or drops
         let policy = TEST_EDGE_POLICY;
-        let dummy_out_msg = Message::new(MessageHeader::empty(), OutP::default());
-        // Keep trying to push; when queue capacity reached admission policy will cause non-Enqueued.
-        while let crate::edge::EnqueueResult::Enqueued =
-            out_links[0].try_push(dummy_out_msg.clone(), &policy)
-        {
-            match out_links[0].try_push(dummy_out_msg.clone(), &policy) {
+        loop {
+            let dummy_out_msg = Message::new(MessageHeader::empty(), OutP::default());
+            let token = match out_mgrs[0].store(dummy_out_msg) {
+                Ok(t) => t,
+                Err(_) => break, // manager full
+            };
+            match out_links[0].try_push(token, &policy, &out_mgrs[0]) {
                 crate::edge::EnqueueResult::Enqueued => continue,
                 crate::edge::EnqueueResult::DroppedNewest
                 | crate::edge::EnqueueResult::Rejected => break,
+                _ => break,
             }
         }
 
@@ -1848,22 +1926,27 @@ pub mod contract_tests {
         let mut hdr = MessageHeader::empty();
         hdr.set_creation_tick(clock.now_ticks());
         let msg = Message::new(hdr, InP::default());
+        let token = in_mgrs[0].store(msg).expect("store ok");
         assert_eq!(
-            in_links[0].try_push(msg, &policy),
+            in_links[0].try_push(token, &policy, &in_mgrs[0]),
             crate::edge::EnqueueResult::Enqueued
         );
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
-        // Node may either return Ok(StepResult::Backpressured) or Err(NodeError::backpressured())
-        // depending on whether the backpressure is surfaceable as a StepResult or NodeError.
         match nlink.step(&mut ctx) {
             Ok(res) => {
-                // If node returned a StepResult, it should not be NoInput since an input existed.
                 assert!(res != crate::node::StepResult::NoInput);
             }
             Err(_e) => {
-                // Error is acceptable; presence suffices for this test.
+                // Error is acceptable
             }
         }
     }
@@ -1889,7 +1972,6 @@ pub mod contract_tests {
         OutP: crate::message::payload::Payload + Default + Clone,
         N: crate::node::Node<IN, OUT, InP, OutP>,
     {
-        // If this node is not a source, skip source checks.
         let mut nlink = make_nodelink();
         let kind = nlink.node().node_kind();
         if kind != crate::node::NodeKind::Source {
@@ -1900,12 +1982,21 @@ pub mod contract_tests {
         let mut tele = make_graph_telemetry();
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
-        // Build edges: for sources IN == 0, so make_edge_links_for_node works with IN==0.
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
-        // Build context and call step() — if source has nothing to produce we expect NoInput.
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx).expect("step ok");
         assert!(
@@ -1913,8 +2004,6 @@ pub mod contract_tests {
             "source.step should return NoInput or MadeProgress"
         );
 
-        // step_batch should not panic and must return a valid StepResult. This also exercises
-        // the source's ingress occupancy and peek semantics indirectly.
         let _ = nlink.step(&mut ctx);
     }
 
@@ -1939,7 +2028,6 @@ pub mod contract_tests {
         OutP: crate::message::payload::Payload + Default + Clone,
         N: crate::node::Node<IN, OUT, InP, OutP>,
     {
-        // Only sinks implement NodeKind::Sink
         let mut nlink = make_nodelink();
         let kind = nlink.node().node_kind();
         if kind != crate::node::NodeKind::Sink {
@@ -1950,26 +2038,35 @@ pub mod contract_tests {
         let mut tele = make_graph_telemetry();
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
-        // Build input edges; sink consumes from inputs, no outputs.
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
         if IN == 0 {
             return;
         }
 
-        // Push a message to input 0 and call step(): sink should consume and return MadeProgress
         let mut hdr = MessageHeader::empty();
         hdr.set_creation_tick(clock.now_ticks());
         let msg = Message::new(hdr, InP::default());
         let policy = TEST_EDGE_POLICY;
+        let token = in_mgrs[0].store(msg).expect("store ok");
         assert_eq!(
-            in_links[0].try_push(msg.clone(), &policy),
+            in_links[0].try_push(token, &policy, &in_mgrs[0]),
             crate::edge::EnqueueResult::Enqueued
         );
 
-        // let mut ctx = build_step_context(&mut in_links, &mut [], &clock, &mut tele);
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
         let res = nlink.step(&mut ctx);
         match res {
@@ -1980,9 +2077,7 @@ pub mod contract_tests {
                     "sink.step returned unexpected StepResult"
                 );
             }
-            Err(_e) => {
-                // An execution failure is acceptable as long as it's an expected error type.
-            }
+            Err(_e) => {}
         }
     }
 
@@ -2008,14 +2103,11 @@ pub mod contract_tests {
         OutP: crate::message::payload::Payload + Default + Clone,
         N: crate::node::Node<IN, OUT, InP, OutP>,
     {
-        // Only run when the node is a Model and has 1 input & 1 output (InferenceModel is 1×1)
         let mut nlink = make_nodelink();
         if nlink.node().node_kind() != crate::node::NodeKind::Model || IN != 1 || OUT != 1 {
             return;
         }
 
-        // Install a deterministic fixed-N batching policy for the model test.
-        // Choose a modest batch size that fits typical test backends.
         const TEST_FIXED_N: usize = 4;
         let base_policy = nlink.node().policy();
         let batching = crate::policy::BatchingPolicy::with_window(
@@ -2032,36 +2124,43 @@ pub mod contract_tests {
 
         let (mut in_links, mut out_links) =
             make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
 
-        // Determine the batch size we requested (from the node policy we just installed).
         let requested_fixed = nlink.node().policy().batching().fixed_n().unwrap_or(1usize);
 
-        // Push `requested_fixed` messages; step_batch should process at least requested_fixed
-        // (the model node may be capped by backend or MAX_BATCH, but it should not exceed requested_fixed).
         let policy = TEST_EDGE_POLICY;
         for t in 1u64..=(requested_fixed as u64) {
             let mut hdr = MessageHeader::empty();
             hdr.set_creation_tick(Ticks::new(t));
             let m = Message::new(hdr, InP::default());
+            let token = in_mgrs[0].store(m).expect("store ok");
             assert_eq!(
-                in_links[0].try_push(m, &policy),
+                in_links[0].try_push(token, &policy, &in_mgrs[0]),
                 crate::edge::EnqueueResult::Enqueued
             );
         }
 
-        let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+        let mut ctx = build_step_context(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            &clock,
+            &mut tele,
+        );
 
-        // Execute the batched step.
         let res = nlink.step(&mut ctx).expect("step_batch ok");
         assert!(
             res != crate::node::StepResult::NoInput,
             "model.step_batch returned NoInput"
         );
 
-        // If outputs exist, ensure at least one output was produced, and no more than requested_fixed.
         if OUT > 0 {
             let mut out_count = 0usize;
-            while let Ok(_m) = out_links[0].try_pop() {
+            while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                 out_count += 1;
             }
 
@@ -2078,7 +2177,6 @@ pub mod contract_tests {
             );
         }
 
-        // Telemetry: NodeLink increments `processed` by `requested_fixed` for a batched step.
         let metrics = tele.metrics();
         assert_eq!(
             *metrics.nodes()[0].processed(),
@@ -2119,8 +2217,6 @@ pub mod contract_tests {
             return;
         }
 
-        // Make a NodeLink and install a deterministic fixed_n + max_delta_t
-        // disjoint batching policy for this test so we exercise the span checks.
         let mut nlink = make_nodelink();
 
         const TEST_FIXED_N: usize = 4;
@@ -2135,12 +2231,10 @@ pub mod contract_tests {
         let new_policy = NodePolicy::new(batching, *base_policy.budget(), *base_policy.deadline());
         nlink.set_policy(new_policy);
 
-        // Recompute fixed_n and max_delta from the installed policy.
         let policy_installed = *nlink.node().policy().batching();
         let fixed_opt = *policy_installed.fixed_n();
         let delta_opt = *policy_installed.max_delta_t();
         if fixed_opt.is_none() || delta_opt.is_none() {
-            // Nothing to test if policy doesn't provide both knobs.
             return;
         }
         let fixed_n = fixed_opt.unwrap();
@@ -2150,32 +2244,42 @@ pub mod contract_tests {
         let mut tele = make_graph_telemetry();
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
-        // 1) VALID SPAN: push fixed_n msgs with ticks within max_delta_t and expect a batch processed.
+        // 1) VALID SPAN
         {
             let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
                 NodeIndex::new(0),
                 NodeIndex::new(1),
             );
+            let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+                core::array::from_fn(|_| StaticMemoryManager::new());
+            let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+                core::array::from_fn(|_| StaticMemoryManager::new());
 
             let policy = TEST_EDGE_POLICY;
 
-            // Use ticks spaced by 1 up to max_delta to create a valid span.
             for i in 0..fixed_n {
-                let tick = i as u64; // within small span (<= max_delta)
+                let tick = i as u64;
                 let mut hdr = MessageHeader::empty();
                 hdr.set_creation_tick(Ticks::new(tick));
                 let m = Message::new(hdr, InP::default());
+                let token = in_mgrs[0].store(m).expect("store ok");
                 assert_eq!(
-                    in_links[0].try_push(m, &policy),
+                    in_links[0].try_push(token, &policy, &in_mgrs[0]),
                     crate::edge::EnqueueResult::Enqueued
                 );
             }
 
-            // Capture telemetry before the valid-span step so we can assert the delta.
             let metrics_before = tele.metrics();
             let processed_before = *metrics_before.nodes()[0].processed();
 
-            let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+            let mut ctx = build_step_context(
+                &mut in_links,
+                &mut out_links,
+                &mut in_mgrs,
+                &mut out_mgrs,
+                &clock,
+                &mut tele,
+            );
 
             let res = nlink.step(&mut ctx).expect("step_batch ok (valid span)");
             assert!(
@@ -2185,10 +2289,9 @@ pub mod contract_tests {
 
             if OUT > 0 {
                 let mut out_count = 0usize;
-                while let Ok(_m) = out_links[0].try_pop() {
+                while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                     out_count += 1;
                 }
-                // Expect exactly fixed_n outputs when batch processed fully
                 assert_eq!(
                     out_count, fixed_n,
                     "expected exactly fixed_n outputs ({}) for valid span, got {}",
@@ -2196,7 +2299,6 @@ pub mod contract_tests {
                 );
             }
 
-            // Telemetry should have been incremented by `fixed_n` for the batched step.
             let metrics_after = tele.metrics();
             let processed_after = *metrics_after.nodes()[0].processed();
             assert_eq!(
@@ -2206,37 +2308,45 @@ pub mod contract_tests {
             );
         }
 
-        // 2) INVALID SPAN: push fixed_n msgs with ticks far apart (> max_delta_t) and expect NoInput
+        // 2) INVALID SPAN
         {
             let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
                 NodeIndex::new(0),
                 NodeIndex::new(1),
             );
+            let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+                core::array::from_fn(|_| StaticMemoryManager::new());
+            let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+                core::array::from_fn(|_| StaticMemoryManager::new());
 
             let policy = TEST_EDGE_POLICY;
-            // Use ticks spaced beyond max_delta to violate span
             for i in 0..fixed_n {
                 let tick = (i as u64) * (max_delta + 1000u64);
                 let mut hdr = MessageHeader::empty();
                 hdr.set_creation_tick(Ticks::new(tick));
                 let m = Message::new(hdr, InP::default());
+                let token = in_mgrs[0].store(m).expect("store ok");
                 assert_eq!(
-                    in_links[0].try_push(m, &policy),
+                    in_links[0].try_push(token, &policy, &in_mgrs[0]),
                     crate::edge::EnqueueResult::Enqueued
                 );
             }
 
-            // Capture telemetry before the invalid-span step.
             let metrics_before_invalid = tele.metrics();
             let processed_before_invalid = *metrics_before_invalid.nodes()[0].processed();
 
-            let mut ctx = build_step_context(&mut in_links, &mut out_links, &clock, &mut tele);
+            let mut ctx = build_step_context(
+                &mut in_links,
+                &mut out_links,
+                &mut in_mgrs,
+                &mut out_mgrs,
+                &clock,
+                &mut tele,
+            );
 
             let res = nlink.step(&mut ctx).expect("step_batch ok (invalid span)");
 
-            // For invalid span, prefer NoInput (a node may also process fewer items; allow both).
             if res == crate::node::StepResult::NoInput {
-                // Telemetry must not have advanced for the node (no batch processed).
                 let metrics_after_invalid = tele.metrics();
                 let processed_after_invalid = *metrics_after_invalid.nodes()[0].processed();
                 assert_eq!(
@@ -2244,7 +2354,6 @@ pub mod contract_tests {
                     "expected no telemetry change when invalid span results in NoInput"
                 );
             } else {
-                // MadeProgress (partial processing) is allowed; ensure outputs are fewer than fixed_n.
                 assert_eq!(
                     res,
                     crate::node::StepResult::MadeProgress,
@@ -2254,17 +2363,15 @@ pub mod contract_tests {
 
                 if OUT > 0 {
                     let mut out_count = 0usize;
-                    while let Ok(_m) = out_links[0].try_pop() {
+                    while let Ok(_token) = out_links[0].try_pop(&out_mgrs[0]) {
                         out_count += 1;
                     }
                     assert!(
-                        out_count > 0 && out_count < fixed_n,
-                        "expected partial progress for invalid span (0 < out_count < fixed_n), got {}",
-                        out_count
-                    );
+                          out_count > 0 && out_count < fixed_n,
+                          "expected partial progress for invalid span (0 < out_count < fixed_n), got {}",
+                          out_count
+                      );
                 }
-                // We do not assert telemetry delta here — implementations may still
-                // increment processed by `fixed_n` even for partial progress.
             }
         }
     }

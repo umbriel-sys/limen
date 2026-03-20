@@ -1,14 +1,15 @@
-//! Concurrent Queue generic impl, TODO: update doc comment.
+//! Concurrent Queue generic impl, updated for `MessageToken` + `HeaderStore` Edge API.
 
 use std::sync::{Arc, Mutex};
 
-use crate::edge::{Edge, EdgeOccupancy, EnqueueResult, PeekResponse};
+use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};
 use crate::errors::QueueError;
-use crate::message::{payload::Payload, Message};
 use crate::policy::{EdgePolicy, WatermarkState};
 use crate::prelude::BatchView;
+use crate::prelude::HeaderStore;
+use crate::types::MessageToken; // bring HeaderStore into scope
 
-/// Thread-safe wrapper: makes ANY `Q: SpscQueue` cloneable + `Send + 'static`.
+/// Thread-safe wrapper: makes ANY `Q: Edge` cloneable + `Send + 'static`.
 pub struct ConcurrentQueue<Q> {
     inner: Arc<Mutex<Q>>,
 }
@@ -32,30 +33,48 @@ impl<Q> ConcurrentQueue<Q> {
     }
 }
 
-impl<P, Q> Edge for ConcurrentQueue<Q>
-where
-    P: Payload + Clone,
-    Q: Edge<Item = Message<P>> + Send + 'static,
-{
-    type Item = Message<P>;
-
+impl<Q> Clone for ConcurrentQueue<Q> {
     #[inline]
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<Q> ConcurrentQueue<Q>
+where
+    Q: Edge + Send + 'static,
+{
+    /// Helper to lock the inner mutex and map poisoning to `QueueError::Poisoned`.
+    fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, Q>, QueueError> {
+        self.inner.lock().map_err(|_| QueueError::Poisoned)
+    }
+}
+
+impl<Q> Edge for ConcurrentQueue<Q>
+where
+    Q: Edge + Send + 'static,
+{
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
         match self.inner.lock() {
-            Ok(mut q) => q.try_push(item, policy),
+            Ok(mut q) => q.try_push(token, policy, headers),
             Err(_) => EnqueueResult::Rejected,
         }
     }
 
-    #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
         match self.inner.lock() {
-            Ok(mut q) => q.try_pop(),
+            Ok(mut q) => q.try_pop(headers),
             Err(_) => Err(QueueError::Poisoned),
         }
     }
 
-    #[inline]
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
         match self.inner.lock() {
             Ok(q) => q.occupancy(policy),
@@ -67,73 +86,50 @@ where
         }
     }
 
-    #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
+    fn is_empty(&self) -> bool {
+        match self.inner.lock() {
+            Ok(q) => q.is_empty(),
+            Err(_) => true,
+        }
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         match self.inner.lock() {
             Ok(q) => match q.try_peek() {
-                Ok(peek) => match peek {
-                    // If inner returned a borrowed reference, clone the item while we hold
-                    // the lock and return an owned copy so the returned reference doesn't
-                    // outlive the mutex guard.
-                    crate::edge::PeekResponse::Borrowed(b) => {
-                        let owned = b.clone();
-                        Ok(crate::edge::PeekResponse::Owned(owned))
-                    }
-
-                    // If inner returned an owned item we can forward it directly.
-                    #[cfg(feature = "alloc")]
-                    crate::edge::PeekResponse::Owned(o) => Ok(crate::edge::PeekResponse::Owned(o)),
-                },
+                Ok(t) => Ok(t), // MessageToken is cheap to copy/return by value
                 Err(e) => Err(e),
             },
             Err(_) => Err(QueueError::Poisoned),
         }
     }
 
-    /// Peek at the item at logical position `index` from the front without removing it.
-    ///
-    /// This wrapper never returns a borrowed reference from the inner queue, because
-    /// any borrow would be tied to the mutex guard and would escape the lock scope.
-    /// Therefore:
-    ///
-    /// - If the inner queue can provide a borrowed reference, we clone the item while
-    ///   holding the mutex and return `PeekResponse::Owned`.
-    /// - If the inner queue already returns `Owned`, we forward it.
-    ///
-    /// On mutex poisoning, returns `QueueError::Poisoned`.
-    #[inline]
-    fn try_peek_at(&self, index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
         match self.inner.lock() {
             Ok(q) => match q.try_peek_at(index) {
-                Ok(peek) => match peek {
-                    PeekResponse::Borrowed(b) => Ok(PeekResponse::Owned(b.clone())),
-                    #[cfg(feature = "alloc")]
-                    PeekResponse::Owned(o) => Ok(PeekResponse::Owned(o)),
-                },
+                Ok(t) => Ok(t),
                 Err(e) => Err(e),
             },
             Err(_) => Err(QueueError::Poisoned),
         }
     }
 
-    fn try_pop_batch(
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         match self.inner.lock() {
             Ok(mut q) => {
-                let batch_view = q.try_pop_batch(policy)?;
+                // Obtain the batch view from inner while holding the lock.
+                let batch = q.try_pop_batch(policy, headers)?;
 
-                // Materialize into owned messages while the mutex is held,
-                // so no borrowed references escape the lock guard.
-                let mut owned: alloc::vec::Vec<Message<P>> =
-                    alloc::vec::Vec::with_capacity(batch_view.len());
+                // Materialize into an owned vector while holding the mutex, so no
+                // borrowed references escape the lock guard.
+                let mut owned: alloc::vec::Vec<MessageToken> =
+                    alloc::vec::Vec::with_capacity(batch.len());
 
-                for item in batch_view.iter() {
-                    owned.push(item.clone());
+                for &tok in batch.iter() {
+                    owned.push(tok);
                 }
 
                 Ok(BatchView::from_owned(owned))
@@ -143,104 +139,22 @@ where
     }
 }
 
-impl<Q> Clone for ConcurrentQueue<Q> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
 /// Producer endpoint: push + occupancy only.
 #[derive(Clone)]
-pub struct ProducerEndpoint<P, QWrap>
+pub struct ProducerEndpoint<QWrap>
 where
-    P: Payload,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
+    QWrap: Edge + Send + 'static,
 {
     q: QWrap,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<P, QWrap> ProducerEndpoint<P, QWrap>
+impl<QWrap> ProducerEndpoint<QWrap>
 where
-    P: Payload,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
+    QWrap: Edge + Send + 'static,
 {
     /// Creates a new ProducerEndpoint.
     pub fn new(q: QWrap) -> Self {
-        Self {
-            q,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    /// Returns thhe inner queue.
-    pub fn into_inner(self) -> QWrap {
-        self.q
-    }
-}
-
-impl<P, QWrap> Edge for ProducerEndpoint<P, QWrap>
-where
-    P: Payload + Clone,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
-{
-    type Item = Message<P>;
-    #[inline]
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
-        self.q.try_push(item, policy)
-    }
-    #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
-        Err(QueueError::Empty)
-    }
-    #[inline]
-    fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
-        self.q.occupancy(policy)
-    }
-    #[inline]
-    fn try_peek(&self) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
-        Err(QueueError::Unsupported)
-    }
-    #[inline]
-    fn try_peek_at(&self, _index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
-        Err(QueueError::Unsupported)
-    }
-    fn try_pop_batch(
-        &mut self,
-        _policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
-        Err(QueueError::Unsupported)
-    }
-}
-
-/// Consumer endpoint: pop + occupancy only.
-#[derive(Clone)]
-pub struct ConsumerEndpoint<P, QWrap>
-where
-    P: Payload,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
-{
-    q: QWrap,
-    _p: core::marker::PhantomData<P>,
-}
-
-impl<P, QWrap> ConsumerEndpoint<P, QWrap>
-where
-    P: Payload,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
-{
-    /// Creates a new ConsumerEndpoint.
-    pub fn new(q: QWrap) -> Self {
-        Self {
-            q,
-            _p: core::marker::PhantomData,
-        }
+        Self { q }
     }
 
     /// Returns the inner queue.
@@ -249,40 +163,111 @@ where
     }
 }
 
-impl<P, QWrap> Edge for ConsumerEndpoint<P, QWrap>
+impl<QWrap> Edge for ProducerEndpoint<QWrap>
 where
-    P: Payload + Clone,
-    QWrap: Edge<Item = Message<P>> + Send + 'static,
+    QWrap: Edge + Send + 'static,
 {
-    type Item = Message<P>;
-    #[inline]
-    fn try_push(&mut self, _item: Self::Item, _policy: &EdgePolicy) -> EnqueueResult {
-        EnqueueResult::Rejected
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
+        self.q.try_push(token, policy, headers)
     }
-    #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
-        self.q.try_pop()
+
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
+        Err(QueueError::Empty)
     }
-    #[inline]
+
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
         self.q.occupancy(policy)
     }
-    #[inline]
-    fn try_peek(&self) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+
+    fn is_empty(&self) -> bool {
+        self.q.is_empty()
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
+        Err(QueueError::Unsupported)
+    }
+
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
+        Err(QueueError::Unsupported)
+    }
+
+    fn try_pop_batch<H: HeaderStore>(
+        &mut self,
+        _policy: &crate::policy::BatchingPolicy,
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
+        Err(QueueError::Unsupported)
+    }
+}
+
+/// Consumer endpoint: pop + occupancy + peek only.
+#[derive(Clone)]
+pub struct ConsumerEndpoint<QWrap>
+where
+    QWrap: Edge + Send + 'static,
+{
+    q: QWrap,
+}
+
+impl<QWrap> ConsumerEndpoint<QWrap>
+where
+    QWrap: Edge + Send + 'static,
+{
+    /// Creates a new ConsumerEndpoint.
+    pub fn new(q: QWrap) -> Self {
+        Self { q }
+    }
+
+    /// Returns the inner queue.
+    pub fn into_inner(self) -> QWrap {
+        self.q
+    }
+}
+
+impl<QWrap> Edge for ConsumerEndpoint<QWrap>
+where
+    QWrap: Edge + Send + 'static,
+{
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
+        EnqueueResult::Rejected
+    }
+
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
+        self.q.try_pop(headers)
+    }
+
+    fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
+        self.q.occupancy(policy)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.q.is_empty()
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         self.q.try_peek()
     }
-    #[inline]
-    fn try_peek_at(&self, index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
         self.q.try_peek_at(index)
     }
-    fn try_pop_batch(
+
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
-        self.q.try_pop_batch(policy)
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
+        self.q.try_pop_batch(policy, headers)
     }
 }
 
@@ -293,17 +278,20 @@ mod tests {
     use crate::edge::bench::TestSpscRingBuf;
 
     crate::run_edge_contract_tests!(concurrent_queue_contract, || {
-        let inner = TestSpscRingBuf::<Message<u32>, 16>::new();
+        let inner = TestSpscRingBuf::<16>::new();
         ConcurrentQueue::new(inner)
     });
 
     mod endpoint_tests {
         use super::*;
 
+        use crate::edge::bench::TestSpscRingBuf;
         use crate::errors::QueueError;
+        use crate::memory::manager::MemoryManager;
+        use crate::memory::static_manager::StaticMemoryManager;
         use crate::message::{Message, MessageHeader};
         use crate::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
-        use crate::types::Ticks;
+        use crate::types::{MessageToken, Ticks};
 
         const POLICY: EdgePolicy = EdgePolicy::new(
             QueueCaps::new(8, 6, None, None),
@@ -311,49 +299,115 @@ mod tests {
             OverBudgetAction::Drop,
         );
 
-        fn msg(tick: u64) -> Message<u32> {
-            let mut header = MessageHeader::empty();
-            header.set_creation_tick(Ticks::new(tick));
-            Message::new(header, 0u32)
+        const MGR_DEPTH: usize = 16;
+
+        fn make_msg_u32(tick: u64) -> Message<u32> {
+            let mut h = MessageHeader::empty();
+            h.set_creation_tick(Ticks::new(tick));
+            Message::new(h, 0u32)
         }
 
         #[test]
         fn producer_endpoint_is_write_only() {
-            let inner = ConcurrentQueue::new(TestSpscRingBuf::<Message<u32>, 16>::new());
-            let mut producer = ProducerEndpoint::<u32, _>::new(inner);
+            let inner = ConcurrentQueue::new(TestSpscRingBuf::<16>::new());
+            let mut producer = ProducerEndpoint::new(inner);
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
 
+            // Push should succeed.
+            let m = make_msg_u32(1);
+            let token = mgr.store(m).expect("store");
             assert_eq!(
-                producer.try_push(msg(1), &POLICY),
-                crate::edge::EnqueueResult::Enqueued
+                producer.try_push(token, &POLICY, &mgr),
+                EnqueueResult::Enqueued
             );
-            assert!(matches!(producer.try_pop(), Err(QueueError::Empty)));
+
+            // Pop is disabled on producer endpoint.
+            assert!(matches!(producer.try_pop(&mgr), Err(QueueError::Empty)));
+
+            // Peek is unsupported on producer endpoint.
             assert!(matches!(producer.try_peek(), Err(QueueError::Unsupported)));
             assert!(matches!(
-                producer.try_pop_batch(&crate::policy::BatchingPolicy::fixed(2)),
+                producer.try_peek_at(0),
                 Err(QueueError::Unsupported)
             ));
+
+            // Occupancy is forwarded.
+            let occ = producer.occupancy(&POLICY);
+            assert_eq!(*occ.items(), 1usize);
         }
 
         #[test]
         fn consumer_endpoint_is_read_only() {
-            let mut q = ConcurrentQueue::new(TestSpscRingBuf::<Message<u32>, 16>::new());
+            let inner = ConcurrentQueue::new(TestSpscRingBuf::<16>::new());
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+            // Pre-fill the queue via a clone of the ConcurrentQueue before splitting.
+            let mut q_clone = inner.clone();
+            let m = make_msg_u32(1);
+            let token = mgr.store(m).expect("store");
             assert_eq!(
-                q.try_push(msg(1), &POLICY),
-                crate::edge::EnqueueResult::Enqueued
+                q_clone.try_push(token, &POLICY, &mgr),
+                EnqueueResult::Enqueued
             );
 
-            let mut consumer = ConsumerEndpoint::<u32, _>::new(q);
+            let mut consumer = ConsumerEndpoint::new(inner);
 
+            // Push is rejected on consumer endpoint.
+            let m2 = make_msg_u32(2);
+            let token2 = mgr.store(m2).expect("store");
             assert_eq!(
-                consumer.try_push(msg(2), &POLICY),
-                crate::edge::EnqueueResult::Rejected
+                consumer.try_push(token2, &POLICY, &mgr),
+                EnqueueResult::Rejected
             );
 
-            let peek = consumer.try_peek().expect("peek");
-            assert_eq!((*peek.as_ref().header().creation_tick()).as_u64(), &1u64);
+            // Occupancy is forwarded (should see 1 item from the push via q_clone).
+            let occ = consumer.occupancy(&POLICY);
+            assert_eq!(*occ.items(), 1usize);
 
-            let popped = consumer.try_pop().expect("pop");
-            assert_eq!((*popped.header().creation_tick()).as_u64(), &1u64);
+            // Peek works on consumer.
+            let peek_token = consumer.try_peek().expect("consumer peek");
+            assert_eq!(peek_token, token);
+
+            // Pop works on consumer.
+            let popped = consumer.try_pop(&mgr).expect("consumer pop");
+            assert_eq!(popped, token);
+
+            // Now empty.
+            assert!(consumer.is_empty());
+            assert!(matches!(consumer.try_pop(&mgr), Err(QueueError::Empty)));
+        }
+
+        #[test]
+        fn concurrent_queue_cross_thread_push_pop() {
+            let inner = TestSpscRingBuf::<16>::new();
+            let cq = ConcurrentQueue::new(inner);
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+            // Store several messages and collect tokens.
+            let mut tokens = [MessageToken::INVALID; 4];
+            for (i, t) in (1u64..=4u64).enumerate() {
+                let m = make_msg_u32(t);
+                tokens[i] = mgr.store(m).expect("store");
+            }
+
+            // Push all tokens via one clone.
+            let mut producer = cq.clone();
+            for &tok in &tokens {
+                assert_eq!(
+                    producer.try_push(tok, &POLICY, &mgr),
+                    EnqueueResult::Enqueued
+                );
+            }
+
+            // Pop all tokens via another clone — FIFO order.
+            let mut consumer = cq.clone();
+            for (i, expected_tick) in (1u64..=4u64).enumerate() {
+                let popped = consumer.try_pop(&mgr).expect("pop");
+                assert_eq!(popped, tokens[i]);
+                let h = mgr.peek_header(popped).expect("header");
+                assert_eq!(*h.creation_tick(), Ticks::new(expected_tick));
+            }
+            assert!(matches!(consumer.try_pop(&mgr), Err(QueueError::Empty)));
         }
     }
 }

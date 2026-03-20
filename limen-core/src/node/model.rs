@@ -17,14 +17,10 @@ use crate::compute::{BackendCapabilities, ComputeBackend, ComputeModel, ModelMet
 use crate::edge::{Edge, EnqueueResult};
 use crate::errors::{InferenceError, NodeError, QueueError};
 use crate::memory::PlacementAcceptance;
-use crate::message::{payload::Payload, Message, MessageHeader};
+use crate::message::{payload::Payload, Message};
 use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
 use crate::policy::NodePolicy;
-use crate::prelude::{PlatformClock, Telemetry};
-
-// alloc-backed buffers only when the feature is enabled
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 
 // --- local helpers: map backend/queue errors into NodeError (no From impls required)
 #[inline]
@@ -48,7 +44,7 @@ pub struct InferenceModel<B, InP, OutP, const MAX_BATCH: usize>
 where
     B: ComputeBackend<InP, OutP>,
     InP: Payload,
-    OutP: Payload + Default,
+    OutP: Payload + Default + Copy,
 {
     /// Backend instance used solely for model creation and capability query.
     /// Kept to preserve type ownership and avoid dynamic dispatch.
@@ -80,7 +76,7 @@ impl<B, InP, OutP, const MAX_BATCH: usize> InferenceModel<B, InP, OutP, MAX_BATC
 where
     B: ComputeBackend<InP, OutP>,
     InP: Payload,
-    OutP: Payload + Default,
+    OutP: Payload + Default + Copy,
 {
     /// Construct a new `InferenceModel` node.
     ///
@@ -132,21 +128,25 @@ impl<B, InP, OutP, const MAX_BATCH: usize> Node<1, 1, InP, OutP>
     for InferenceModel<B, InP, OutP, MAX_BATCH>
 where
     B: ComputeBackend<InP, OutP>,
-    InP: Payload,
-    OutP: Payload + Default,
+    InP: Payload + Default + Copy,
+    OutP: Payload + Default + Copy,
 {
+    #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
         self.node_caps
     }
 
+    #[inline]
     fn input_acceptance(&self) -> [PlacementAcceptance; 1] {
         self.input_acceptance
     }
 
+    #[inline]
     fn output_acceptance(&self) -> [PlacementAcceptance; 1] {
         self.output_acceptance
     }
 
+    #[inline]
     fn policy(&self) -> NodePolicy {
         self.node_policy
     }
@@ -157,10 +157,12 @@ where
         self.node_policy = policy;
     }
 
+    #[inline]
     fn node_kind(&self) -> NodeKind {
         NodeKind::Model
     }
 
+    #[inline]
     fn initialize<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
     where
         T: Telemetry,
@@ -168,6 +170,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn start<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
     where
         T: Telemetry,
@@ -175,15 +178,17 @@ where
         self.model.init().map_err(map_inference_err)
     }
 
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    #[inline]
+    fn process_message<'graph, 'clock, OutQ, OutM, C, Tel>(
         &mut self,
         msg: &Message<InP>,
-        out_ctx: &mut OutStepContext<'graph, '_, 'clock, 1, OutP, OutQ, C, T>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, 1, OutP, OutQ, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        OutQ: Edge<Item = Message<OutP>>,
+        OutQ: Edge,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         // Run single-item inference into the reusable scratch output.
         let inp: &InP = msg.payload();
@@ -197,78 +202,85 @@ where
 
         // Push to output 0 and map enqueue result to StepResult.
         match out_ctx.out_try_push(0, out_msg) {
-            EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => Ok(StepResult::MadeProgress),
+            EnqueueResult::Enqueued | EnqueueResult::DroppedNewest | EnqueueResult::Evicted(_) => {
+                Ok(StepResult::MadeProgress)
+            }
             EnqueueResult::Rejected => Ok(StepResult::Backpressured),
         }
     }
 
-    fn step<'g, 't, 'c, InQ, OutQ, C, T>(
+    #[inline]
+    fn step<'g, 't, 'c, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
-        // Pop a single message (map queue errors consistently).
-        let m_in = match ctx.in_try_pop(0) {
-            Ok(m) => m,
-            Err(QueueError::Empty) => return Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
-            Err(e) => return Err(map_queue_err(e)),
-        };
-
-        // Create an OutStepContext (borrows outputs/telemetry) while message is owned.
-        let mut out = ctx.to_out_step_context();
-
-        // Delegate to per-message hook. We pass a reference to the owned message.
-        let res = self.process_message(&m_in, &mut out)?;
-        Ok(res)
+        ctx.pop_and_process(0, |msg, out| self.process_message(msg, out))
     }
 
-    fn step_batch<'g, 't, 'c, InQ, OutQ, C, T>(
+    #[inline]
+    fn step_batch<'g, 't, 'c, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
-        // Decide effective batch size from node policy, backend caps, and MAX_BATCH.
         let want = self.node_policy.batching().fixed_n().unwrap_or(1);
         let backend_cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
         let nmax = core::cmp::min(core::cmp::min(want, backend_cap), MAX_BATCH);
 
         if nmax <= 1 {
-            // No batching requested — fall back to single-step.
             return self.step(ctx);
         }
 
-        // Use the existing batched helpers which consume via `ctx.in_try_pop` and call infer_batch.
-        #[cfg(not(feature = "alloc"))]
-        {
-            self.step_batched_stack::<InQ, OutQ, C, T>(ctx, nmax)
-        }
-        #[cfg(feature = "alloc")]
-        {
-            self.step_batched_alloc::<InQ, OutQ, C, T>(ctx, nmax)
-        }
+        let node_policy = self.node_policy;
+        ctx.pop_batch_and_process(0, nmax, &node_policy, |iter, out| {
+            // Iterate the batch, calling process_message per item.
+            // process_message already handles infer_one + push to output.
+            let mut any_made = false;
+            for guard in iter {
+                match self.process_message(&*guard, out)? {
+                    StepResult::MadeProgress => any_made = true,
+                    StepResult::NoInput => {}
+                    StepResult::Backpressured => return Ok(StepResult::Backpressured),
+                    StepResult::WaitingOnExternal => {
+                        return Ok(StepResult::WaitingOnExternal);
+                    }
+                    StepResult::YieldUntil(t) => return Ok(StepResult::YieldUntil(t)),
+                    StepResult::Terminal => return Ok(StepResult::Terminal),
+                }
+            }
+            if any_made {
+                Ok(StepResult::MadeProgress)
+            } else {
+                Ok(StepResult::NoInput)
+            }
+        })
     }
 
-    fn on_watchdog_timeout<C, T>(
+    #[inline]
+    fn on_watchdog_timeout<C, Tel>(
         &mut self,
         clock: &C,
-        _telemetry: &mut T,
+        _telemetry: &mut Tel,
     ) -> Result<StepResult, NodeError>
     where
         C: PlatformClock + Sized,
-        T: Telemetry,
+        Tel: Telemetry,
     {
-        // Use configured budget backoff if present; otherwise yield once at "now".
         if let Some(backoff) = self.node_policy.budget().watchdog_ticks() {
             let until = clock.now_ticks().saturating_add(*backoff);
             Ok(StepResult::YieldUntil(until))
@@ -277,140 +289,12 @@ where
         }
     }
 
-    fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    #[inline]
+    fn stop<C, Tel>(&mut self, _clock: &C, _telemetry: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         self.model.drain().map_err(map_inference_err)?;
         self.model.reset().map_err(map_inference_err)
-    }
-}
-
-#[allow(dead_code)]
-impl<B, InP, OutP, const MAX_BATCH: usize> InferenceModel<B, InP, OutP, MAX_BATCH>
-where
-    B: ComputeBackend<InP, OutP>,
-    InP: Payload,
-    OutP: Payload + Default,
-{
-    fn step_batched_stack<'g, 't, 'c, InQ, OutQ, C, T>(
-        &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
-        nmax: usize,
-    ) -> Result<StepResult, NodeError>
-    where
-        // NOTE: for stack arrays without `alloc`, we require `Default` on InP
-        // so we can `mem::take()` payloads out of borrowed Messages.
-        InP: Payload,
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized,
-    {
-        // Use the StepContext batch helper that enforces sliding/disjoint semantics.
-        match cx.pop_input_messages_as_batch_with_out(0, nmax, &self.node_policy) {
-            Ok((batch_view, mut out)) => {
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Ok(StepResult::NoInput);
-                }
-
-                // Stack scratch buffers (MAX_BATCH).
-                let mut headers: [MessageHeader; MAX_BATCH] =
-                    core::array::from_fn(|_| MessageHeader::empty());
-                let mut out_buf: [OutP; MAX_BATCH] = core::array::from_fn(|_| OutP::default());
-
-                // Convert the BatchView into the public Batch<'_, InP> (borrowed view).
-                // The Batch references the messages inside `batch_view`.
-                let batch = batch_view.as_batch();
-                let msgs = batch.messages();
-                let n = msgs.len();
-
-                if n == 0 {
-                    return Ok(StepResult::NoInput);
-                }
-
-                // Copy headers (MessageHeader is Copy). The batch helper has already
-                // set FIRST/LAST flags for us.
-                for i in 0..n {
-                    headers[i] = *msgs[i].header();
-                }
-
-                // Call the backend with a borrowed Batch<'_, InP> so backends receive
-                // `&InP` references directly. No allocation, no moves/clones.
-                self.model
-                    .infer_batch(batch, &mut out_buf[..n])
-                    .map_err(map_inference_err)?;
-
-                // Emit outputs using the provided OutStepContext.
-                for i in 0..n {
-                    let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-                    match out.out_try_push(0, out_msg) {
-                        EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {}
-                        EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-                    }
-                }
-
-                Ok(StepResult::MadeProgress)
-            }
-            Err(QueueError::Empty) => Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) => Err(NodeError::backpressured()),
-            Err(e) => Err(map_queue_err(e)),
-        }
-    }
-
-    #[cfg(feature = "alloc")]
-    fn step_batched_alloc<'g, 't, 'c, InQ, OutQ, C, T>(
-        &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
-        nmax: usize,
-    ) -> Result<StepResult, NodeError>
-    where
-        InP: Payload,
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized,
-    {
-        match cx.pop_input_messages_as_batch_with_out(0, nmax, &self.node_policy) {
-            Ok((batch_view, mut out)) => {
-                let batch_len = batch_view.len();
-                if batch_len == 0 {
-                    return Ok(StepResult::NoInput);
-                }
-
-                // Convert to borrowed Batch and acquire message slice.
-                let batch = batch_view.as_batch();
-                let msgs = batch.messages();
-                let n = msgs.len();
-
-                let mut headers: Vec<MessageHeader> = Vec::with_capacity(n);
-
-                // Copy headers from the borrowed messages.
-                for msg in msgs.iter() {
-                    headers.push(*msg.header());
-                }
-
-                // Prepare output buffer and run inference using the borrowed Batch.
-                let mut out_buf: Vec<OutP> = Vec::with_capacity(n);
-                out_buf.resize_with(n, || OutP::default());
-                self.model
-                    .infer_batch(batch, &mut out_buf)
-                    .map_err(map_inference_err)?;
-
-                for i in 0..n {
-                    let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-                    match out.out_try_push(0, out_msg) {
-                        EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {}
-                        EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-                    }
-                }
-
-                Ok(StepResult::MadeProgress)
-            }
-            Err(QueueError::Empty) => Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) => Err(NodeError::backpressured()),
-            Err(e) => Err(map_queue_err(e)),
-        }
     }
 }

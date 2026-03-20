@@ -1,49 +1,33 @@
 //! Static SPSC ring buffer for P0 (no_std + no_alloc), **safe version**.
 //!
-//! Uses a fixed-size `[T; N]` ring storing `T` directly (no `Option`).
-//! No `unsafe`; no heap allocation. The ring is single-producer / single-consumer.
-//!
-//! The `Edge` implementation for `Message<P>` requires `P: Payload + Clone + Default`
-//! so that `Message<P>` can be safely used as a placeholder when initializing the
-//! fixed-size array. This local `Default` bound keeps `Payload` itself unchanged.
+//! Stores `MessageToken` values directly in a fixed-size `[MessageToken; N]`
+//! ring. Header metadata is accessed via `HeaderStore` for admission and
+//! batching decisions.
 
-use crate::edge::{Edge, EdgeOccupancy, EnqueueResult, PeekResponse};
+use crate::edge::{Edge, EdgeOccupancy, EnqueueResult};
 use crate::errors::QueueError;
-use crate::message::{payload::Payload, Message};
 use crate::policy::{AdmissionDecision, EdgePolicy};
-use crate::prelude::BatchView;
+use crate::prelude::{BatchView, HeaderStore};
+use crate::types::MessageToken;
 
 use core::mem;
 
-/// A fixed-capacity ring buffer for single-producer/single-consumer usage.
-///
-/// The ring stores `T` elements directly in `[T; N]`. To allow safe array
-/// initialization and in-place element movement without `unsafe`, `T` must
-/// implement `Default`. This enables returning `&mut [T]` slices for zero-copy
-/// batch delivery.
-pub struct StaticRing<T, const N: usize> {
-    /// Backing storage: always initialized with `T::default()`.
-    buf: [T; N],
-
-    /// Index of the front element (logical head).
+/// A fixed-capacity ring buffer storing [`MessageToken`] values.
+pub struct StaticRing<const N: usize> {
+    buf: [MessageToken; N],
     head: usize,
-
-    /// Index one past the last live element (logical tail = (head + len) % N).
     tail: usize,
-
-    /// Number of live elements currently in the ring.
     len: usize,
-
-    /// Aggregate bytes currently stored (sum of message header+payload sizes).
+    /// Running byte total, updated on push/pop via HeaderStore.
     bytes: usize,
 }
 
-impl<T: Default + Clone, const N: usize> StaticRing<T, N> {
+impl<const N: usize> StaticRing<N> {
     /// Create a new empty ring.
     #[inline]
     pub fn new() -> Self {
         Self {
-            buf: core::array::from_fn(|_| T::default()),
+            buf: [MessageToken::default(); N],
             head: 0,
             tail: 0,
             len: 0,
@@ -51,261 +35,239 @@ impl<T: Default + Clone, const N: usize> StaticRing<T, N> {
         }
     }
 
-    /// `true` when the ring is full.
     #[inline]
     fn is_full(&self) -> bool {
         self.len == N
     }
 
-    /// Internal: push an item into the tail (assumes capacity available).
-    ///
-    /// Overwrites the slot at `tail` (which should be a default placeholder).
     #[inline]
-    fn push_raw(&mut self, item: T) {
-        self.buf[self.tail] = item;
+    fn push_raw(&mut self, token: MessageToken) {
+        self.buf[self.tail] = token;
         self.tail = (self.tail + 1) % N;
         self.len += 1;
     }
 
-    /// Internal: pop an item from the head (assumes len > 0).
-    ///
-    /// Replaces the vacated slot with `T::default()` and returns the previous
-    /// value stored there.
     #[inline]
-    fn pop_raw(&mut self) -> T {
-        let item = mem::take(&mut self.buf[self.head]);
+    fn pop_raw(&mut self) -> MessageToken {
+        let token = mem::replace(&mut self.buf[self.head], MessageToken::default());
         self.head = (self.head + 1) % N;
         self.len -= 1;
-        item
+        token
     }
 
-    /// Normalize the ring so the live region is contiguous at `buf[0..len]`.
-    ///
-    /// Moves items in-place using `mem::replace`, leaving default placeholders
-    /// in unused slots. After normalization `head == 0` and `tail == len % N`.
+    /// Normalize so live items are contiguous at buf[0..len].
     fn normalize(&mut self) {
         if self.len == 0 {
-            // Empty ring: canonicalize indices.
             self.head = 0;
             self.tail = 0;
             return;
         }
         if self.head == 0 {
-            // Already contiguous at start.
             self.tail = (self.head + self.len) % N;
             return;
         }
-
-        // Move live items to the beginning in order.
         for i in 0..self.len {
             let src_idx = (self.head + i) % N;
-            // Extract src value into tmp, leaving default in src slot.
-            let tmp = mem::take(&mut self.buf[src_idx]);
-            // Place the extracted value into destination slot `i`.
+            let tmp = mem::replace(&mut self.buf[src_idx], MessageToken::default());
             self.buf[i] = tmp;
         }
-
-        // Ensure remaining slots are defaulted (not strictly required but clearer).
         for i in self.len..N {
-            let _ = mem::take(&mut self.buf[i]);
+            self.buf[i] = MessageToken::default();
         }
-
         self.head = 0;
         self.tail = (self.head + self.len) % N;
     }
 }
 
-impl<P: Payload + Clone + Default, const N: usize> Edge for StaticRing<Message<P>, N> {
-    type Item = Message<P>;
+impl<const N: usize> Default for StaticRing<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
-        // Ask policy for a pure admission decision. Message<P> implements AdmissionInfo.
-        let decision = self.get_admission_decision(policy, &item);
+impl<const N: usize> Edge for StaticRing<N> {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
+        let decision = self.get_admission_decision(policy, token, headers);
 
-        // Incoming item size in bytes (header exposes a &usize for payload_size_bytes).
-        let item_bytes = *item.header().payload_size_bytes();
+        // Look up the incoming token's byte size via HeaderStore.
+        let item_bytes = headers
+            .peek_header(token)
+            .map(|h| *h.payload_size_bytes())
+            .unwrap_or(0);
 
         match decision {
             AdmissionDecision::Admit => {
-                // Ensure the ring is not physically full and logical hard caps aren't violated.
                 if self.is_full() || policy.caps.at_or_above_hard(self.len, self.bytes) {
                     return EnqueueResult::Rejected;
                 }
-
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
+                self.push_raw(token);
                 EnqueueResult::Enqueued
             }
 
-            AdmissionDecision::DropNewest => {
-                // Do not mutate queue; indicate incoming item dropped.
-                EnqueueResult::DroppedNewest
-            }
+            AdmissionDecision::DropNewest => EnqueueResult::DroppedNewest,
 
             AdmissionDecision::Reject => EnqueueResult::Rejected,
 
-            AdmissionDecision::Block => {
-                // This StaticRing (test / P0) cannot block; translate to Rejected.
-                EnqueueResult::Rejected
-            }
+            AdmissionDecision::Block => EnqueueResult::Rejected,
 
             AdmissionDecision::Evict(n) => {
-                // Evict up to n oldest items (or fewer if empty).
+                // Evict up to n oldest tokens. Return the LAST evicted token
+                // to the caller for freeing. Earlier evictions are also
+                // returned via successive Evicted results if needed, but for
+                // simplicity we collect them here and return the last one.
+                // StepContext handles freeing.
+                let mut last_evicted = MessageToken::INVALID;
                 for _ in 0..n {
                     if self.len == 0 {
                         break;
                     }
                     let ev = self.pop_raw();
-                    self.bytes = self.bytes.saturating_sub(*ev.header().payload_size_bytes());
+                    let ev_bytes = headers
+                        .peek_header(ev)
+                        .map(|h| *h.payload_size_bytes())
+                        .unwrap_or(0);
+                    self.bytes = self.bytes.saturating_sub(ev_bytes);
+                    last_evicted = ev;
                 }
 
-                // After evictions, ensure we can accept the item.
                 if policy.caps.at_or_above_hard(self.len, self.bytes) || self.is_full() {
                     return EnqueueResult::Rejected;
                 }
 
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
-                EnqueueResult::Enqueued
+                self.push_raw(token);
+
+                if last_evicted.is_invalid() {
+                    EnqueueResult::Enqueued
+                } else {
+                    EnqueueResult::Evicted(last_evicted)
+                }
             }
 
             AdmissionDecision::EvictUntilBelowHard => {
-                // Evict until below hard cap or queue empties.
+                let mut last_evicted = MessageToken::INVALID;
                 while policy.caps.at_or_above_hard(self.len, self.bytes) && self.len > 0 {
                     let ev = self.pop_raw();
-                    self.bytes = self.bytes.saturating_sub(*ev.header().payload_size_bytes());
+                    let ev_bytes = headers
+                        .peek_header(ev)
+                        .map(|h| *h.payload_size_bytes())
+                        .unwrap_or(0);
+                    self.bytes = self.bytes.saturating_sub(ev_bytes);
+                    last_evicted = ev;
                 }
 
-                // If the single item cannot fit even in an empty queue, reject.
                 if policy.caps.at_or_above_hard(0, item_bytes) {
                     return EnqueueResult::Rejected;
                 }
-
-                // Check physical fullness or remaining hard-cap violation.
                 if self.is_full() || policy.caps.at_or_above_hard(self.len, self.bytes) {
                     return EnqueueResult::Rejected;
                 }
 
                 self.bytes = self.bytes.saturating_add(item_bytes);
-                self.push_raw(item);
-                EnqueueResult::Enqueued
+                self.push_raw(token);
+
+                if last_evicted.is_invalid() {
+                    EnqueueResult::Enqueued
+                } else {
+                    EnqueueResult::Evicted(last_evicted)
+                }
             }
         }
     }
 
-    /// Try to pop a single message.
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
         if self.len == 0 {
             return Err(QueueError::Empty);
         }
-        let item = self.pop_raw();
-        self.bytes = self
-            .bytes
-            .saturating_sub(*item.header().payload_size_bytes());
-        Ok(item)
+        // Peek header before popping to update byte tracking.
+        let front_token = self.buf[self.head];
+        let front_bytes = headers
+            .peek_header(front_token)
+            .map(|h| *h.payload_size_bytes())
+            .unwrap_or(0);
+
+        let token = self.pop_raw();
+        self.bytes = self.bytes.saturating_sub(front_bytes);
+        Ok(token)
     }
 
-    /// Snapshot occupancy for telemetry / admission decisions.
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
-        let items = self.len;
-        let bytes = self.bytes;
-        let watermark = policy.watermark(items, bytes);
-        EdgeOccupancy {
-            items,
-            bytes,
-            watermark,
-        }
+        let watermark = policy.watermark(self.len, self.bytes);
+        EdgeOccupancy::new(self.len, self.bytes, watermark)
     }
 
-    /// Peek at the front item without removing it.
-    ///
-    /// Returns `PeekResponse::Borrowed(&Message<P>)` for zero-copy paths.
-    fn try_peek(&self) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         if self.len == 0 {
             return Err(QueueError::Empty);
         }
-        Ok(PeekResponse::Borrowed(&self.buf[self.head]))
+        Ok(self.buf[self.head])
     }
 
-    /// Peek at the item at logical position `index` from the front without removing it.
-    ///
-    /// - `index == 0` is equivalent to `try_peek()`.
-    /// - Returns `QueueError::Empty` if the queue is empty **or** if `index >= len`.
-    ///
-    /// This method is used by schedulers/contexts to check batch readiness for
-    /// policies like `(fixed_n, max_delta_t)` without mutating the queue.
-    #[inline]
-    fn try_peek_at(&self, index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
-        if self.len == 0 {
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
+        if self.len == 0 || index >= self.len {
             return Err(QueueError::Empty);
         }
-        if index >= self.len {
-            return Err(QueueError::Empty);
-        }
-
         let pos = (self.head + index) % N;
-        Ok(PeekResponse::Borrowed(&self.buf[pos]))
+        Ok(self.buf[pos])
     }
 
-    /// Pop a batch of items according to `BatchingPolicy`.
-    ///
-    /// - Disjoint windows: pop up to `fixed_n` or `max_delta_t`.
-    /// - Sliding windows: return `size` items but only pop/advance `stride` items.
-    /// - `fixed_n` and `max_delta_t` combine: stop when either limit reached.
-    /// - No `fixed_n` or `max_delta_t`: treat as `fixed_n` = 1.
-    fn try_pop_batch(
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         use crate::policy::WindowKind;
 
         if self.len == 0 {
             return Err(QueueError::Empty);
         }
 
-        // Normalize to make live items contiguous at buf[0..len].
         self.normalize();
-
-        // Keep old len for later arithmetic.
         let old_len = self.len;
 
-        // Extract policy knobs.
         let fixed_opt = *policy.fixed_n();
         let delta_t_opt = *policy.max_delta_t();
         let window_kind = policy.window_kind();
 
-        // If both caps are absent, treat as fixed_n = 1 (per your tightened semantics).
         let effective_fixed: Option<usize> = if fixed_opt.is_none() && delta_t_opt.is_none() {
             Some(1)
         } else {
             fixed_opt
         };
 
-        // Compute how many items are within max_delta_t relative to the front, if any.
+        // Delta-t check via HeaderStore.
         let mut delta_count = self.len;
         if let Some(cap) = delta_t_opt {
-            // Use creation_tick for age calculation.
-            let front_ticks: crate::types::Ticks = *self.buf[0].header().creation_tick();
-            let mut c = 0usize;
-            while c < self.len {
-                let tick = *self.buf[c].header().creation_tick();
-                let delta = tick.saturating_sub(front_ticks);
-                if delta <= cap {
-                    c += 1;
-                } else {
-                    break;
+            if let Ok(front_header) = headers.peek_header(self.buf[0]) {
+                let front_ticks = *front_header.creation_tick();
+                let mut c = 0usize;
+                while c < self.len {
+                    if let Ok(h) = headers.peek_header(self.buf[c]) {
+                        let tick = *h.creation_tick();
+                        let delta = tick.saturating_sub(front_ticks);
+                        if delta <= cap {
+                            c += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
+                delta_count = c;
             }
-            delta_count = c;
         }
 
-        // Helper to apply effective fixed-N cap (if present).
         let apply_fixed = |limit: usize| -> usize {
             if let Some(n) = effective_fixed {
                 core::cmp::min(limit, n)
@@ -314,97 +276,83 @@ impl<P: Payload + Clone + Default, const N: usize> Edge for StaticRing<Message<P
             }
         };
 
-        // --- Disjoint windows: pop up to fixed / delta_count.
+        // --- Disjoint windows
         if let WindowKind::Disjoint = window_kind {
             let take_n = apply_fixed(core::cmp::min(self.len, delta_count));
             if take_n == 0 {
                 return Err(QueueError::Empty);
             }
 
-            // Advance logical state first (normalized head == 0).
+            // Update byte tracking for popped items.
+            let mut dropped_bytes = 0usize;
+            for i in 0..take_n {
+                if let Ok(h) = headers.peek_header(self.buf[i]) {
+                    dropped_bytes = dropped_bytes.saturating_add(*h.payload_size_bytes());
+                }
+            }
+            self.bytes = self.bytes.saturating_sub(dropped_bytes);
+
             let new_head = take_n % N;
             self.len = old_len - take_n;
             self.head = new_head;
             self.tail = (self.head + self.len) % N;
 
-            // Subtract bytes for the popped items.
-            let mut dropped_bytes = 0usize;
-            for i in 0..take_n {
-                dropped_bytes =
-                    dropped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
-            }
-            self.bytes = self.bytes.saturating_sub(dropped_bytes);
-
-            // Return a borrowed slice covering the popped items.
             let slice = &mut self.buf[..take_n];
             return Ok(BatchView::from_borrowed(slice, take_n));
         }
 
-        // --- Sliding windows: present `size` but pop `stride`.
+        // --- Sliding windows
         if let WindowKind::Sliding(sw) = window_kind {
             let stride = *sw.stride();
             let size = effective_fixed.unwrap_or(1);
 
-            // Determine how many items we can present, bounded by availability, size, delta_count, and fixed.
             let mut max_present = core::cmp::min(self.len, size);
             max_present = apply_fixed(core::cmp::min(max_present, delta_count));
-
-            // How many to actually pop from the front (stride), bounded by availability.
             let stride_to_pop = core::cmp::min(stride, self.len);
 
             if max_present == 0 {
                 return Err(QueueError::Empty);
             }
 
-            // Advance logical state by stride_to_pop (we pop only stride).
+            let mut popped_bytes = 0usize;
+            for i in 0..stride_to_pop {
+                if let Ok(h) = headers.peek_header(self.buf[i]) {
+                    popped_bytes = popped_bytes.saturating_add(*h.payload_size_bytes());
+                }
+            }
+            self.bytes = self.bytes.saturating_sub(popped_bytes);
+
             let new_head = stride_to_pop % N;
             self.len = old_len - stride_to_pop;
             self.head = new_head;
             self.tail = (self.head + self.len) % N;
 
-            // Subtract bytes only for the popped items.
-            let mut popped_bytes = 0usize;
-            for i in 0..stride_to_pop {
-                popped_bytes =
-                    popped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
-            }
-            self.bytes = self.bytes.saturating_sub(popped_bytes);
-
-            // Return a borrowed slice of `max_present` items (first `stride_to_pop` are popped).
             let slice = &mut self.buf[..max_present];
             return Ok(BatchView::from_borrowed(slice, max_present));
         }
 
-        // --- Fixed-N and/or max_delta_t (non-sliding, non-disjoint).
+        // --- Default (non-sliding, non-disjoint)
         let mut take_n = core::cmp::min(self.len, delta_count);
         take_n = apply_fixed(take_n);
-
         if take_n == 0 {
             return Err(QueueError::Empty);
         }
 
-        // Advance logical state by take_n.
+        let mut dropped_bytes = 0usize;
+        for i in 0..take_n {
+            if let Ok(h) = headers.peek_header(self.buf[i]) {
+                dropped_bytes = dropped_bytes.saturating_add(*h.payload_size_bytes());
+            }
+        }
+        self.bytes = self.bytes.saturating_sub(dropped_bytes);
+
         let new_head = take_n % N;
         self.len = old_len - take_n;
         self.head = new_head;
         self.tail = (self.head + self.len) % N;
 
-        // Subtract bytes for the popped items.
-        let mut dropped_bytes = 0usize;
-        for i in 0..take_n {
-            dropped_bytes =
-                dropped_bytes.saturating_add(*self.buf[i].header().payload_size_bytes());
-        }
-        self.bytes = self.bytes.saturating_sub(dropped_bytes);
-
         let slice = &mut self.buf[..take_n];
         Ok(BatchView::from_borrowed(slice, take_n))
-    }
-}
-
-impl<T: Default + Clone, const N: usize> Default for StaticRing<T, N> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -413,7 +361,5 @@ mod tests {
     use super::*;
 
     // Runs the full Edge contract suite against StaticRing<Message<u32>, 16>.
-    crate::run_edge_contract_tests!(static_ring_contract, || {
-        StaticRing::<Message<u32>, 16>::new()
-    });
+    crate::run_edge_contract_tests!(static_ring_contract, || { StaticRing::<16>::new() });
 }

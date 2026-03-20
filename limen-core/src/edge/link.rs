@@ -1,34 +1,28 @@
 //! Edge graph-link and descriptor types.
 
-#[cfg(feature = "std")]
-use crate::edge::PeekResponse;
 use crate::{
     edge::{Edge, EdgeOccupancy, EnqueueResult},
     errors::QueueError,
-    message::{payload::Payload, Message},
     policy::EdgePolicy,
-    prelude::BatchView,
-    types::{EdgeIndex, PortId},
+    prelude::{BatchView, HeaderStore},
+    types::{EdgeIndex, MessageToken, PortId},
 };
 
 /// A lightweight descriptor that **links to** the concrete queue instance
 /// backing a graph edge, along with its routing and policy metadata.
 ///
-/// Unlike a pure descriptor, `EdgeLink` **borrows** (`&'a mut`) the queue
+/// Unlike a pure descriptor, `EdgeLink` **owns** the queue
 /// implementation. This keeps it zero-alloc and allows direct, policy-aware
 /// operations on the buffer.
 ///
-/// - `'a`: lifetime of the borrowed queue
-/// - `Q`: concrete queue type implementing `SpscQueue<Item = Message<P>>`
-/// - `P`: message payload type
+/// - `Q`: concrete queue type implementing `Edge`
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct EdgeLink<Q, P>
+pub struct EdgeLink<Q>
 where
-    P: Payload,
-    Q: Edge<Item = Message<P>>,
+    Q: Edge,
 {
-    /// Borrowed handle to the concrete queue instance for this edge.
+    /// Owned handle to the concrete queue instance for this edge.
     queue: Q,
 
     /// Unique identifier of this edge in the graph.
@@ -45,17 +39,13 @@ where
 
     /// Optional static name used for diagnostics or graph tooling.
     name: Option<&'static str>,
-
-    /// Marker to bind `P` without storing it.
-    _payload_marker: core::marker::PhantomData<P>,
 }
 
-impl<Q, P> EdgeLink<Q, P>
+impl<Q> EdgeLink<Q>
 where
-    P: Payload,
-    Q: Edge<Item = Message<P>>,
+    Q: Edge,
 {
-    /// Construct a new `EdgeLink` that borrows the given queue and records its metadata.
+    /// Construct a new `EdgeLink` that owns the given queue and records its metadata.
     #[inline]
     pub fn new(
         queue: Q,
@@ -72,7 +62,6 @@ where
             downstream_port,
             policy,
             name,
-            _payload_marker: core::marker::PhantomData,
         }
     }
 
@@ -82,7 +71,7 @@ where
         &self.queue
     }
 
-    /// Get a mutable reference to the inner queue
+    /// Get a mutable reference to the inner queue.
     #[inline]
     pub fn queue_mut(&mut self) -> &mut Q {
         &mut self.queue
@@ -130,50 +119,45 @@ where
     }
 }
 
-impl<Q, P> Edge for EdgeLink<Q, P>
+impl<Q> Edge for EdgeLink<Q>
 where
-    P: Payload,
-    Q: Edge<Item = Message<P>>,
+    Q: Edge,
 {
-    type Item = Message<P>;
-
-    #[inline]
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult {
-        self.queue.try_push(item, policy)
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
+        self.queue.try_push(token, policy, headers)
     }
 
-    #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
-        self.queue.try_pop()
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
+        self.queue.try_pop(headers)
     }
 
-    #[inline]
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
         self.queue.occupancy(policy)
     }
 
-    #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         self.queue.try_peek()
     }
 
-    #[inline]
-    fn try_peek_at(
-        &self,
-        index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
         self.queue.try_peek_at(index)
     }
 
-    #[inline]
-    fn try_pop_batch(
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
-        self.queue.try_pop_batch(policy)
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
+        self.queue.try_pop_batch(policy, headers)
     }
 }
 
@@ -242,10 +226,9 @@ impl EdgeDescriptor {
 #[cfg(feature = "std")]
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct ConcurrentEdgeLink<Q, P>
+pub struct ConcurrentEdgeLink<Q>
 where
-    P: Payload,
-    Q: Edge<Item = Message<P>>,
+    Q: Edge + Send + 'static,
 {
     /// Shared, thread-safe buffer for this edge.
     buf: std::sync::Arc<std::sync::Mutex<Q>>,
@@ -259,15 +242,12 @@ where
     policy: EdgePolicy,
     /// Optional static name for diagnostics/tooling.
     name: Option<&'static str>,
-    /// Bind payload type at the type level without storing it.
-    _marker: core::marker::PhantomData<P>,
 }
 
 #[cfg(feature = "std")]
-impl<Q, P> ConcurrentEdgeLink<Q, P>
+impl<Q> ConcurrentEdgeLink<Q>
 where
-    P: Payload,
-    Q: Edge<Item = Message<P>>,
+    Q: Edge + Send + 'static,
 {
     /// Create from a concrete queue and edge metadata.
     ///
@@ -289,7 +269,6 @@ where
             downstream,
             policy,
             name,
-            _marker: core::marker::PhantomData,
         }
     }
 
@@ -318,104 +297,79 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<Q, P> crate::edge::Edge for ConcurrentEdgeLink<Q, P>
+impl<Q> Edge for ConcurrentEdgeLink<Q>
 where
-    P: crate::message::payload::Payload + Clone,
-    Q: crate::edge::Edge<Item = crate::message::Message<P>> + Send + 'static,
+    Q: Edge + Send + 'static,
 {
-    type Item = crate::message::Message<P>;
-
-    #[inline]
-    fn try_push(
+    fn try_push<H: HeaderStore>(
         &mut self,
-        item: Self::Item,
-        policy: &crate::policy::EdgePolicy,
-    ) -> crate::edge::EnqueueResult {
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult {
         match self.buf.lock() {
-            Ok(mut q) => q.try_push(item, policy),
-            Err(_) => crate::edge::EnqueueResult::Rejected,
+            Ok(mut q) => q.try_push(token, policy, headers),
+            Err(_) => EnqueueResult::Rejected,
         }
     }
 
-    #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, crate::errors::QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError> {
         match self.buf.lock() {
-            Ok(mut q) => q.try_pop(),
-            Err(_) => Err(crate::errors::QueueError::Poisoned),
+            Ok(mut q) => q.try_pop(headers),
+            Err(_) => Err(QueueError::Poisoned),
         }
     }
 
-    #[inline]
-    fn occupancy(&self, policy: &crate::policy::EdgePolicy) -> crate::edge::EdgeOccupancy {
+    fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
         match self.buf.lock() {
             Ok(q) => q.occupancy(policy),
-            Err(_) => crate::edge::EdgeOccupancy {
-                items: 0,
-                bytes: 0,
-                watermark: crate::policy::WatermarkState::AtOrAboveHard,
-            },
+            Err(_) => EdgeOccupancy::new(0, 0, crate::policy::WatermarkState::AtOrAboveHard),
         }
     }
 
-    #[inline]
-    fn try_peek(&self) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+    fn is_empty(&self) -> bool {
         match self.buf.lock() {
-            Ok(q) => match q.try_peek() {
-                Ok(peek) => match peek {
-                    // Convert a borrowed reference into an owned item while holding the lock,
-                    // so the returned PeekResponse::Owned does not borrow from the mutex guard.
-                    PeekResponse::Borrowed(b) => {
-                        let owned = b.clone();
-                        Ok(PeekResponse::Owned(owned))
-                    }
-
-                    #[cfg(feature = "alloc")]
-                    PeekResponse::Owned(o) => Ok(crate::edge::PeekResponse::Owned(o)),
-                },
-                Err(e) => Err(e),
-            },
-            Err(_) => Err(crate::errors::QueueError::Poisoned),
+            Ok(q) => q.is_empty(),
+            Err(_) => true,
         }
     }
 
-    #[inline]
-    fn try_peek_at(&self, index: usize) -> Result<PeekResponse<'_, Self::Item>, QueueError> {
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         match self.buf.lock() {
-            Ok(q) => match q.try_peek_at(index) {
-                Ok(peek) => match peek {
-                    // Must not return a borrow tied to the mutex guard.
-                    PeekResponse::Borrowed(b) => {
-                        let owned = b.clone();
-                        Ok(PeekResponse::Owned(owned))
-                    }
-
-                    #[cfg(feature = "alloc")]
-                    PeekResponse::Owned(o) => Ok(PeekResponse::Owned(o)),
-                },
-                Err(e) => Err(e),
-            },
-            Err(_) => Err(crate::errors::QueueError::Poisoned),
+            Ok(q) => q.try_peek(),
+            Err(_) => Err(QueueError::Poisoned),
         }
     }
 
-    #[inline]
-    fn try_pop_batch(
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError> {
+        match self.buf.lock() {
+            Ok(q) => q.try_peek_at(index),
+            Err(_) => Err(QueueError::Poisoned),
+        }
+    }
+
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         policy: &crate::policy::BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         match self.buf.lock() {
             Ok(mut q) => {
-                let batch = q.try_pop_batch(policy)?;
+                let batch = q.try_pop_batch(policy, headers)?;
 
-                // We must not return a borrow tied to the mutex guard, so convert to owned.
-                // This preserves semantics for disjoint windows (moved items) and sliding
-                // windows (moved + cloned peek items) as established in the inner queues.
-                Ok(batch.into_owned())
+                // The batch borrows from the inner queue's buffer, which is
+                // behind the MutexGuard. We must materialize the tokens before
+                // the guard drops. MessageToken is Copy (4 bytes), so this is
+                // cheap — identical to ConcurrentQueue::try_pop_batch.
+                let mut owned: alloc::vec::Vec<MessageToken> =
+                    alloc::vec::Vec::with_capacity(batch.len());
+                for &tok in batch.iter() {
+                    owned.push(tok);
+                }
+
+                Ok(BatchView::from_owned(owned))
             }
-            Err(_) => Err(crate::errors::QueueError::Poisoned),
+            Err(_) => Err(QueueError::Poisoned),
         }
     }
 }
@@ -425,7 +379,11 @@ mod tests {
     use super::*;
 
     use crate::edge::bench::TestSpscRingBuf;
-    use crate::message::MessageHeader;
+    use crate::edge::{Edge, EnqueueResult};
+    use crate::errors::QueueError;
+    use crate::memory::manager::MemoryManager;
+    use crate::memory::static_manager::StaticMemoryManager;
+    use crate::message::{Message, MessageHeader};
     use crate::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
     use crate::types::{EdgeIndex, NodeIndex, PortId, PortIndex, Ticks};
 
@@ -435,11 +393,17 @@ mod tests {
         OverBudgetAction::Drop,
     );
 
-    fn make_link() -> EdgeLink<TestSpscRingBuf<Message<u32>, 16>, u32> {
-        let queue = TestSpscRingBuf::<Message<u32>, 16>::new();
+    const MGR_DEPTH: usize = 32;
 
+    fn make_msg_u32(tick: u64) -> Message<u32> {
+        let mut h = MessageHeader::empty();
+        h.set_creation_tick(Ticks::new(tick));
+        Message::new(h, 0u32)
+    }
+
+    fn make_link() -> EdgeLink<TestSpscRingBuf<16>> {
+        let queue = TestSpscRingBuf::<16>::new();
         let id = EdgeIndex::new(0);
-
         let upstream_port = PortId::new(NodeIndex::new(0), PortIndex::new(0));
         let downstream_port = PortId::new(NodeIndex::new(1), PortIndex::new(0));
 
@@ -453,6 +417,7 @@ mod tests {
         )
     }
 
+    // --- Run the full Edge contract suite against EdgeLink ---
     crate::run_edge_contract_tests!(edge_link_contract, || make_link());
 
     #[test]
@@ -485,29 +450,78 @@ mod tests {
     }
 
     #[test]
-    fn edge_link_forwards_to_inner_queue_smoke() {
+    fn edge_link_forwards_to_inner_queue() {
         let mut link = make_link();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
 
-        let mut header = MessageHeader::empty();
-        header.set_creation_tick(Ticks::new(123));
-        let msg = Message::new(header, 0u32);
+        // Push a token via the link.
+        let m = make_msg_u32(42);
+        let token = mgr.store(m).expect("store");
+        assert_eq!(link.try_push(token, &POLICY, &mgr), EnqueueResult::Enqueued);
 
-        assert_eq!(
-            link.try_push(msg, &POLICY),
-            crate::edge::EnqueueResult::Enqueued
-        );
-        let popped = link.try_pop().expect("pop");
-        assert_eq!((*popped.header().creation_tick()).as_u64(), &123u64);
+        // Peek via the link.
+        let peek_token = link.try_peek().expect("peek");
+        assert_eq!(peek_token, token);
+        let peek_h = mgr.peek_header(peek_token).expect("peek header");
+        assert_eq!(*peek_h.creation_tick(), Ticks::new(42));
+
+        // Pop via the link.
+        let popped = link.try_pop(&mgr).expect("pop");
+        assert_eq!(popped, token);
+        let popped_h = mgr.peek_header(popped).expect("popped header");
+        assert_eq!(*popped_h.creation_tick(), Ticks::new(42));
+
+        // Back to empty.
+        assert!(link.is_empty());
+        assert!(matches!(link.try_pop(&mgr), Err(QueueError::Empty)));
     }
 
-    #[cfg(all(test, feature = "std"))]
+    #[test]
+    fn edge_link_occupancy_delegates() {
+        let mut link = make_link();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+        let occ0 = link.occupancy(&POLICY);
+        assert_eq!(*occ0.items(), 0usize);
+
+        let t1 = mgr.store(make_msg_u32(1)).expect("store");
+        let t2 = mgr.store(make_msg_u32(2)).expect("store");
+        assert_eq!(link.try_push(t1, &POLICY, &mgr), EnqueueResult::Enqueued);
+        assert_eq!(link.try_push(t2, &POLICY, &mgr), EnqueueResult::Enqueued);
+
+        let occ2 = link.occupancy(&POLICY);
+        assert_eq!(*occ2.items(), 2usize);
+    }
+
+    #[test]
+    fn edge_link_queue_accessor() {
+        let mut link = make_link();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+        // Push via the link, then verify through the inner queue accessor.
+        let token = mgr.store(make_msg_u32(7)).expect("store");
+        assert_eq!(link.try_push(token, &POLICY, &mgr), EnqueueResult::Enqueued);
+
+        assert!(!link.queue().is_empty());
+
+        // Pop via inner queue_mut.
+        let popped = link.queue_mut().try_pop(&mgr).expect("pop via queue_mut");
+        assert_eq!(popped, token);
+        assert!(link.queue().is_empty());
+    }
+
+    #[cfg(feature = "std")]
     mod concurrent_tests {
         use super::*;
 
         use crate::edge::bench::TestSpscRingBuf;
-        use crate::message::MessageHeader;
+        use crate::edge::{Edge, EnqueueResult};
+        use crate::errors::QueueError;
+        use crate::memory::manager::MemoryManager;
+        use crate::memory::static_manager::StaticMemoryManager;
+        use crate::message::{Message, MessageHeader};
         use crate::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
-        use crate::types::{EdgeIndex, NodeIndex, PortId, PortIndex, Ticks};
+        use crate::types::{EdgeIndex, MessageToken, NodeIndex, PortId, PortIndex, Ticks};
 
         const POLICY: EdgePolicy = EdgePolicy::new(
             QueueCaps::new(8, 6, None, None),
@@ -515,11 +529,17 @@ mod tests {
             OverBudgetAction::Drop,
         );
 
-        fn make_concurrent_link() -> ConcurrentEdgeLink<TestSpscRingBuf<Message<u32>, 16>, u32> {
-            let queue = TestSpscRingBuf::<Message<u32>, 16>::new();
+        const MGR_DEPTH: usize = 32;
 
+        fn make_msg_u32(tick: u64) -> Message<u32> {
+            let mut h = MessageHeader::empty();
+            h.set_creation_tick(Ticks::new(tick));
+            Message::new(h, 0u32)
+        }
+
+        fn make_concurrent_link() -> ConcurrentEdgeLink<TestSpscRingBuf<16>> {
+            let queue = TestSpscRingBuf::<16>::new();
             let id = EdgeIndex::new(0);
-
             let upstream = PortId::new(NodeIndex::new(0), PortIndex::new(0));
             let downstream = PortId::new(NodeIndex::new(1), PortIndex::new(0));
 
@@ -533,7 +553,9 @@ mod tests {
             )
         }
 
-        crate::run_edge_contract_tests!(concurrent_edge_link_contract, || make_concurrent_link());
+        crate::run_edge_contract_tests!(concurrent_edge_link_contract, || {
+            make_concurrent_link()
+        });
 
         #[test]
         fn concurrent_edge_link_metadata_and_descriptor() {
@@ -555,26 +577,74 @@ mod tests {
         }
 
         #[test]
+        fn concurrent_edge_link_push_pop_through_impl() {
+            let mut link = make_concurrent_link();
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+            let m = make_msg_u32(99);
+            let token = mgr.store(m).expect("store");
+
+            assert_eq!(link.try_push(token, &POLICY, &mgr), EnqueueResult::Enqueued);
+            assert!(!link.is_empty());
+
+            let peek_token = link.try_peek().expect("peek");
+            assert_eq!(peek_token, token);
+
+            let popped = link.try_pop(&mgr).expect("pop");
+            assert_eq!(popped, token);
+            let h = mgr.peek_header(popped).expect("header");
+            assert_eq!(*h.creation_tick(), Ticks::new(99));
+
+            assert!(link.is_empty());
+        }
+
+        #[test]
         fn concurrent_edge_link_arc_shares_underlying_queue() {
             let link = make_concurrent_link();
             let arc_a = link.arc();
             let arc_b = link.arc();
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
 
+            // Push via arc_a.
+            let m = make_msg_u32(55);
+            let token = mgr.store(m).expect("store");
             {
                 let mut q = arc_a.lock().expect("lock a");
-                let mut header = MessageHeader::empty();
-                header.set_creation_tick(Ticks::new(55));
-                let msg = Message::new(header, 0u32);
-
-                let res = q.try_push(msg, &POLICY);
-                assert_eq!(res, crate::edge::EnqueueResult::Enqueued);
+                let res = q.try_push(token, &POLICY, &mgr);
+                assert_eq!(res, EnqueueResult::Enqueued);
             }
 
+            // Pop via arc_b — should see the same token.
             {
                 let mut q = arc_b.lock().expect("lock b");
-                let popped = q.try_pop().expect("pop");
-                assert_eq!((*popped.header().creation_tick()).as_u64(), &55u64);
+                let popped = q.try_pop(&mgr).expect("pop");
+                assert_eq!(popped, token);
+                let h = mgr.peek_header(popped).expect("header");
+                assert_eq!(*h.creation_tick(), Ticks::new(55));
             }
+        }
+
+        #[test]
+        fn concurrent_edge_link_fifo_order() {
+            let mut link = make_concurrent_link();
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+            let mut tokens = [MessageToken::INVALID; 4];
+            for (i, tick) in (10u64..=13u64).enumerate() {
+                tokens[i] = mgr.store(make_msg_u32(tick)).expect("store");
+                assert_eq!(
+                    link.try_push(tokens[i], &POLICY, &mgr),
+                    EnqueueResult::Enqueued
+                );
+            }
+
+            for (i, expected_tick) in (10u64..=13u64).enumerate() {
+                let popped = link.try_pop(&mgr).expect("pop");
+                assert_eq!(popped, tokens[i]);
+                let h = mgr.peek_header(popped).expect("header");
+                assert_eq!(*h.creation_tick(), Ticks::new(expected_tick));
+            }
+            assert!(matches!(link.try_pop(&mgr), Err(QueueError::Empty)));
         }
     }
 }

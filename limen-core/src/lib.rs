@@ -58,3 +58,23 @@ pub mod node;
 pub mod runtime;
 
 pub mod prelude;
+
+// **PR NOTES**:
+// - step context must have scratch buffer = nodes n_max - All nodes should expose an n_max (or should be configurable), this should probably be separate to node policy fixed_n, fixed_n should be the desired batch size and n_max the capacity, these should bpth be configurabe. (only required for stride enabled batches or concurrent graphs.)
+// - fix feature boundary (edges are confused)(default, alloc (untilises alloc), std (enables multithreading))
+// - can we remove concurrentedgelink and use a concurrent friendly memory manager instead? (maybe not..)
+// - single interface for nodes to use.
+
+// Phase 3d: Eviction design note
+//
+//  The current Evict(n) path can evict multiple tokens but EnqueueResult::Evicted only returns one. For v0.1.0, this is acceptable because:
+//  - Evict(n) with n>1 is rare (only EvictUntilBelowHard evicts multiple)
+//  - StepContext needs to free ALL evicted tokens, not just the last one
+//
+//  Better approach: StepContext should handle eviction pre-push (call get_admission_decision, pop evicted tokens itself, free them, then push). The edge's try_push would only handle Admit/DropNewest/Reject/Block. Eviction
+//   logic moves to StepContext.
+//
+//  For now, the implementation above returns the last evicted token. If multiple evictions are needed, StepContext can pre-check admission and handle eviction externally before calling try_push. This is a minor TODO for
+//  Phase 5 (StepContext).
+//
+// REMOVE ADMISSION INFO!!!

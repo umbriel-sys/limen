@@ -25,8 +25,10 @@ use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
 use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
 use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy};
-use crate::prelude::{BatchView, EdgeDescriptor, PlatformClock, Telemetry};
-use crate::types::{EdgeIndex, NodeIndex, PortId};
+use crate::prelude::{
+    BatchView, EdgeDescriptor, HeaderStore, MemoryManager, PlatformClock, Telemetry,
+};
+use crate::types::{EdgeIndex, MessageToken, NodeIndex, PortId};
 
 use core::marker::PhantomData;
 
@@ -165,7 +167,7 @@ where
 impl<S, OutP, const OUT: usize> Node<0, OUT, (), OutP> for SourceNode<S, OutP, OUT>
 where
     S: Source<OutP, OUT>,
-    OutP: Payload,
+    OutP: Payload + Copy,
 {
     #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
@@ -216,19 +218,21 @@ where
         Ok(())
     }
 
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    #[inline]
+    fn process_message<'graph, 'clock, OutQ, OutM, C, Tel>(
         &mut self,
         _msg: &Message<()>,
-        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
+        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        OutQ: Edge<Item = Message<OutP>>,
+        OutQ: Edge,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         if let Some((port, msg)) = self.src.try_produce() {
             match out_ctx.out_try_push(port, msg) {
-                EnqueueResult::Enqueued => Ok(StepResult::MadeProgress),
+                EnqueueResult::Enqueued | EnqueueResult::Evicted(_) => Ok(StepResult::MadeProgress),
                 EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
                     Ok(StepResult::Backpressured)
                 }
@@ -239,19 +243,21 @@ where
     }
 
     #[inline]
-    fn step<'g, 't, 'ck, InQ, OutQ, C, T>(
+    fn step<'g, 't, 'ck, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'g, 't, 'ck, 0, OUT, (), OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<'g, 't, 'ck, 0, OUT, (), OutP, InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<()>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<()>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         if let Some((port, msg)) = self.src.try_produce() {
             match ctx.out_try_push(port, msg) {
-                EnqueueResult::Enqueued => Ok(StepResult::MadeProgress),
+                EnqueueResult::Enqueued | EnqueueResult::Evicted(_) => Ok(StepResult::MadeProgress),
                 EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
                     Ok(StepResult::Backpressured)
                 }
@@ -261,15 +267,31 @@ where
         }
     }
 
-    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, 0, OUT, (), OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            0,
+            OUT,
+            (),
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<()>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<()>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         let ingress_occ = self.source_ref().ingress_occupancy();
         if *ingress_occ.items() == 0 {
@@ -284,16 +306,15 @@ where
         let has_batch = match (fixed_opt, delta_opt) {
             (Some(fixed_n), None) => *ingress_occ.items() >= fixed_n,
             (None, Some(_max_delta_t)) => {
-                // Span constraint only: a non-empty queue can always produce a span-valid batch of size 1.
+                // Span constraint only: a non-empty queue can always produce a
+                // span-valid batch of size 1.
                 true
             }
             (Some(fixed_n), Some(max_delta_t)) => {
                 // Must be able to form a full fixed_n batch first.
                 if *ingress_occ.items() < fixed_n {
-                    // Not enough items to form the fixed-size batch.
                     false
                 } else {
-                    // Use the Source-provided non-blocking peek to get creation ticks.
                     let first_tick_opt = self.src.peek_ingress_creation_tick(0);
                     let last_tick_opt = self
                         .src
@@ -302,18 +323,14 @@ where
                     match (first_tick_opt, last_tick_opt) {
                         (Some(first_ticks), Some(last_ticks)) => {
                             let span = last_ticks.saturating_sub(first_ticks);
-                            // Compare numeric span against configured max_delta_t.
-                            // If max_delta_t is a wrapper, adjust accessor as needed
-                            // (e.g. `max_delta_t.as_u64()`).
                             span <= *max_delta_t.as_u64()
                         }
-                        // If ticks unavailable, we cannot validate span -> not ready.
                         _ => false,
                     }
                 }
             }
             (None, None) => {
-                // No batching configured: treat as single-message readiness (queue non-empty here).
+                // No batching configured: treat as single-message readiness.
                 true
             }
         };
@@ -322,29 +339,21 @@ where
             return Ok(StepResult::NoInput);
         }
 
-        // Desired batch size: fixed_n when present, otherwise 1.
         let batch_n: usize = fixed_opt.unwrap_or(1);
 
-        // Attempt to produce up to batch_n messages (consume only after validation).
         let mut made_progress = false;
 
         for _ in 0..batch_n {
             match self.src.try_produce() {
-                Some((port, msg)) => {
-                    match ctx.out_try_push(port, msg) {
-                        EnqueueResult::Enqueued => {
-                            made_progress = true;
-                            // continue attempting more items
-                        }
-                        EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
-                            // We produced an item but couldn't push it due to backpressure.
-                            // Return Backpressured so caller knows not all items were delivered.
-                            return Ok(StepResult::Backpressured);
-                        }
+                Some((port, msg)) => match ctx.out_try_push(port, msg) {
+                    EnqueueResult::Enqueued | EnqueueResult::Evicted(_) => {
+                        made_progress = true;
                     }
-                }
+                    EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
+                        return Ok(StepResult::Backpressured);
+                    }
+                },
                 None => {
-                    // Source had no more items right now.
                     break;
                 }
             }
@@ -358,17 +367,17 @@ where
     }
 
     #[inline]
-    fn on_watchdog_timeout<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<StepResult, NodeError>
+    fn on_watchdog_timeout<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<StepResult, NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(StepResult::WaitingOnExternal)
     }
 
     #[inline]
-    fn stop<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<(), NodeError>
+    fn stop<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(())
     }
@@ -412,29 +421,28 @@ where
     OutP: Payload,
     S: Source<OutP, OUT> + ?Sized,
 {
-    type Item = Message<OutP>;
     #[inline]
-    fn try_push(&mut self, _i: Self::Item, _p: &EdgePolicy) -> EnqueueResult {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
         EnqueueResult::Rejected
     }
 
     #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
     #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // No buffering — nothing to peek at.
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
     #[inline]
-    fn try_peek_at(
-        &self,
-        _index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // No buffering — nothing to peek at.
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
@@ -444,13 +452,16 @@ where
     }
 
     #[inline]
-    fn try_pop_batch(
+    fn is_empty(&self) -> bool {
+        *self.src.ingress_occupancy().items() == 0
+    }
+
+    #[inline]
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         _policy: &BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         Err(QueueError::Empty)
     }
 }
@@ -521,27 +532,25 @@ where
     OutP: Payload,
     S: Source<OutP, OUT> + ?Sized,
 {
-    type Item = Message<OutP>;
-
     #[inline]
-    fn try_push(&mut self, _i: Self::Item, _pol: &EdgePolicy) -> EnqueueResult {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
         EnqueueResult::Rejected
     }
     #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // Synthetic ingress monitor has no item to peek.
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
-    fn try_peek_at(
-        &self,
-        _index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // Synthetic ingress monitor has no item to peek.
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
@@ -550,13 +559,15 @@ where
         self.edge.occupancy(policy)
     }
     #[inline]
-    fn try_pop_batch(
+    fn is_empty(&self) -> bool {
+        self.edge.is_empty()
+    }
+    #[inline]
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         _policy: &BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         Err(QueueError::Empty)
     }
 }
@@ -648,30 +659,28 @@ pub mod probe {
     }
 
     impl<P: Payload> Edge for SourceIngressProbeEdge<P> {
-        type Item = Message<P>;
-
         #[inline]
-        fn try_push(&mut self, _i: Self::Item, _p: &EdgePolicy) -> EnqueueResult {
+        fn try_push<H: HeaderStore>(
+            &mut self,
+            _token: MessageToken,
+            _policy: &EdgePolicy,
+            _headers: &H,
+        ) -> EnqueueResult {
             EnqueueResult::Rejected
         }
 
         #[inline]
-        fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+        fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
         #[inline]
-        fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Probe is a monitor only; no peekable item.
+        fn try_peek(&self) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
         #[inline]
-        fn try_peek_at(
-            &self,
-            _index: usize,
-        ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Probe is a monitor only; no peekable item.
+        fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
@@ -681,13 +690,16 @@ pub mod probe {
         }
 
         #[inline]
-        fn try_pop_batch(
+        fn is_empty(&self) -> bool {
+            self.probe.items.load(core::sync::atomic::Ordering::Relaxed) == 0
+        }
+
+        #[inline]
+        fn try_pop_batch<H: HeaderStore>(
             &mut self,
             _policy: &BatchingPolicy,
-        ) -> Result<BatchView<'_, Self::Item>, QueueError>
-        where
-            Self::Item: Payload,
-        {
+            _headers: &H,
+        ) -> Result<BatchView<'_, MessageToken>, QueueError> {
             Err(QueueError::Empty)
         }
     }
@@ -807,27 +819,25 @@ pub mod probe {
     }
 
     impl<OutP: Payload> Edge for ConcurrentIngressEdgeLink<OutP> {
-        type Item = Message<OutP>;
-
         #[inline]
-        fn try_push(&mut self, _i: Self::Item, _pol: &EdgePolicy) -> EnqueueResult {
+        fn try_push<H: HeaderStore>(
+            &mut self,
+            _token: MessageToken,
+            _policy: &EdgePolicy,
+            _headers: &H,
+        ) -> EnqueueResult {
             EnqueueResult::Rejected
         }
         #[inline]
-        fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+        fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
-        fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Concurrent probe exposes occupancy only.
+        fn try_peek(&self) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
-        fn try_peek_at(
-            &self,
-            _index: usize,
-        ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Concurrent probe exposes occupancy only.
+        fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
@@ -836,13 +846,15 @@ pub mod probe {
             self.edge.occupancy(policy)
         }
         #[inline]
-        fn try_pop_batch(
+        fn is_empty(&self) -> bool {
+            self.edge.is_empty()
+        }
+        #[inline]
+        fn try_pop_batch<H: HeaderStore>(
             &mut self,
             _policy: &BatchingPolicy,
-        ) -> Result<BatchView<'_, Self::Item>, QueueError>
-        where
-            Self::Item: Payload,
-        {
+            _headers: &H,
+        ) -> Result<BatchView<'_, MessageToken>, QueueError> {
             Err(QueueError::Empty)
         }
     }

@@ -14,8 +14,8 @@
 //!     }
 //!
 //!     edges {
-//!         0: { ty: Q32, payload: u32, from: (0,0), to: (1,0), policy: Q_32_POLICY, name: Some("e0") },
-//!         1: { ty: Q32, payload: u32, from: (1,0), to: (2,0), policy: Q_32_POLICY, name: Some("e1") }
+//!         0: { ty: Q32, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (0,0), to: (1,0), policy: Q_32_POLICY, name: Some("e0") },
+//!         1: { ty: Q32, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (1,0), to: (2,0), policy: Q_32_POLICY, name: Some("e1") }
 //!     }
 //! }
 //! ```
@@ -30,13 +30,16 @@ use crate::{
         source::{Source as _, SourceNode, EXTERNAL_INGRESS_NODE},
         Node as _, StepContext, StepResult,
     },
-    policy::{EdgePolicy, NodePolicy},
-    prelude::{EdgeDescriptor, EdgeLink, NodeDescriptor, NodeLink, PlatformClock, Telemetry},
+    policy::{AdmissionPolicy, EdgePolicy, NodePolicy, OverBudgetAction},
+    prelude::{
+        EdgeDescriptor, EdgeLink, NodeDescriptor, NodeLink, PlatformClock, StaticMemoryManager,
+        Telemetry,
+    },
     types::{EdgeIndex, NodeIndex, PortId, PortIndex},
 };
 
 // Test edge types.
-type Q32 = crate::edge::bench::TestSpscRingBuf<crate::message::Message<u32>, 8>;
+type Q32 = crate::edge::bench::TestSpscRingBuf<8>;
 const Q_32_POLICY: EdgePolicy = EdgePolicy {
     caps: crate::policy::QueueCaps {
         max_items: 8,
@@ -44,9 +47,12 @@ const Q_32_POLICY: EdgePolicy = EdgePolicy {
         max_bytes: None,
         soft_bytes: None,
     },
-    over_budget: crate::policy::OverBudgetAction::Drop,
-    admission: crate::policy::AdmissionPolicy::DropOldest,
+    over_budget: OverBudgetAction::Drop,
+    admission: AdmissionPolicy::DropOldest,
 };
+
+// Test memory manager type (one per real edge).
+type Mgr32 = StaticMemoryManager<u32, 8>;
 
 // Test source node types.
 #[allow(type_alias_bounds)]
@@ -70,7 +76,9 @@ pub struct TestPipeline<SrcClk: PlatformClock> {
         NodeLink<SnkNode, 1, 0, u32, ()>,
     ),
     /// Edges held in the graph.
-    edges: (EdgeLink<Q32, u32>, EdgeLink<Q32, u32>),
+    edges: (EdgeLink<Q32>, EdgeLink<Q32>),
+    /// Memory managers for all *real* edges in declaration order.
+    managers: (Mgr32, Mgr32),
 }
 
 impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
@@ -82,6 +90,8 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
         node_2: impl Into<SnkNode>,
         q_0: Q32,
         q_1: Q32,
+        mgr_0: Mgr32,
+        mgr_1: Mgr32,
     ) -> Self {
         let node_0: SrcNode<SrcClk> = node_0.into();
         let node_2: SnkNode = node_2.into();
@@ -97,7 +107,7 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
         );
 
         let edges = (
-            EdgeLink::<Q32, u32>::new(
+            EdgeLink::<Q32>::new(
                 q_0,
                 EdgeIndex::from(1usize),
                 PortId::new(NodeIndex::from(0usize), PortIndex::from(0usize)),
@@ -105,7 +115,7 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
                 Q_32_POLICY,
                 Some("e0"),
             ),
-            EdgeLink::<Q32, u32>::new(
+            EdgeLink::<Q32>::new(
                 q_1,
                 EdgeIndex::from(2usize),
                 PortId::new(NodeIndex::from(1usize), PortIndex::from(0usize)),
@@ -115,7 +125,13 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
             ),
         );
 
-        Self { nodes, edges }
+        let managers = (mgr_0, mgr_1);
+
+        Self {
+            nodes,
+            edges,
+            managers,
+        }
     }
 }
 
@@ -327,7 +343,7 @@ impl<SrcClk: PlatformClock> GraphNodeAccess<2> for TestPipeline<SrcClk> {
 
 // ===== GraphEdgeAccess<E> =====
 impl<SrcClk: PlatformClock> GraphEdgeAccess<1> for TestPipeline<SrcClk> {
-    type Edge = EdgeLink<Q32, u32>;
+    type Edge = EdgeLink<Q32>;
     #[inline]
     fn edge_ref(&self) -> &Self::Edge {
         &self.edges.0
@@ -338,7 +354,7 @@ impl<SrcClk: PlatformClock> GraphEdgeAccess<1> for TestPipeline<SrcClk> {
     }
 }
 impl<SrcClk: PlatformClock> GraphEdgeAccess<2> for TestPipeline<SrcClk> {
-    type Edge = EdgeLink<Q32, u32>;
+    type Edge = EdgeLink<Q32>;
     #[inline]
     fn edge_ref(&self) -> &Self::Edge {
         &self.edges.1
@@ -354,8 +370,10 @@ impl<SrcClk: PlatformClock> GraphEdgeAccess<2> for TestPipeline<SrcClk> {
 impl<SrcClk: PlatformClock> GraphNodeTypes<0, 0, 1> for TestPipeline<SrcClk> {
     type InP = ();
     type OutP = u32;
-    type InQ = NoQueue<()>;
+    type InQ = NoQueue;
     type OutQ = Q32;
+    type InM = StaticMemoryManager<(), 1>;
+    type OutM = Mgr32;
 }
 // node 1: IN=1, OUT=1
 impl<SrcClk: PlatformClock> GraphNodeTypes<1, 1, 1> for TestPipeline<SrcClk> {
@@ -363,13 +381,17 @@ impl<SrcClk: PlatformClock> GraphNodeTypes<1, 1, 1> for TestPipeline<SrcClk> {
     type OutP = u32;
     type InQ = Q32;
     type OutQ = Q32;
+    type InM = Mgr32;
+    type OutM = Mgr32;
 }
 // node 2: IN=1, OUT=0
 impl<SrcClk: PlatformClock> GraphNodeTypes<2, 1, 0> for TestPipeline<SrcClk> {
     type InP = u32;
     type OutP = ();
     type InQ = Q32;
-    type OutQ = NoQueue<()>;
+    type OutQ = NoQueue;
+    type InM = Mgr32;
+    type OutM = StaticMemoryManager<(), 1>;
 }
 
 // ===== GraphNodeContextBuilder<I, IN, OUT> =====
@@ -393,6 +415,8 @@ where
         <Self as GraphNodeTypes<0, 0, 1>>::OutP,
         <Self as GraphNodeTypes<0, 0, 1>>::InQ,
         <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
+        <Self as GraphNodeTypes<0, 0, 1>>::InM,
+        <Self as GraphNodeTypes<0, 0, 1>>::OutM,
         C,
         T,
     >
@@ -405,6 +429,10 @@ where
 
         let inputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InQ; 0] = [/* empty */];
         let outputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] = [self.edges.0.queue_mut()];
+
+        let in_managers: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::InM; 0] = [];
+        let out_managers: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::OutM; 1] =
+            [&mut self.managers.0];
 
         let in_policies: [EdgePolicy; 0] = [/* empty */];
         let out_policies: [EdgePolicy; 1] = [out0_policy];
@@ -423,11 +451,15 @@ where
             <Self as GraphNodeTypes<0, 0, 1>>::OutP,
             <Self as GraphNodeTypes<0, 0, 1>>::InQ,
             <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
+            <Self as GraphNodeTypes<0, 0, 1>>::InM,
+            <Self as GraphNodeTypes<0, 0, 1>>::OutM,
             C,
             T,
         >::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -455,6 +487,8 @@ where
                 <Self as GraphNodeTypes<0, 0, 1>>::OutP,
                 <Self as GraphNodeTypes<0, 0, 1>>::InQ,
                 <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
+                <Self as GraphNodeTypes<0, 0, 1>>::InM,
+                <Self as GraphNodeTypes<0, 0, 1>>::OutM,
                 C,
                 T,
             >,
@@ -466,13 +500,16 @@ where
         C: PlatformClock + Sized,
         T: Telemetry + Sized,
     {
-        // Disjoint borrows: nodes and edges are separate fields.
         let node = &mut self.nodes.0;
 
         let out0_policy = *self.edges.0.policy();
 
-        let inputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InQ; 0] = [];
+        let inputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InQ; 0] = [/* empty */];
         let outputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] = [self.edges.0.queue_mut()];
+
+        let in_managers: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InM; 0] = [/* empty */];
+        let out_managers: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutM; 1] =
+            [&mut self.managers.0];
 
         let in_policies: [EdgePolicy; 0] = [/* empty */];
         let out_policies: [EdgePolicy; 1] = [out0_policy];
@@ -484,6 +521,8 @@ where
         let mut ctx = StepContext::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -516,6 +555,8 @@ where
         <Self as GraphNodeTypes<1, 1, 1>>::OutP,
         <Self as GraphNodeTypes<1, 1, 1>>::InQ,
         <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
+        <Self as GraphNodeTypes<1, 1, 1>>::InM,
+        <Self as GraphNodeTypes<1, 1, 1>>::OutM,
         C,
         T,
     >
@@ -529,6 +570,11 @@ where
 
         let inputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::InQ; 1] = [self.edges.0.queue_mut()];
         let outputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1] = [self.edges.1.queue_mut()];
+
+        let in_managers: [&'graph mut <Self as GraphNodeTypes<1, 1, 1>>::InM; 1] =
+            [&mut self.managers.0];
+        let out_managers: [&'graph mut <Self as GraphNodeTypes<1, 1, 1>>::OutM; 1] =
+            [&mut self.managers.1];
 
         let in_policies: [EdgePolicy; 1] = [in0_policy];
         let out_policies: [EdgePolicy; 1] = [out1_policy];
@@ -547,11 +593,15 @@ where
             <Self as GraphNodeTypes<1, 1, 1>>::OutP,
             <Self as GraphNodeTypes<1, 1, 1>>::InQ,
             <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
+            <Self as GraphNodeTypes<1, 1, 1>>::InM,
+            <Self as GraphNodeTypes<1, 1, 1>>::OutM,
             C,
             T,
         >::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -579,6 +629,8 @@ where
                 <Self as GraphNodeTypes<1, 1, 1>>::OutP,
                 <Self as GraphNodeTypes<1, 1, 1>>::InQ,
                 <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
+                <Self as GraphNodeTypes<1, 1, 1>>::InM,
+                <Self as GraphNodeTypes<1, 1, 1>>::OutM,
                 C,
                 T,
             >,
@@ -598,6 +650,10 @@ where
         let inputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::InQ; 1] = [self.edges.0.queue_mut()];
         let outputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1] = [self.edges.1.queue_mut()];
 
+        let in_managers: [&mut <Self as GraphNodeTypes<1, 1, 1>>::InM; 1] = [&mut self.managers.0];
+        let out_managers: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutM; 1] =
+            [&mut self.managers.1];
+
         let in_policies: [EdgePolicy; 1] = [in0_policy];
         let out_policies: [EdgePolicy; 1] = [out1_policy];
 
@@ -608,6 +664,8 @@ where
         let mut ctx = StepContext::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -640,6 +698,8 @@ where
         <Self as GraphNodeTypes<2, 1, 0>>::OutP,
         <Self as GraphNodeTypes<2, 1, 0>>::InQ,
         <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
+        <Self as GraphNodeTypes<2, 1, 0>>::InM,
+        <Self as GraphNodeTypes<2, 1, 0>>::OutM,
         C,
         T,
     >
@@ -652,6 +712,10 @@ where
 
         let inputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::InQ; 1] = [self.edges.1.queue_mut()];
         let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [/* empty */];
+
+        let in_managers: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::InM; 1] =
+            [&mut self.managers.1];
+        let out_managers: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::OutM; 0] = [/* empty */];
 
         let in_policies: [EdgePolicy; 1] = [in1_policy];
         let out_policies: [EdgePolicy; 0] = [/* empty */];
@@ -670,11 +734,15 @@ where
             <Self as GraphNodeTypes<2, 1, 0>>::OutP,
             <Self as GraphNodeTypes<2, 1, 0>>::InQ,
             <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
+            <Self as GraphNodeTypes<2, 1, 0>>::InM,
+            <Self as GraphNodeTypes<2, 1, 0>>::OutM,
             C,
             T,
         >::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -702,6 +770,8 @@ where
                 <Self as GraphNodeTypes<2, 1, 0>>::OutP,
                 <Self as GraphNodeTypes<2, 1, 0>>::InQ,
                 <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
+                <Self as GraphNodeTypes<2, 1, 0>>::InM,
+                <Self as GraphNodeTypes<2, 1, 0>>::OutM,
                 C,
                 T,
             >,
@@ -718,7 +788,11 @@ where
         let in1_policy = *self.edges.1.policy();
 
         let inputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::InQ; 1] = [self.edges.1.queue_mut()];
-        let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
+        let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [/* empty */];
+
+        let in_managers: [&mut <Self as GraphNodeTypes<2, 1, 0>>::InM; 1] = [&mut self.managers.1];
+        let out_managers: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutM; 0] = [/* empty */];
+
         let in_policies: [EdgePolicy; 1] = [in1_policy];
         let out_policies: [EdgePolicy; 0] = [/* empty */];
 
@@ -729,6 +803,8 @@ where
         let mut ctx = StepContext::new(
             inputs,
             outputs,
+            in_managers,
+            out_managers,
             in_policies,
             out_policies,
             node_id,
@@ -766,13 +842,19 @@ pub mod concurrent_graph {
             StepContext, StepResult,
         },
         policy::EdgePolicy,
-        prelude::{EdgeDescriptor, NodeDescriptor, NodeLink, PlatformClock, Telemetry},
+        prelude::{
+            ConcurrentMemoryManager, EdgeDescriptor, NodeDescriptor, NodeLink, PlatformClock,
+            Telemetry,
+        },
         types::{EdgeIndex, NodeIndex, PortId, PortIndex},
     };
 
     // ===== Endpoint aliases used by nodes in this std graph =====
-    type InEpU32 = ConsumerEndpoint<u32, ConcurrentQueue<Q32>>;
-    type OutEpU32 = ProducerEndpoint<u32, ConcurrentQueue<Q32>>;
+    type InEpU32 = ConsumerEndpoint<ConcurrentQueue<Q32>>;
+    type OutEpU32 = ProducerEndpoint<ConcurrentQueue<Q32>>;
+
+    // Concurrent memory manager type (one per real edge).
+    type ConcMgr32 = ConcurrentMemoryManager<u32>;
 
     // Test source node types.
     #[allow(type_alias_bounds)]
@@ -797,8 +879,8 @@ pub mod concurrent_graph {
         ),
         // Edges: one Arc<Mutex<_>> each + metadata.
         edges: (
-            ConcurrentEdgeLink<Q32, u32>, // e0: 0->1
-            ConcurrentEdgeLink<Q32, u32>, // e1: 1->2
+            ConcurrentEdgeLink<Q32>, // e0: 0->1
+            ConcurrentEdgeLink<Q32>, // e1: 1->2
         ),
         // Persistent endpoint views (borrowed path uses &mut to these).
         // Each edge has a consumer (downstream side) and a producer (upstream side).
@@ -814,6 +896,8 @@ pub mod concurrent_graph {
         node_descs: [NodeDescriptor; 3],
         // Cache node policies so get_node_policies still works after nodes are moved out.
         node_policies: [NodePolicy; 3],
+        /// Memory managers for all *real* edges in declaration order.
+        managers: (ConcMgr32, ConcMgr32),
     }
 
     impl<SrcClk: PlatformClock + std::marker::Send + 'static> TestPipelineStd<SrcClk> {
@@ -825,6 +909,8 @@ pub mod concurrent_graph {
             node_2: impl Into<SnkNode>,
             q_0: Q32,
             q_1: Q32,
+            mgr_1: ConcMgr32,
+            mgr_2: ConcMgr32,
         ) -> Self {
             // Build nodes
             let node_0: SrcNode<SrcClk> = node_0.into();
@@ -860,7 +946,7 @@ pub mod concurrent_graph {
             let nodes = (Some(node_0_link), Some(node_1_link), Some(node_2_link));
 
             // Build edges
-            let e0 = ConcurrentEdgeLink::<Q32, u32>::new(
+            let e0 = ConcurrentEdgeLink::<Q32>::new(
                 q_0,
                 EdgeIndex::from(1usize),
                 PortId::new(NodeIndex::from(0usize), PortIndex::from(0)),
@@ -868,7 +954,7 @@ pub mod concurrent_graph {
                 Q_32_POLICY,
                 Some("e0"),
             );
-            let e1 = ConcurrentEdgeLink::<Q32, u32>::new(
+            let e1 = ConcurrentEdgeLink::<Q32>::new(
                 q_1,
                 EdgeIndex::from(2usize),
                 PortId::new(NodeIndex::from(1usize), PortIndex::from(0)),
@@ -912,6 +998,8 @@ pub mod concurrent_graph {
             let ingress_edges = [ingress_edge_0];
             let ingress_updaters = [Some(updater_0)];
 
+            let managers = (mgr_1, mgr_2);
+
             Self {
                 nodes,
                 edges: (e0, e1),
@@ -920,45 +1008,42 @@ pub mod concurrent_graph {
                 ingress_updaters,
                 node_descs,
                 node_policies,
+                managers,
             }
         }
     }
 
     /// ===== std-only opaque owned-bundle used by GraphApi take/put =====
     #[allow(clippy::large_enum_variant)]
+    #[allow(missing_docs)]
     pub enum TestPipelineStdOwnedBundle<SrcClk: PlatformClock + std::marker::Send + 'static> {
-        /// node 0: out=[e1.out] + ingress updater.
         N0 {
-            /// The detached node link for node 0 (TestSourceNodeU32).
             node: NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>,
-            /// Owned output endpoint for edge e0.out.
-            out0: OutEpU32,
-            /// Static edge policy for out0 (e0).
-            out0_policy: EdgePolicy,
-            /// TODO: Comment..
+            ins: [NoQueue; 0],
+            outs: [OutEpU32; 1],
+            in_managers: [StaticMemoryManager<(), 1>; 0],
+            out_managers: [ConcMgr32; 1],
+            in_policies: [EdgePolicy; 0],
+            out_policies: [EdgePolicy; 1],
             ingress_updater: SourceIngressUpdater,
         },
-        /// node 1: in=[e1.in], out=[e2.out].
         N1 {
-            /// The detached node link for node 1 (TestIdentityModelNodeU32 alias).
             node: NodeLink<MapNode, 1, 1, u32, u32>,
-            /// Owned input endpoint for edge e0.in.
-            in0: InEpU32,
-            /// Owned output endpoint for edge e1.out.
-            out1: OutEpU32,
-            /// Static edge policy for in0 (e0).
-            in0_policy: EdgePolicy,
-            /// Static edge policy for out1 (e1).
-            out1_policy: EdgePolicy,
+            ins: [InEpU32; 1],
+            outs: [OutEpU32; 1],
+            in_managers: [ConcMgr32; 1],
+            out_managers: [ConcMgr32; 1],
+            in_policies: [EdgePolicy; 1],
+            out_policies: [EdgePolicy; 1],
         },
-        /// node 2: in=[e2.in]
         N2 {
-            /// The detached node link for node 2 (TestSinkNodeU32).
             node: NodeLink<SnkNode, 1, 0, u32, ()>,
-            /// Owned input endpoint for edge e1.in.
-            in1: InEpU32,
-            /// Static edge policy for in1 (e1).
-            in1_policy: EdgePolicy,
+            ins: [InEpU32; 1],
+            outs: [NoQueue; 0],
+            in_managers: [ConcMgr32; 1],
+            out_managers: [StaticMemoryManager<(), 1>; 0],
+            in_policies: [EdgePolicy; 1],
+            out_policies: [EdgePolicy; 0],
         },
     }
 
@@ -1094,41 +1179,43 @@ pub mod concurrent_graph {
         ) -> Result<Self::OwnedBundle, GraphError> {
             match index {
                 0 => {
-                    let node = self.nodes.0.take().ok_or(GraphError::InvalidEdgeIndex)?; // or a NodeIndex error variant if you have it
-                    let out0_policy = *self.edges.0.policy();
-                    let out0 = (self.endpoints.0).1.clone();
+                    let node = self.nodes.0.take().ok_or(GraphError::InvalidEdgeIndex)?;
                     let ingress_updater = self.ingress_updaters[0]
                         .take()
                         .expect("ingress updater already taken");
                     Ok(TestPipelineStdOwnedBundle::N0 {
                         node,
-                        out0,
-                        out0_policy,
+                        ins: [],
+                        outs: [(self.endpoints.0).1.clone()],
+                        in_managers: [],
+                        out_managers: [self.managers.0.clone()],
+                        in_policies: [],
+                        out_policies: [*self.edges.0.policy()],
                         ingress_updater,
                     })
                 }
                 1 => {
                     let node = self.nodes.1.take().ok_or(GraphError::InvalidEdgeIndex)?;
-                    let in0_policy = *self.edges.0.policy();
-                    let out1_policy = *self.edges.1.policy();
-                    let in0 = (self.endpoints.0).0.clone();
-                    let out1 = (self.endpoints.1).1.clone();
                     Ok(TestPipelineStdOwnedBundle::N1 {
                         node,
-                        in0,
-                        out1,
-                        in0_policy,
-                        out1_policy,
+                        ins: [(self.endpoints.0).0.clone()],
+                        outs: [(self.endpoints.1).1.clone()],
+                        in_managers: [self.managers.0.clone()],
+                        out_managers: [self.managers.1.clone()],
+                        in_policies: [*self.edges.0.policy()],
+                        out_policies: [*self.edges.1.policy()],
                     })
                 }
                 2 => {
                     let node = self.nodes.2.take().ok_or(GraphError::InvalidEdgeIndex)?;
-                    let in1_policy = *self.edges.1.policy();
-                    let in1 = (self.endpoints.1).0.clone();
                     Ok(TestPipelineStdOwnedBundle::N2 {
                         node,
-                        in1,
-                        in1_policy,
+                        ins: [(self.endpoints.1).0.clone()],
+                        outs: [],
+                        in_managers: [self.managers.1.clone()],
+                        out_managers: [],
+                        in_policies: [*self.edges.1.policy()],
+                        out_policies: [],
                     })
                 }
                 _ => Err(GraphError::InvalidEdgeIndex),
@@ -1143,30 +1230,51 @@ pub mod concurrent_graph {
             match bundle {
                 TestPipelineStdOwnedBundle::N0 {
                     node,
-                    out0,
-                    out0_policy: _,
+                    ins: _,
+                    outs,
+                    in_managers: _,
+                    out_managers,
+                    in_policies: _,
+                    out_policies: _,
                     ingress_updater,
                 } => {
                     assert!(self.nodes.0.is_none(), "node 0 already present");
                     self.nodes.0 = Some(node);
-                    (self.endpoints.0).1 = out0;
-                    // restore updater so future take() works again
+                    (self.endpoints.0).1 = outs[0].clone();
+                    self.managers.0 = out_managers[0].clone();
                     self.ingress_updaters[0] = Some(ingress_updater);
                     Ok(())
                 }
                 TestPipelineStdOwnedBundle::N1 {
-                    node, in0, out1, ..
+                    node,
+                    ins,
+                    outs,
+                    in_managers,
+                    out_managers,
+                    in_policies: _,
+                    out_policies: _,
                 } => {
                     assert!(self.nodes.1.is_none(), "node 1 already present");
                     self.nodes.1 = Some(node);
-                    (self.endpoints.0).0 = in0;
-                    (self.endpoints.1).1 = out1;
+                    (self.endpoints.0).0 = ins[0].clone();
+                    (self.endpoints.1).1 = outs[0].clone();
+                    self.managers.0 = in_managers[0].clone();
+                    self.managers.1 = out_managers[0].clone();
                     Ok(())
                 }
-                TestPipelineStdOwnedBundle::N2 { node, in1, .. } => {
+                TestPipelineStdOwnedBundle::N2 {
+                    node,
+                    ins,
+                    outs: _,
+                    in_managers,
+                    out_managers: _,
+                    in_policies: _,
+                    out_policies: _,
+                } => {
                     assert!(self.nodes.2.is_none(), "node 2 already present");
                     self.nodes.2 = Some(node);
-                    (self.endpoints.1).0 = in1;
+                    (self.endpoints.1).0 = ins[0].clone();
+                    self.managers.1 = in_managers[0].clone();
                     Ok(())
                 }
             }
@@ -1187,29 +1295,32 @@ pub mod concurrent_graph {
             match bundle {
                 TestPipelineStdOwnedBundle::N0 {
                     node,
-                    out0,
-                    out0_policy,
+                    ins: _,
+                    outs,
+                    in_managers: _,
+                    out_managers,
+                    in_policies,
+                    out_policies,
                     ingress_updater,
                 } => {
-                    // Update ingress probe from the live source before stepping.
                     let occ = node.node().source_ref().ingress_occupancy();
                     ingress_updater.update(*occ.items(), *occ.bytes());
 
-                    let inputs: [&mut NoQueue<()>; 0] = [/* empty */];
-                    let outputs: [&mut OutEpU32; 1] = [out0];
-
-                    let in_policies: [EdgePolicy; 0] = [/* empty */];
-                    let out_policies: [EdgePolicy; 1] = [*out0_policy];
-
+                    let inputs: [&mut NoQueue; 0] = [];
+                    let outputs: [&mut OutEpU32; 1] = [&mut outs[0]];
+                    let in_mgr_arr: [&mut StaticMemoryManager<(), 1>; 0] = [];
+                    let out_mgr_arr: [&mut ConcMgr32; 1] = [&mut out_managers[0]];
                     let node_id: u32 = 0;
-                    let in_edge_ids: [u32; 0] = [/* empty */];
+                    let in_edge_ids: [u32; 0] = [];
                     let out_edge_ids: [u32; 1] = [1];
 
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
-                        in_policies,
-                        out_policies,
+                        in_mgr_arr,
+                        out_mgr_arr,
+                        *in_policies,
+                        *out_policies,
                         node_id,
                         in_edge_ids,
                         out_edge_ids,
@@ -1220,16 +1331,17 @@ pub mod concurrent_graph {
                 }
                 TestPipelineStdOwnedBundle::N1 {
                     node,
-                    in0,
-                    out1,
-                    in0_policy,
-                    out1_policy,
+                    ins,
+                    outs,
+                    in_managers,
+                    out_managers,
+                    in_policies,
+                    out_policies,
                 } => {
-                    let inputs: [&mut InEpU32; 1] = [in0];
-                    let outputs: [&mut OutEpU32; 1] = [out1];
-                    let in_policies: [EdgePolicy; 1] = [*in0_policy];
-                    let out_policies: [EdgePolicy; 1] = [*out1_policy];
-
+                    let inputs: [&mut InEpU32; 1] = [&mut ins[0]];
+                    let outputs: [&mut OutEpU32; 1] = [&mut outs[0]];
+                    let in_mgr_arr: [&mut ConcMgr32; 1] = [&mut in_managers[0]];
+                    let out_mgr_arr: [&mut ConcMgr32; 1] = [&mut out_managers[0]];
                     let node_id: u32 = 1;
                     let in_edge_ids: [u32; 1] = [1];
                     let out_edge_ids: [u32; 1] = [2];
@@ -1237,8 +1349,10 @@ pub mod concurrent_graph {
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
-                        in_policies,
-                        out_policies,
+                        in_mgr_arr,
+                        out_mgr_arr,
+                        *in_policies,
+                        *out_policies,
                         node_id,
                         in_edge_ids,
                         out_edge_ids,
@@ -1249,23 +1363,28 @@ pub mod concurrent_graph {
                 }
                 TestPipelineStdOwnedBundle::N2 {
                     node,
-                    in1,
-                    in1_policy,
+                    ins,
+                    outs: _,
+                    in_managers,
+                    out_managers: _,
+                    in_policies,
+                    out_policies,
                 } => {
-                    let inputs: [&mut InEpU32; 1] = [in1];
-                    let outputs: [&mut NoQueue<()>; 0] = [/* empty */];
-                    let in_policies: [EdgePolicy; 1] = [*in1_policy];
-                    let out_policies: [EdgePolicy; 0] = [/* empty */];
-
+                    let inputs: [&mut InEpU32; 1] = [&mut ins[0]];
+                    let outputs: [&mut NoQueue; 0] = [];
+                    let in_mgr_arr: [&mut ConcMgr32; 1] = [&mut in_managers[0]];
+                    let out_mgr_arr: [&mut StaticMemoryManager<(), 1>; 0] = [];
                     let node_id: u32 = 2;
                     let in_edge_ids: [u32; 1] = [2];
-                    let out_edge_ids: [u32; 0] = [/* empty */];
+                    let out_edge_ids: [u32; 0] = [];
 
                     let mut ctx = crate::node::StepContext::new(
                         inputs,
                         outputs,
-                        in_policies,
-                        out_policies,
+                        in_mgr_arr,
+                        out_mgr_arr,
+                        *in_policies,
+                        *out_policies,
                         node_id,
                         in_edge_ids,
                         out_edge_ids,
@@ -1324,7 +1443,7 @@ pub mod concurrent_graph {
     impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphEdgeAccess<1>
         for TestPipelineStd<SrcClk>
     {
-        type Edge = ConcurrentEdgeLink<Q32, u32>;
+        type Edge = ConcurrentEdgeLink<Q32>;
         #[inline]
         fn edge_ref(&self) -> &Self::Edge {
             &self.edges.0
@@ -1337,7 +1456,7 @@ pub mod concurrent_graph {
     impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphEdgeAccess<2>
         for TestPipelineStd<SrcClk>
     {
-        type Edge = ConcurrentEdgeLink<Q32, u32>;
+        type Edge = ConcurrentEdgeLink<Q32>;
         #[inline]
         fn edge_ref(&self) -> &Self::Edge {
             &self.edges.1
@@ -1355,8 +1474,10 @@ pub mod concurrent_graph {
     {
         type InP = ();
         type OutP = u32;
-        type InQ = NoQueue<()>;
+        type InQ = NoQueue;
         type OutQ = OutEpU32;
+        type InM = StaticMemoryManager<(), 1>;
+        type OutM = ConcMgr32;
     }
     // node 1: IN=1, OUT=1  (map)
     impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeTypes<1, 1, 1>
@@ -1366,6 +1487,8 @@ pub mod concurrent_graph {
         type OutP = u32;
         type InQ = InEpU32;
         type OutQ = OutEpU32;
+        type InM = ConcMgr32;
+        type OutM = ConcMgr32;
     }
     // node 2: IN=1, OUT=0  (snk)
     impl<SrcClk: PlatformClock + std::marker::Send + 'static> GraphNodeTypes<2, 1, 0>
@@ -1374,7 +1497,9 @@ pub mod concurrent_graph {
         type InP = u32;
         type OutP = ();
         type InQ = InEpU32;
-        type OutQ = NoQueue<()>;
+        type OutQ = NoQueue;
+        type InM = ConcMgr32;
+        type OutM = StaticMemoryManager<(), 1>;
     }
 
     // ===== GraphNodeContextBuilder<I, IN, OUT> =====
@@ -1404,6 +1529,8 @@ pub mod concurrent_graph {
             <Self as GraphNodeTypes<0, 0, 1>>::OutP,
             <Self as GraphNodeTypes<0, 0, 1>>::InQ,
             <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
+            <Self as GraphNodeTypes<0, 0, 1>>::InM,
+            <Self as GraphNodeTypes<0, 0, 1>>::OutM,
             C,
             T,
         >
@@ -1418,6 +1545,10 @@ pub mod concurrent_graph {
             let outputs: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.0).1];
 
+            let in_managers: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::InM; 0] = [];
+            let out_managers: [&'graph mut <Self as GraphNodeTypes<0, 0, 1>>::OutM; 1] =
+                [&mut self.managers.0];
+
             let in_policies: [EdgePolicy; 0] = [/* empty */];
             let out_policies: [EdgePolicy; 1] = [out0_policy];
 
@@ -1428,6 +1559,8 @@ pub mod concurrent_graph {
             StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1455,6 +1588,8 @@ pub mod concurrent_graph {
                     <Self as GraphNodeTypes<0, 0, 1>>::OutP,
                     <Self as GraphNodeTypes<0, 0, 1>>::InQ,
                     <Self as GraphNodeTypes<0, 0, 1>>::OutQ,
+                    <Self as GraphNodeTypes<0, 0, 1>>::InM,
+                    <Self as GraphNodeTypes<0, 0, 1>>::OutM,
                     C,
                     T,
                 >,
@@ -1473,6 +1608,10 @@ pub mod concurrent_graph {
             let outputs: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.0).1];
 
+            let in_managers: [&mut <Self as GraphNodeTypes<0, 0, 1>>::InM; 0] = [];
+            let out_managers: [&mut <Self as GraphNodeTypes<0, 0, 1>>::OutM; 1] =
+                [&mut self.managers.0];
+
             let in_policies: [EdgePolicy; 0] = [/* empty */];
             let out_policies: [EdgePolicy; 1] = [out0_policy];
 
@@ -1483,6 +1622,8 @@ pub mod concurrent_graph {
             let mut ctx = StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1516,6 +1657,8 @@ pub mod concurrent_graph {
             <Self as GraphNodeTypes<1, 1, 1>>::OutP,
             <Self as GraphNodeTypes<1, 1, 1>>::InQ,
             <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
+            <Self as GraphNodeTypes<1, 1, 1>>::InM,
+            <Self as GraphNodeTypes<1, 1, 1>>::OutM,
             C,
             T,
         >
@@ -1532,6 +1675,11 @@ pub mod concurrent_graph {
             let outputs: [&'graph mut <Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.1).1];
 
+            let in_managers: [&'graph mut <Self as GraphNodeTypes<1, 1, 1>>::InM; 1] =
+                [&mut self.managers.0];
+            let out_managers: [&'graph mut <Self as GraphNodeTypes<1, 1, 1>>::OutM; 1] =
+                [&mut self.managers.1];
+
             let in_policies: [EdgePolicy; 1] = [in0_policy];
             let out_policies: [EdgePolicy; 1] = [out1_policy];
 
@@ -1542,6 +1690,8 @@ pub mod concurrent_graph {
             StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1569,6 +1719,8 @@ pub mod concurrent_graph {
                     <Self as GraphNodeTypes<1, 1, 1>>::OutP,
                     <Self as GraphNodeTypes<1, 1, 1>>::InQ,
                     <Self as GraphNodeTypes<1, 1, 1>>::OutQ,
+                    <Self as GraphNodeTypes<1, 1, 1>>::InM,
+                    <Self as GraphNodeTypes<1, 1, 1>>::OutM,
                     C,
                     T,
                 >,
@@ -1589,6 +1741,11 @@ pub mod concurrent_graph {
             let outputs: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1] =
                 [&mut (self.endpoints.1).1];
 
+            let in_managers: [&mut <Self as GraphNodeTypes<1, 1, 1>>::InM; 1] =
+                [&mut self.managers.0];
+            let out_managers: [&mut <Self as GraphNodeTypes<1, 1, 1>>::OutM; 1] =
+                [&mut self.managers.1];
+
             let in_policies: [EdgePolicy; 1] = [in0_policy];
             let out_policies: [EdgePolicy; 1] = [out1_policy];
 
@@ -1599,6 +1756,8 @@ pub mod concurrent_graph {
             let mut ctx = StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1632,6 +1791,8 @@ pub mod concurrent_graph {
             <Self as GraphNodeTypes<2, 1, 0>>::OutP,
             <Self as GraphNodeTypes<2, 1, 0>>::InQ,
             <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
+            <Self as GraphNodeTypes<2, 1, 0>>::InM,
+            <Self as GraphNodeTypes<2, 1, 0>>::OutM,
             C,
             T,
         >
@@ -1646,6 +1807,10 @@ pub mod concurrent_graph {
                 [&mut (self.endpoints.1).0];
             let outputs: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
 
+            let in_managers: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::InM; 1] =
+                [&mut self.managers.1];
+            let out_managers: [&'graph mut <Self as GraphNodeTypes<2, 1, 0>>::OutM; 0] = [];
+
             let in_policies: [EdgePolicy; 1] = [in1_policy];
             let out_policies: [EdgePolicy; 0] = [/* empty */];
 
@@ -1656,6 +1821,8 @@ pub mod concurrent_graph {
             StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1683,6 +1850,8 @@ pub mod concurrent_graph {
                     <Self as GraphNodeTypes<2, 1, 0>>::OutP,
                     <Self as GraphNodeTypes<2, 1, 0>>::InQ,
                     <Self as GraphNodeTypes<2, 1, 0>>::OutQ,
+                    <Self as GraphNodeTypes<2, 1, 0>>::InM,
+                    <Self as GraphNodeTypes<2, 1, 0>>::OutM,
                     C,
                     T,
                 >,
@@ -1701,6 +1870,10 @@ pub mod concurrent_graph {
                 [&mut (self.endpoints.1).0];
             let outputs: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0] = [];
 
+            let in_managers: [&mut <Self as GraphNodeTypes<2, 1, 0>>::InM; 1] =
+                [&mut self.managers.1];
+            let out_managers: [&mut <Self as GraphNodeTypes<2, 1, 0>>::OutM; 0] = [];
+
             let in_policies: [EdgePolicy; 1] = [in1_policy];
             let out_policies: [EdgePolicy; 0] = [/* empty */];
 
@@ -1711,6 +1884,8 @@ pub mod concurrent_graph {
             let mut ctx = StepContext::new(
                 inputs,
                 outputs,
+                in_managers,
+                out_managers,
                 in_policies,
                 out_policies,
                 node_id,
@@ -1735,20 +1910,30 @@ pub mod concurrent_graph {
             Self::NodeOwned,
             [<Self as GraphNodeTypes<0, 0, 1>>::InQ; 0],
             [<Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1],
+            [<Self as GraphNodeTypes<0, 0, 1>>::InM; 0],
+            [<Self as GraphNodeTypes<0, 0, 1>>::OutM; 1],
             [EdgePolicy; 0],
             [EdgePolicy; 1],
         )
         where
             <Self as GraphNodeTypes<0, 0, 1>>::InQ: Send + 'static,
             <Self as GraphNodeTypes<0, 0, 1>>::OutQ: Send + 'static,
+            <Self as GraphNodeTypes<0, 0, 1>>::InM: Send + 'static,
+            <Self as GraphNodeTypes<0, 0, 1>>::OutM: Send + 'static,
         {
             let node = self.nodes.0.take().expect("node 0 already taken");
             let out0_policy = *self.edges.0.policy();
-
-            // clone endpoints (cheap; they share Arc)
             let out0 = (self.endpoints.0).1.clone();
 
-            (node, [], [out0], [], [out0_policy])
+            (
+                node,
+                [],
+                [out0],
+                [],
+                [self.managers.0.clone()],
+                [],
+                [out0_policy],
+            )
         }
 
         fn put_node_and_endpoints(
@@ -1756,11 +1941,13 @@ pub mod concurrent_graph {
             node: Self::NodeOwned,
             _inputs: [<Self as GraphNodeTypes<0, 0, 1>>::InQ; 0],
             outputs: [<Self as GraphNodeTypes<0, 0, 1>>::OutQ; 1],
+            _in_managers: [<Self as GraphNodeTypes<0, 0, 1>>::InM; 0],
+            out_managers: [<Self as GraphNodeTypes<0, 0, 1>>::OutM; 1],
         ) {
             assert!(self.nodes.0.is_none(), "node 0 already present");
             self.nodes.0 = Some(node);
-            // Optionally refresh our persistent endpoint with returned one.
             (self.endpoints.0).1 = outputs[0].clone();
+            self.managers.0 = out_managers[0].clone();
         }
     }
 
@@ -1775,33 +1962,47 @@ pub mod concurrent_graph {
             Self::NodeOwned,
             [<Self as GraphNodeTypes<1, 1, 1>>::InQ; 1],
             [<Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1],
+            [<Self as GraphNodeTypes<1, 1, 1>>::InM; 1],
+            [<Self as GraphNodeTypes<1, 1, 1>>::OutM; 1],
             [EdgePolicy; 1],
             [EdgePolicy; 1],
         )
         where
             <Self as GraphNodeTypes<1, 1, 1>>::InQ: Send + 'static,
             <Self as GraphNodeTypes<1, 1, 1>>::OutQ: Send + 'static,
+            <Self as GraphNodeTypes<1, 1, 1>>::InM: Send + 'static,
+            <Self as GraphNodeTypes<1, 1, 1>>::OutM: Send + 'static,
         {
             let node = self.nodes.1.take().expect("node 1 already taken");
             let in0_policy = *self.edges.0.policy();
             let out1_policy = *self.edges.1.policy();
-
             let in0 = (self.endpoints.0).0.clone();
             let out1 = (self.endpoints.1).1.clone();
 
-            (node, [in0], [out1], [in0_policy], [out1_policy])
+            (
+                node,
+                [in0],
+                [out1],
+                [self.managers.0.clone()],
+                [self.managers.1.clone()],
+                [in0_policy],
+                [out1_policy],
+            )
         }
-
         fn put_node_and_endpoints(
             &mut self,
             node: Self::NodeOwned,
             inputs: [<Self as GraphNodeTypes<1, 1, 1>>::InQ; 1],
             outputs: [<Self as GraphNodeTypes<1, 1, 1>>::OutQ; 1],
+            in_managers: [<Self as GraphNodeTypes<1, 1, 1>>::InM; 1],
+            out_managers: [<Self as GraphNodeTypes<1, 1, 1>>::OutM; 1],
         ) {
             assert!(self.nodes.1.is_none(), "node 1 already present");
             self.nodes.1 = Some(node);
             (self.endpoints.0).0 = inputs[0].clone();
             (self.endpoints.1).1 = outputs[0].clone();
+            self.managers.0 = in_managers[0].clone();
+            self.managers.1 = out_managers[0].clone();
         }
     }
 
@@ -1816,17 +2017,29 @@ pub mod concurrent_graph {
             Self::NodeOwned,
             [<Self as GraphNodeTypes<2, 1, 0>>::InQ; 1],
             [<Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0],
+            [<Self as GraphNodeTypes<2, 1, 0>>::InM; 1],
+            [<Self as GraphNodeTypes<2, 1, 0>>::OutM; 0],
             [EdgePolicy; 1],
             [EdgePolicy; 0],
         )
         where
             <Self as GraphNodeTypes<2, 1, 0>>::InQ: Send + 'static,
             <Self as GraphNodeTypes<2, 1, 0>>::OutQ: Send + 'static,
+            <Self as GraphNodeTypes<2, 1, 0>>::InM: Send + 'static,
+            <Self as GraphNodeTypes<2, 1, 0>>::OutM: Send + 'static,
         {
             let node = self.nodes.2.take().expect("node 2 already taken");
             let in1_policy = *self.edges.1.policy();
             let in1 = (self.endpoints.1).0.clone();
-            (node, [in1], [], [in1_policy], [])
+            (
+                node,
+                [in1],
+                [],
+                [self.managers.1.clone()],
+                [],
+                [in1_policy],
+                [],
+            )
         }
 
         fn put_node_and_endpoints(
@@ -1834,10 +2047,13 @@ pub mod concurrent_graph {
             node: Self::NodeOwned,
             inputs: [<Self as GraphNodeTypes<2, 1, 0>>::InQ; 1],
             _outputs: [<Self as GraphNodeTypes<2, 1, 0>>::OutQ; 0],
+            in_managers: [<Self as GraphNodeTypes<2, 1, 0>>::InM; 1],
+            _out_managers: [<Self as GraphNodeTypes<2, 1, 0>>::OutM; 0],
         ) {
             assert!(self.nodes.2.is_none(), "node 2 already present");
             self.nodes.2 = Some(node);
             (self.endpoints.1).0 = inputs[0].clone();
+            self.managers.1 = in_managers[0].clone();
         }
     }
 }

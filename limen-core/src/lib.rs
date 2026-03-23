@@ -84,3 +84,9 @@ pub mod prelude;
 //
 // Ensure concurrent runtime only accepts concurrent graph at compile time.
 // Only emit non-std graoh **or**std graph, not both!
+//
+// Limen - Node::porcess_message:
+//
+// Fonce gives message and recieves message back!
+//
+// Node implementers don't have to worry about graph behaviour!

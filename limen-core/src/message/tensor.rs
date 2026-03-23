@@ -1,4 +1,4 @@
-// message/tensor.rs — owned inline tensor (no_std, no_alloc)
+//! message/tensor.rs — owned inline tensor (no_std, no_alloc)
 
 use core::mem;
 

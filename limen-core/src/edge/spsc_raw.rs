@@ -150,15 +150,11 @@ impl Edge for SpscAtomicRing {
                 self.push_raw(token);
                 EnqueueResult::Enqueued
             }
-
             AdmissionDecision::DropNewest => EnqueueResult::DroppedNewest,
-
             AdmissionDecision::Reject => EnqueueResult::Rejected,
-
             AdmissionDecision::Block => EnqueueResult::Rejected,
-
             AdmissionDecision::Evict(n) => {
-                // Evict up to n oldest tokens.
+                let mut last_evicted = MessageToken::INVALID;
                 for _ in 0..n {
                     if self.len() == 0 {
                         break;
@@ -169,6 +165,7 @@ impl Edge for SpscAtomicRing {
                         .map(|h| *h.payload_size_bytes())
                         .unwrap_or(0);
                     self.bytes_in_queue.fetch_sub(ev_bytes, Ordering::AcqRel);
+                    last_evicted = ev;
                 }
 
                 let items = self.len();
@@ -179,10 +176,15 @@ impl Edge for SpscAtomicRing {
 
                 self.bytes_in_queue.fetch_add(item_bytes, Ordering::AcqRel);
                 self.push_raw(token);
-                EnqueueResult::Enqueued
-            }
 
+                if last_evicted.is_invalid() {
+                    EnqueueResult::Enqueued
+                } else {
+                    EnqueueResult::Evicted(last_evicted)
+                }
+            }
             AdmissionDecision::EvictUntilBelowHard => {
+                let mut last_evicted = MessageToken::INVALID;
                 while policy
                     .caps
                     .at_or_above_hard(self.len(), self.bytes_in_queue.load(Ordering::Acquire))
@@ -194,6 +196,7 @@ impl Edge for SpscAtomicRing {
                         .map(|h| *h.payload_size_bytes())
                         .unwrap_or(0);
                     self.bytes_in_queue.fetch_sub(ev_bytes, Ordering::AcqRel);
+                    last_evicted = ev;
                 }
 
                 if policy.caps.at_or_above_hard(0, item_bytes) {
@@ -208,7 +211,12 @@ impl Edge for SpscAtomicRing {
 
                 self.bytes_in_queue.fetch_add(item_bytes, Ordering::AcqRel);
                 self.push_raw(token);
-                EnqueueResult::Enqueued
+
+                if last_evicted.is_invalid() {
+                    EnqueueResult::Enqueued
+                } else {
+                    EnqueueResult::Evicted(last_evicted)
+                }
             }
         }
     }
@@ -282,11 +290,11 @@ impl Edge for SpscAtomicRing {
         let mut delta_count = available;
         if let Some(cap) = delta_t_opt {
             // Use HeaderStore to read creation ticks.
-            if let Ok(front_header) = headers.peek_header(self.peek_ref_at_offset(0).clone()) {
+            if let Ok(front_header) = headers.peek_header(*self.peek_ref_at_offset(0)) {
                 let front_ticks = *front_header.creation_tick();
                 let mut c = 0usize;
                 while c < available {
-                    if let Ok(h) = headers.peek_header(self.peek_ref_at_offset(c).clone()) {
+                    if let Ok(h) = headers.peek_header(*self.peek_ref_at_offset(c)) {
                         let tick = *h.creation_tick();
                         let delta = tick.saturating_sub(front_ticks);
                         if delta <= cap {

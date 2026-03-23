@@ -49,7 +49,7 @@ impl<const N: usize> StaticRing<N> {
 
     #[inline]
     fn pop_raw(&mut self) -> MessageToken {
-        let token = mem::replace(&mut self.buf[self.head], MessageToken::default());
+        let token = mem::take(&mut self.buf[self.head]);
         self.head = (self.head + 1) % N;
         self.len -= 1;
         token
@@ -68,7 +68,7 @@ impl<const N: usize> StaticRing<N> {
         }
         for i in 0..self.len {
             let src_idx = (self.head + i) % N;
-            let tmp = mem::replace(&mut self.buf[src_idx], MessageToken::default());
+            let tmp = mem::take(&mut self.buf[src_idx]);
             self.buf[i] = tmp;
         }
         for i in self.len..N {

@@ -18,7 +18,12 @@ use quote::quote;
 /// This macro forwards its input tokens directly to
 /// [`limen_codegen::expand_tokens`] and returns the emitted items.
 ///
-/// # Example
+/// Each invocation emits exactly **one** graph flavor. Use the trailing
+/// `concurrent;` keyword to select the `std`-gated concurrent flavor.
+/// To produce both flavors, call `define_graph!` twice with different
+/// struct names (gate the concurrent call with `#[cfg(feature = "std")]`).
+///
+/// # Example (non-std only)
 /// ```ignore
 /// use limen_build::define_graph;
 ///
@@ -32,9 +37,22 @@ use quote::quote;
 ///     }
 ///
 ///     edges {
-///         0: { ty: limen_core::edge::bench::TestSpscRingBuf<8>, payload: u32, manager: limen_core::memory::static_manager::StaticMemoryManager<u32, 8>, from: (0, 0), to: (1, 0), policy: EDGE_POL, name: Some("src->map") },
-///         1: { ty: limen_core::edge::bench::TestSpscRingBuf<8>, payload: u32, manager: limen_core::memory::static_manager::StaticMemoryManager<u32, 8>, from: (1, 0), to: (2, 0), policy: EDGE_POL, name: Some("map->sink") },
+///         0: { ty: TestSpscRingBuf<8>, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (0, 0), to: (1, 0), policy: EDGE_POL, name: Some("src->map") },
+///         1: { ty: TestSpscRingBuf<8>, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (1, 0), to: (2, 0), policy: EDGE_POL, name: Some("map->sink") },
 ///     }
+/// }
+///
+/// // Concurrent flavor (only compiled under `std` feature):
+/// #[cfg(feature = "std")]
+/// define_graph! {
+///     pub struct MyGraph;   // will produce MyGraphStd inside concurrent_graph module
+///
+///     nodes { /* same as above */ }
+///     edges {
+///         0: { ty: TestSpscRingBuf<8>, payload: u32, manager: ConcurrentMemoryManager<u32>, from: (0, 0), to: (1, 0), policy: EDGE_POL, name: Some("src->map") },
+///         1: { ty: TestSpscRingBuf<8>, payload: u32, manager: ConcurrentMemoryManager<u32>, from: (1, 0), to: (2, 0), policy: EDGE_POL, name: Some("map->sink") },
+///     }
+///     concurrent;
 /// }
 /// ```
 #[proc_macro]

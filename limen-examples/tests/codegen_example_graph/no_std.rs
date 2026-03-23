@@ -1,9 +1,9 @@
-use super::generated::SimpleExampleGraph;
+use super::generated::SimpleExampleNoStdGraph;
 
 use limen_core::edge::EdgeOccupancy;
 use limen_core::graph::GraphApi;
 use limen_core::memory::PlacementAcceptance;
-use limen_core::message::{Message, MessageFlags};
+use limen_core::message::MessageFlags;
 use limen_core::node::bench::{
     TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
 };
@@ -19,8 +19,10 @@ use limen_core::runtime::bench::TestNoStdRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 
-// Concrete queue type used by the test pipelines (matches bench graphs)
-type Q32 = limen_core::edge::bench::TestSpscRingBuf<Message<u32>, 8>;
+// Concrete queue type used by the test pipelines
+type Q32 = limen_core::edge::bench::TestSpscRingBuf<8>;
+
+type Mgr32 = limen_core::memory::static_manager::StaticMemoryManager<u32, 8>;
 
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
@@ -97,12 +99,15 @@ fn codegen_core_pipeline_runs_with_nostd_runtime() {
     let q0: Q32 = Q32::default();
     let q1: Q32 = Q32::default();
 
+    let mgr0: Mgr32 = Mgr32::default();
+    let mgr1: Mgr32 = Mgr32::default();
+
     // telemetry
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
 
     // graph (codegen non-std flavor)
-    let mut graph = SimpleExampleGraph::new(src, map, snk, q0, q1);
+    let mut graph = SimpleExampleNoStdGraph::new(src, map, snk, q0, q1, mgr0, mgr1);
 
     // runtime
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -120,7 +125,7 @@ fn codegen_core_pipeline_runs_with_nostd_runtime() {
     println!(
         "--- [initial_graph_occupancies] --- {:?}\n",
         <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as limen_core::runtime::LimenRuntime<
-            SimpleExampleGraph,
+            SimpleExampleNoStdGraph,
             3,
             3,
         >>::occupancies(&runtime)
@@ -132,7 +137,7 @@ fn codegen_core_pipeline_runs_with_nostd_runtime() {
         println!(
             "--- [graph_occupancies] --- {:?}",
             <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3>
-                as limen_core::runtime::LimenRuntime<SimpleExampleGraph, 3, 3>>::occupancies(
+                as limen_core::runtime::LimenRuntime<SimpleExampleNoStdGraph, 3, 3>>::occupancies(
                 &runtime
             )
         );
@@ -142,7 +147,7 @@ fn codegen_core_pipeline_runs_with_nostd_runtime() {
     graph.validate_graph().unwrap();
     assert!(
         !<TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-            SimpleExampleGraph,
+            SimpleExampleNoStdGraph,
             3,
             3,
         >>::is_stopping(&runtime)

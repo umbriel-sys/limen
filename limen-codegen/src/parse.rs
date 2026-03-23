@@ -33,9 +33,10 @@
 //!     (nodes with `in_ports == 0 && out_ports > 0`). The generator may create
 //!     synthetic ingress edges from it.
 //!   - `concurrent` is an optional trailing keyword. When present, the
-//!     generator will emit a concurrent (`std`-gated) graph module in
-//!     addition to the non-std graph. Manager types must satisfy
-//!     `Clone + Send + 'static` when this is enabled.
+//!     generator will emit **only** the concurrent (`std`-gated) graph
+//!     (inside `pub mod concurrent_graph`). When absent, only the non-std
+//!     graph is emitted. Manager types must satisfy `Clone + Send + 'static`
+//!     when concurrent is enabled.
 //!
 //! - **Output**: a fully populated [`crate::ast::GraphDef`]. Structural and
 //!   semantic validation (contiguous indices, port bounds, payload agreement,

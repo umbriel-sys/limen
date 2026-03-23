@@ -298,14 +298,16 @@ impl GraphBuilder {
         self
     }
 
-    /// Enable or disable emission of the concurrent (`std`-gated) graph flavor.
+    /// Select which graph flavor to emit.
     ///
-    /// When `true`, the generator will emit a `pub mod concurrent_graph`
-    /// containing `<Name>Std` with owned-bundle handoff support. Manager
-    /// types must satisfy `Clone + Send + 'static` (e.g.
-    /// `ConcurrentMemoryManager<P>`).
+    /// - `false` (default): emit only the non-`std` graph (`<Name>`).
+    /// - `true`: emit only the concurrent `std`-gated graph
+    ///   (`<Name>Std` inside `pub mod concurrent_graph`). Manager types
+    ///   must satisfy `Clone + Send + 'static` (e.g.
+    ///   `ConcurrentMemoryManager<P>`).
     ///
-    /// Default: `false` (only the non-std graph is generated).
+    /// To produce both flavors for the same topology, create two
+    /// `GraphBuilder` instances with distinct names.
     pub fn concurrent(mut self, emit: bool) -> Self {
         self.emit_concurrent = emit;
         self

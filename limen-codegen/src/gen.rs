@@ -4,7 +4,13 @@
 //! containing a concrete graph type that implements `limen_core::graph::GraphApi`.
 //!
 //! # What this generator emits
-//! //! - A concrete `struct <GraphName>` containing:
+//!
+//! Exactly **one** graph flavor per invocation, controlled by the
+//! `emit_concurrent` flag on `GraphDef`:
+//!
+//! ## When `emit_concurrent = false` (default) — non-`std` graph
+//!
+//! - A concrete `struct <GraphName>` containing:
 //!   - `nodes`: a tuple of `NodeLink<...>` (one entry per declared node).
 //!   - `edges`: a tuple of `EdgeLink<...>` (one entry per declared *real* edge).
 //!   - `managers`: a tuple of memory manager instances (one per declared *real* edge).
@@ -24,8 +30,9 @@
 //! - `impl GraphNodeContextBuilder<I, IN, OUT>` per node to build a
 //!   `StepContext` and run a node step with correct lifetimes and types.
 //!
-//! # Additionally, when the `std` feature is enabled
-//! - `pub mod concurrent_graph` containing:
+//! ## When `emit_concurrent = true` — `std` concurrent graph
+//!
+//! - `#[cfg(feature = "std")] pub mod concurrent_graph` containing:
 //!   - `struct <GraphName>Std`:
 //!     - `nodes`: a tuple of `Option<NodeLink<...>>` (nodes can be moved out temporarily).
 //!     - `edges`: a tuple of `ConcurrentEdgeLink<...>` (lock-free SPSC queue wrapper).
@@ -33,11 +40,13 @@
 //!     - `ingress_edges`: probe-based ingress links for source nodes.
 //!     - `ingress_updaters`: per-source `SourceIngressUpdater` handles.
 //!     - `node_descs`: a cached `[NodeDescriptor; NODES]` array.
+//!     - `managers`: a tuple of memory manager instances.
 //!   - `enum <GraphName>StdOwnedBundle`: per-node owned-bundle for safe handoff.
-//!   - `impl GraphApi<NODES, EDGES>` with the same surface as no-std **plus**:
-//!     - `type OwnedBundle = <GraphName>StdOwnedBundle`
-//!     - `take_owned_bundle_by_index`, `put_owned_bundle_by_index`,
-//!       and `step_owned_bundle` (owned execution with endpoints detached).
+//!   - Full `impl GraphApi<NODES, EDGES>` including owned-bundle support.
+//!
+//! To produce **both** flavors for the same graph topology, invoke the codegen
+//! twice with distinct graph names — once with `emit_concurrent = false` and
+//! once with `emit_concurrent = true`.
 //!
 //! # Ingress edges
 //! Nodes with `ingress_policy` in the DSL are treated as having an *implicit*
@@ -53,21 +62,19 @@ use syn::Index;
 
 /// Emit the final `TokenStream` for a given validated [`GraphDef`].
 ///
+/// Emits exactly **one** graph flavor based on `emit_concurrent`:
+/// - `false` (default): a non-`std` graph named `<Name>` at module root.
+/// - `true`: a concurrent `std` graph inside
+///   `#[cfg(feature = "std")] pub mod concurrent_graph`, named `<Name>Std`.
 ///
-/// This is the public entry to the generator. It emits **both** graph flavors:
-/// - a non-`std` graph (no owned-bundle transfer) for `no_std` targets, and
-/// - a concurrent `std` graph behind the `std` feature flag, which supports
-///   owned-bundle handoff and SPSC endpoints for each edge.
+/// To produce both flavors, invoke the codegen twice (once per setting)
+/// with distinct graph names.
 ///
 /// # Returns
-/// A `TokenStream2` containing the concrete graph types and trait impls (the
-/// `std` flavor gated by `#[cfg(feature = "std")]`).
+/// A `TokenStream2` containing the concrete graph type and trait impls.
 pub fn emit(g: &GraphDef) -> TokenStream2 {
     let vis = &g.vis;
     let name = &g.name;
-
-    let ns = NonStd::new(g);
-    let nonstd_tokens = ns.emit_nonstd_graph(vis, name);
 
     if g.emit_concurrent {
         // Concurrent/std graph (feature-gated)
@@ -77,10 +84,12 @@ pub fn emit(g: &GraphDef) -> TokenStream2 {
         };
 
         quote! {
-            #nonstd_tokens
             #std_tokens
         }
     } else {
+        let ns = NonStd::new(g);
+        let nonstd_tokens = ns.emit_nonstd_graph(vis, name);
+
         quote! {
             #nonstd_tokens
         }

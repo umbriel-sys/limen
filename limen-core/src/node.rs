@@ -676,7 +676,7 @@ where
     /// fields and telemetry from `self`.
     #[allow(dead_code)]
     #[inline]
-    fn to_out_step_context<'ctx>(
+    fn as_out_step_context<'ctx>(
         &'ctx mut self,
     ) -> OutStepContext<'graph, 'ctx, 'clock, OUT, OutP, OutQ, OutM, C, T>
     where
@@ -1145,6 +1145,8 @@ pub mod contract_tests {
     ///
     /// # Usage
     /// ```rust
+    /// use limen_core::run_node_contract_tests;
+    ///
     /// run_node_contract_tests!(my_node_contracts, {
     ///     make_nodelink: || create_my_node_link()
     /// });
@@ -1252,17 +1254,13 @@ pub mod contract_tests {
     /// This helper is the canonical way to produce testable queues that implement
     /// the `Edge` contract and integrate with `StepContext`.
     #[allow(clippy::type_complexity)]
-    fn make_edge_links_for_node<const IN: usize, const OUT: usize, InP, OutP>(
+    fn make_edge_links_for_node<const IN: usize, const OUT: usize>(
         base_upstream_node: NodeIndex,
         base_downstream_node: NodeIndex,
     ) -> (
         [EdgeLink<TestSpscRingBuf<16>>; IN],
         [EdgeLink<TestSpscRingBuf<16>>; OUT],
-    )
-    where
-        InP: Payload + Default,
-        OutP: Payload + Default,
-    {
+    ) {
         let inputs = core::array::from_fn(|i| {
             let queue = TestSpscRingBuf::<16>::new();
             let id = EdgeIndex::new(i + 1);
@@ -1481,7 +1479,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1555,7 +1553,7 @@ pub mod contract_tests {
         let mut tele = make_graph_telemetry();
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1611,7 +1609,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1689,7 +1687,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1798,7 +1796,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1901,7 +1899,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -1984,7 +1982,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -2040,7 +2038,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -2124,7 +2122,7 @@ pub mod contract_tests {
         nlink.initialize(&clock, &mut tele).expect("init ok");
 
         let (mut in_links, mut out_links) =
-            make_edge_links_for_node::<IN, OUT, InP, OutP>(NodeIndex::new(0), NodeIndex::new(1));
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
         let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
             core::array::from_fn(|_| StaticMemoryManager::new());
         let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -2247,10 +2245,8 @@ pub mod contract_tests {
 
         // 1) VALID SPAN
         {
-            let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
-                NodeIndex::new(0),
-                NodeIndex::new(1),
-            );
+            let (mut in_links, mut out_links) =
+                make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
             let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
                 core::array::from_fn(|_| StaticMemoryManager::new());
             let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
@@ -2311,10 +2307,8 @@ pub mod contract_tests {
 
         // 2) INVALID SPAN
         {
-            let (mut in_links, mut out_links) = make_edge_links_for_node::<IN, OUT, InP, OutP>(
-                NodeIndex::new(0),
-                NodeIndex::new(1),
-            );
+            let (mut in_links, mut out_links) =
+                make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
             let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
                 core::array::from_fn(|_| StaticMemoryManager::new());
             let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =

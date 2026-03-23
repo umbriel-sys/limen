@@ -119,7 +119,7 @@ impl HeapRing {
                     self.buf[old_cap + i] = self.buf[i];
                     self.buf[i] = MessageToken::default();
                 }
-                self.tail = old_cap + self.tail;
+                self.tail += old_cap;
             } else {
                 // Items are contiguous at [0..len); just fix tail.
                 self.tail = self.len;
@@ -144,7 +144,7 @@ impl HeapRing {
     /// Internal: pop a token from head (assumes len > 0).
     #[inline]
     fn pop_raw(&mut self) -> MessageToken {
-        let tok = mem::replace(&mut self.buf[self.head], MessageToken::default());
+        let tok = mem::take(&mut self.buf[self.head]);
         let cap = self.physical_capacity();
         self.head = (self.head + 1) % cap;
         self.len -= 1;
@@ -172,7 +172,7 @@ impl HeapRing {
         let mut tmp: Vec<MessageToken> = Vec::with_capacity(self.len);
         for i in 0..self.len {
             let src = (self.head + i) % cap;
-            tmp.push(mem::replace(&mut self.buf[src], MessageToken::default()));
+            tmp.push(mem::take(&mut self.buf[src]));
         }
 
         // Write them back contiguously starting at index 0.

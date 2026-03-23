@@ -112,6 +112,7 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
     ///
     /// # Returns
     /// A fully wired [`StepContext`] for the node, ready for execution.
+    #[allow(clippy::type_complexity)]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
         &'graph mut self,
         clock: &'clock C,

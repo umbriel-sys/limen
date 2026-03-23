@@ -74,7 +74,7 @@ impl<const N: usize> TestSpscRingBuf<N> {
     /// value stored there.
     #[inline]
     fn pop_raw(&mut self) -> MessageToken {
-        let item = mem::replace(&mut self.buf[self.head], MessageToken::default());
+        let item = mem::take(&mut self.buf[self.head]);
         self.head = (self.head + 1) % N;
         self.len -= 1;
         item
@@ -101,14 +101,14 @@ impl<const N: usize> TestSpscRingBuf<N> {
         for i in 0..self.len {
             let src_idx = (self.head + i) % N;
             // Extract src value into tmp, leaving default in src slot.
-            let tmp = mem::replace(&mut self.buf[src_idx], MessageToken::default());
+            let tmp = mem::take(&mut self.buf[src_idx]);
             // Place the extracted value into destination slot `i`.
             self.buf[i] = tmp;
         }
 
         // Ensure remaining slots are defaulted (not strictly required but clearer).
         for i in self.len..N {
-            let _ = mem::replace(&mut self.buf[i], MessageToken::default());
+            let _ = mem::take(&mut self.buf[i]);
         }
 
         self.head = 0;

@@ -196,7 +196,6 @@ pub trait Edge {
 /// - [`SpscQueue::try_peek`] always returns [`QueueError::Empty`].
 /// - [`SpscQueue::occupancy`] always reports zero items, zero bytes, and
 ///   [`WatermarkState::AtOrAboveHard`] (fully saturated, disallowing admission).
-/// A no-op queue used for phantom/unconnected ports.
 pub struct NoQueue;
 
 impl Edge for NoQueue {

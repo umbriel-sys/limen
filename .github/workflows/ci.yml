@@ -30,33 +30,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install cargo-hack (optional)
-        run: |
-          cargo install --locked cargo-hack || true
-
       - name: Rustfmt check
         run: cargo fmt --all -- --check
 
-      - name: Build & test (no-default-features)
+      - name: Build, test & clippy (no-default-features)
         if: matrix.profile == 'no-default-features'
         run: |
           cargo build --all --no-default-features --all-targets --verbose
           cargo test --all --no-default-features --all-targets --verbose
+          cargo clippy --all -- -D warnings
 
-      - name: Build & test (alloc)
+      - name: Build, test & clippy (alloc)
         if: matrix.profile == 'alloc'
         run: |
           cargo build --all --features alloc --all-targets --verbose
           cargo test  --all --features alloc --all-targets --verbose
+          cargo clippy --all --features alloc -- -D warnings
 
-      - name: Build & test (std)
+      - name: Build, test & clippy (std)
         if: matrix.profile == 'std'
         run: |
           cargo build --all --features std --all-targets --verbose
           cargo test  --all --features std --all-targets --verbose
+          cargo clippy --all --features std -- -D warnings
 
-      - name: Clippy on std profile
+      - name: Build, test & clippy (spsc_raw)
         if: matrix.profile == 'std'
         run: |
-          rustup component add clippy || true
-          cargo clippy --all --features std -- -D warnings
+          cargo build --all --features spsc_raw --all-targets --verbose
+          cargo test  --all --features spsc_raw --all-targets --verbose
+          cargo clippy --all --features spsc_raw -- -D warnings

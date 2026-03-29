@@ -393,6 +393,27 @@ mod checked {
 
 #[cfg(test)]
 mod tests {
+    // ---------------------------------------------------------------------------
+    // Planned memory manager tests — NOT YET IMPLEMENTED
+    //
+    // C1 / tensor types (planned/C1.md):
+    //   - run_store_retrieve_tensor_payload: store a TensorPayload (GPU buffer
+    //     descriptor + shape), verify peek_header returns the correct byte count
+    //     and memory_class == MemoryClass::Device(0).
+    //   - run_free_device_tensor_does_not_double_free: allocate two tensor tokens,
+    //     free the first, verify the second is still valid.
+    //
+    // P1 (PlatformBackend — planned/P1.md):
+    //   If the manager gains a device-side allocator backend:
+    //   - run_store_on_device_backend_respects_memory_class: store with
+    //     MemoryClass::Device(0) and verify the returned token's header reports
+    //     the correct class.
+    //
+    // RS1 (runtime lifecycle — planned/RS1.md):
+    //   - run_reset_frees_all_slots: after a runtime reset, all manager slots
+    //     must be free and used_slots() must return 0.
+    // ---------------------------------------------------------------------------
+
     use super::*;
     use crate::message::MessageHeader;
 

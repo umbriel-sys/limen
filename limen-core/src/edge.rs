@@ -293,6 +293,36 @@ pub mod contract_tests {
     //!   heapless (borrowed batch views) and alloc-backed (owned batch views) queues.
     //! - If an implementation wraps internal mutability (e.g., mutex), it must ensure
     //!   returned views do not borrow from a temporary guard.
+    //!
+    //!  ---------------------------------------------------------------------------
+    //! Planned tests — NOT YET IMPLEMENTED
+    //!
+    //! Add these fixtures when the corresponding features land.
+    //!
+    //! R7 (peek_header / peek_urgency — planned/R7.md):
+    //!   - run_peek_header_does_not_consume: peek_header(0) returns the correct
+    //!     header without advancing the queue head; a subsequent try_pop must
+    //!     return the same token.
+    //!   - run_peek_urgency_reflects_qos: set QoSClass on a message, verify
+    //!     peek_urgency returns the expected value, and repeated calls are pure
+    //!     (no mutation).
+    //!
+    //! R4 (mailbox semantics — planned/R4.md):
+    //!   - run_peek_latest_returns_newest: in a mailbox-mode queue, peek_latest
+    //!     returns the most-recently-pushed token, not the oldest.
+    //!   - run_read_latest_overwrites_previous: two rapid pushes leave exactly
+    //!     one item; the only surviving item is the most recent.
+    //!
+    //! R2 (freshness / expiry — planned/R2.md):
+    //!   - run_expired_item_not_admitted: set a deadline that has already elapsed
+    //!     (relative to a controllable clock); verify that try_push or try_pop
+    //!     skips / drops the stale item and decrements occupancy accordingly.
+    //!
+    //! R1 (urgency ordering — planned/R1.md):
+    //!   - run_urgency_ordering_respected: push 3 items with distinct QoS levels;
+    //!     verify try_pop returns them in urgency-descending order (requires a
+    //!     priority-aware edge).
+    //! ---------------------------------------------------------------------------
 
     use super::*;
     use crate::memory::manager::MemoryManager;
@@ -410,6 +440,26 @@ pub mod contract_tests {
                 fn try_peek_at() {
                     fixtures::run_try_peek_at(|| $make());
                 }
+
+                #[test]
+                fn get_admission_decision_is_pure() {
+                    fixtures::run_get_admission_decision_is_pure(|| $make());
+                }
+
+                #[test]
+                fn byte_tracking_roundtrip() {
+                    fixtures::run_byte_tracking_roundtrip(|| $make());
+                }
+
+                #[test]
+                fn evict_until_below_hard_caller_pattern() {
+                    fixtures::run_evict_until_below_hard_caller_pattern(|| $make());
+                }
+
+                #[test]
+                fn try_push_never_evicts() {
+                    fixtures::run_try_push_never_evicts(|| $make());
+                }
             }
         };
     }
@@ -435,6 +485,10 @@ pub mod contract_tests {
         run_admission_evict_until_below_hard(&mut make);
         run_admission_item_bytes_and_deadline_semantics(&mut make);
         run_try_peek_at(&mut make);
+        run_get_admission_decision_is_pure(&mut make);
+        run_byte_tracking_roundtrip(&mut make);
+        run_evict_until_below_hard_caller_pattern(&mut make);
+        run_try_push_never_evicts(&mut make);
     }
 
     /// Basic push / peek / pop / is_empty invariants.
@@ -1040,5 +1094,186 @@ pub mod contract_tests {
             assert_eq!(*h.creation_tick().as_u64(), expected_tick);
         }
         assert!(matches!(q.try_pop(&mgr), Err(QueueError::Empty)));
+    }
+
+    /// `get_admission_decision` must be pure: calling it multiple times must not
+    /// mutate queue state or change the queue's occupancy.
+    pub fn run_get_admission_decision_is_pure<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge,
+    {
+        let caps = QueueCaps::new(4, 2, None, None);
+        let mut q = make();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
+
+        // Push two items so queue is BetweenSoftAndHard.
+        let t1 = store(&mut mgr, make_msg_u32(1));
+        let t2 = store(&mut mgr, make_msg_u32(2));
+        assert_eq!(q.try_push(t1, &policy, &mgr), EnqueueResult::Enqueued);
+        assert_eq!(q.try_push(t2, &policy, &mgr), EnqueueResult::Enqueued);
+
+        let probe = store(&mut mgr, make_msg_u32(3));
+
+        // Call get_admission_decision three times.
+        let d1 = q.get_admission_decision(&policy, probe, &mgr);
+        let d2 = q.get_admission_decision(&policy, probe, &mgr);
+        let d3 = q.get_admission_decision(&policy, probe, &mgr);
+
+        // All calls must agree.
+        assert_eq!(d1, d2);
+        assert_eq!(d2, d3);
+
+        // Queue must still have exactly 2 items (not popped by the decision calls).
+        assert_eq!(q.try_pop(&mgr).expect("first pop"), t1);
+        assert_eq!(q.try_pop(&mgr).expect("second pop"), t2);
+        assert!(matches!(q.try_pop(&mgr), Err(QueueError::Empty)));
+    }
+
+    /// After pushing N items with non-zero payload_size_bytes then popping them all,
+    /// the `occupancy().bytes()` counter must return to zero.
+    pub fn run_byte_tracking_roundtrip<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge,
+    {
+        let caps = QueueCaps::new(8, 6, Some(4096), Some(2048));
+        let mut q = make();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let policy = EdgePolicy::new(
+            caps,
+            AdmissionPolicy::DeadlineAndQoSAware,
+            OverBudgetAction::Drop,
+        );
+
+        // Push 4 items, each reporting 100 bytes.
+        let mut tokens = [MessageToken::default(); 4];
+        for (i, slot) in tokens.iter_mut().enumerate() {
+            let mut m = make_msg_u32(i as u64 + 1);
+            m.header_mut().set_payload_size_bytes(100);
+            let t = store(&mut mgr, m);
+            assert_eq!(q.try_push(t, &policy, &mgr), EnqueueResult::Enqueued);
+            *slot = t;
+        }
+
+        // Bytes should be 400, items should be 4.
+        let occ = q.occupancy(&policy);
+        assert_eq!(*occ.items(), 4);
+        assert_eq!(*occ.bytes(), 400);
+
+        // Pop all items.
+        for expected in tokens.iter() {
+            let got = q.try_pop(&mgr).expect("pop");
+            assert_eq!(got, *expected);
+        }
+
+        // Both counters must be zero.
+        let occ_after = q.occupancy(&policy);
+        assert_eq!(*occ_after.items(), 0);
+        assert_eq!(*occ_after.bytes(), 0);
+        assert!(q.is_empty());
+    }
+
+    /// Full pre-eviction cycle for EvictUntilBelowHard:
+    /// caller gets the decision, pops+frees until below hard, then pushes.
+    /// Verifies no double-eviction: final queue length is exactly 1 (the new item).
+    pub fn run_evict_until_below_hard_caller_pattern<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge,
+    {
+        // max_items=4, soft=2. Fill to max so occupancy is AtOrAboveHard.
+        let caps = QueueCaps::new(4, 2, None, None);
+        let mut q = make();
+        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
+
+        let tokens: [MessageToken; 4] = core::array::from_fn(|i| {
+            let t = store(&mut mgr, make_msg_u32(i as u64 + 1));
+            assert_eq!(q.try_push(t, &policy, &mgr), EnqueueResult::Enqueued);
+            t
+        });
+        // Queue is at hard cap (4 items).
+        assert_eq!(*q.occupancy(&policy).items(), 4);
+
+        // New item to push.
+        let new_token = store(&mut mgr, make_msg_u32(10));
+
+        // --- caller-driven pre-eviction loop (mirrors StepContext::push_output) ---
+        loop {
+            let occ = q.occupancy(&policy);
+            if !policy.caps.at_or_above_hard(*occ.items(), *occ.bytes()) {
+                break;
+            }
+            match q.try_pop(&mgr) {
+                Ok(evicted) => {
+                    let _ = mgr.free(evicted);
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Now push — edge must not evict internally (single-eviction guarantee).
+        let result = q.try_push(new_token, &policy, &mgr);
+        assert_eq!(result, EnqueueResult::Enqueued);
+
+        // Exactly 1 item was freed + 1 pushed. Queue should have 4 items
+        // (3 original remaining + 1 new), not 3 (which would indicate 2 evictions).
+        let occ = q.occupancy(&policy);
+        assert_eq!(
+            *occ.items(),
+            4,
+            "expected 4 items after pre-evict-one + push; double-eviction would give 3"
+        );
+
+        // Drain and verify tokens[0] was the only one evicted (FIFO order).
+        assert_eq!(q.try_pop(&mgr).expect("pop"), tokens[1]);
+        assert_eq!(q.try_pop(&mgr).expect("pop"), tokens[2]);
+        assert_eq!(q.try_pop(&mgr).expect("pop"), tokens[3]);
+        assert_eq!(q.try_pop(&mgr).expect("pop"), new_token);
+        assert!(matches!(q.try_pop(&mgr), Err(QueueError::Empty)));
+    }
+
+    /// `try_push` must never decrease queue length (i.e., never pop internally).
+    /// The before/after item count may only stay the same (rejected) or increase by 1.
+    pub fn run_try_push_never_evicts<Q, F>(mut make: F)
+    where
+        F: FnMut() -> Q,
+        Q: Edge,
+    {
+        let caps = QueueCaps::new(4, 2, None, None);
+        let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
+
+        for fill in 0usize..=4 {
+            let mut q = make();
+            let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+
+            // Fill to `fill` items.
+            for i in 0..fill {
+                let t = store(&mut mgr, make_msg_u32(i as u64));
+                let _ = q.try_push(t, &policy, &mgr);
+            }
+            let before = *q.occupancy(&policy).items();
+
+            let probe = store(&mut mgr, make_msg_u32(99));
+            let _ = q.try_push(probe, &policy, &mgr);
+            let after = *q.occupancy(&policy).items();
+
+            assert!(
+                after >= before,
+                "try_push decreased queue length from {} to {} at fill={}; \
+               eviction must not happen inside try_push",
+                before,
+                after,
+                fill
+            );
+            assert!(
+                after <= before + 1,
+                "try_push increased queue length by more than 1 (from {} to {})",
+                before,
+                after
+            );
+        }
     }
 }

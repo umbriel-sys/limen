@@ -1209,6 +1209,49 @@ pub mod contract_tests {
     //! wrapper-specific implementation (`Source`, `Sink`, `Model`). The tests only
     //! assert node-level semantics (counts/StepResult/telemetry) and do **not**
     //! inspect or require node-specific payload contents.
+    //!
+    //! ---------------------------------------------------------------------------
+    //! Planned node/context tests — NOT YET IMPLEMENTED
+    //!
+    //! C2 (N→M node arity — planned/C2.md):
+    //!   When C2 lands (multiple input ports, multiple output ports, optional
+    //!   inputs):
+    //!   - run_fan_in_two_inputs_both_available: step() with two filled input ports
+    //!     triggers the node and both tokens are consumed.
+    //!   - run_fan_in_one_input_absent_blocks: with an optional-absent policy,
+    //!     step() can still fire on one input.
+    //!   - run_fan_out_two_outputs: a single step produces messages on two
+    //!     distinct output ports; both queues gain one item.
+    //!   - run_fan_out_one_backpressured_maps_to_backpressure: if output port 1
+    //!     is at capacity and output port 0 succeeds, the step returns Backpressured.
+    //!
+    //! R1 (urgency ordering — planned/R1.md):
+    //!   - run_step_pop_respects_urgency_order: fill input queue with messages of
+    //!     mixed QoSClass; step() must process the highest-urgency item first.
+    //!
+    //! R2 (freshness / expiry — planned/R2.md):
+    //!   - run_step_skips_expired_inputs: push a message whose deadline is already
+    //!     elapsed; step() must not pass it to process_message (or must decrement
+    //!     a stale counter and skip).
+    //!
+    //! R4 (mailbox semantics — planned/R4.md):
+    //!   - run_step_mailbox_overwrites_previous: rapid pushes to a mailbox-mode
+    //!     input leave only the most recent; step() sees only the latest value.
+    //!
+    //! R5/R6 (liveness policies — planned/R5.md, R6.md):
+    //!   - run_step_liveness_check_fires_on_timeout: if no input arrives within
+    //!     the configured liveness interval, the node must emit a watchdog event
+    //!     or return a liveness-timeout StepResult.
+    //!
+    //! P1 (PlatformBackend / controllable clock — planned/P1.md):
+    //!  - run_batch_delta_t_with_controllable_clock: inject a fake clock that
+    //!    advances in discrete steps; verify delta_t batching respects injected
+    //!    timestamps rather than wall time.
+    //!
+    //! RS1 (runtime lifecycle — planned/RS1.md):
+    //!   - run_stop_during_inflight_batch: call stop() while a batch is partially
+    //!     consumed; verify all tokens are freed and no manager slots leak.
+    //! ---------------------------------------------------------------------------
 
     use super::*;
     use crate::{
@@ -1231,6 +1274,14 @@ pub mod contract_tests {
     const TEST_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
         QueueCaps::new(16, 14, None, None),
         AdmissionPolicy::DropNewest,
+        OverBudgetAction::Drop,
+    );
+
+    /// Edge policy for tests that exercise DropOldest / pre-eviction paths.
+    /// caps: max_items=4, soft_items=2 — narrow enough to trigger eviction quickly.
+    const TEST_DROP_OLDEST_POLICY: EdgePolicy = EdgePolicy::new(
+        QueueCaps::new(4, 2, None, None),
+        AdmissionPolicy::DropOldest,
         OverBudgetAction::Drop,
     );
 
@@ -1351,6 +1402,23 @@ pub mod contract_tests {
                 #[test]
                 fn fixed_n_with_max_delta_t_behaviour() {
                     fixtures::run_step_batch_fixed_n_max_delta_t_tests(|| $make_nodelink());
+                }
+
+                #[test]
+                fn push_output_drop_oldest_evicts_oldest_once() {
+                    fixtures::run_push_output_drop_oldest_evicts_oldest_once(|| $make_nodelink());
+                }
+
+                #[test]
+                fn push_output_no_token_leak_on_backpressure() {
+                    fixtures::run_push_output_no_token_leak_on_backpressure(|| $make_nodelink());
+                }
+
+                #[test]
+                fn push_output_evict_until_below_hard_no_double_eviction() {
+                    fixtures::run_push_output_evict_until_below_hard_no_double_eviction(|| {
+                        $make_nodelink()
+                    });
                 }
             }
         };
@@ -1522,6 +1590,117 @@ pub mod contract_tests {
                 Err(_) => panic!("in_mgrs_ref_vec length mismatch"),
             };
 
+        let out_mgrs_ref: [&mut StaticMemoryManager<OutP, 16>; OUT] =
+            match out_mgrs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("out_mgrs_ref_vec length mismatch"),
+            };
+
+        let in_edge_ids = core::array::from_fn(|i| *inputs_ref[i].id().as_usize() as u32);
+        let out_edge_ids = core::array::from_fn(|o| *outputs_ref[o].id().as_usize() as u32);
+
+        crate::node::StepContext::new(
+            inputs_ref,
+            outputs_ref,
+            in_mgrs_ref,
+            out_mgrs_ref,
+            in_policies,
+            out_policies,
+            0u32,
+            in_edge_ids,
+            out_edge_ids,
+            clock,
+            telemetry,
+        )
+    }
+
+    /// Like `build_step_context` but applies `out_policy` to every output port.
+    /// Use this when a test needs to exercise eviction or backpressure paths that
+    /// differ from the default `TEST_EDGE_POLICY`.
+    #[allow(clippy::type_complexity)]
+    fn build_step_context_with_out_policy<
+        'graph,
+        'telemetry,
+        'clock,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+        C,
+        T,
+    >(
+        inputs: &'graph mut [EdgeLink<TestSpscRingBuf<16>>; IN],
+        outputs: &'graph mut [EdgeLink<TestSpscRingBuf<16>>; OUT],
+        in_managers: &'graph mut [StaticMemoryManager<InP, 16>; IN],
+        out_managers: &'graph mut [StaticMemoryManager<OutP, 16>; OUT],
+        out_policy: EdgePolicy,
+        clock: &'clock C,
+        telemetry: &'telemetry mut T,
+    ) -> crate::node::StepContext<
+        'graph,
+        'telemetry,
+        'clock,
+        IN,
+        OUT,
+        InP,
+        OutP,
+        EdgeLink<TestSpscRingBuf<16>>,
+        EdgeLink<TestSpscRingBuf<16>>,
+        StaticMemoryManager<InP, 16>,
+        StaticMemoryManager<OutP, 16>,
+        C,
+        T,
+    >
+    where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        C: PlatformClock + Sized,
+        T: Telemetry + Sized,
+    {
+        let in_policies = core::array::from_fn(|_| TEST_EDGE_POLICY);
+        let out_policies = core::array::from_fn(|_| out_policy); // <-- only difference
+
+        let mut inputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<16>>, IN> = Vec::new();
+        for elem in inputs.iter_mut() {
+            assert!(inputs_ref_vec.push(elem).is_ok(), "inputs_ref_vec overflow");
+        }
+        let mut outputs_ref_vec: Vec<&mut EdgeLink<TestSpscRingBuf<16>>, OUT> = Vec::new();
+        for elem in outputs.iter_mut() {
+            assert!(
+                outputs_ref_vec.push(elem).is_ok(),
+                "outputs_ref_vec overflow"
+            );
+        }
+        let mut in_mgrs_ref_vec: Vec<&mut StaticMemoryManager<InP, 16>, IN> = Vec::new();
+        for elem in in_managers.iter_mut() {
+            assert!(
+                in_mgrs_ref_vec.push(elem).is_ok(),
+                "in_mgrs_ref_vec overflow"
+            );
+        }
+        let mut out_mgrs_ref_vec: Vec<&mut StaticMemoryManager<OutP, 16>, OUT> = Vec::new();
+        for elem in out_managers.iter_mut() {
+            assert!(
+                out_mgrs_ref_vec.push(elem).is_ok(),
+                "out_mgrs_ref_vec overflow"
+            );
+        }
+
+        let inputs_ref: [&mut EdgeLink<TestSpscRingBuf<16>>; IN] = match inputs_ref_vec.into_array()
+        {
+            Ok(arr) => arr,
+            Err(_) => panic!("inputs_ref_vec length mismatch"),
+        };
+        let outputs_ref: [&mut EdgeLink<TestSpscRingBuf<16>>; OUT] =
+            match outputs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("outputs_ref_vec length mismatch"),
+            };
+        let in_mgrs_ref: [&mut StaticMemoryManager<InP, 16>; IN] =
+            match in_mgrs_ref_vec.into_array() {
+                Ok(arr) => arr,
+                Err(_) => panic!("in_mgrs_ref_vec length mismatch"),
+            };
         let out_mgrs_ref: [&mut StaticMemoryManager<OutP, 16>; OUT] =
             match out_mgrs_ref_vec.into_array() {
                 Ok(arr) => arr,
@@ -2496,5 +2675,287 @@ pub mod contract_tests {
                 }
             }
         }
+    }
+
+    /// Regression: push_output with DropOldest must evict exactly once when the output
+    /// queue is between soft and hard cap (Evict(1) decision), not twice.
+    ///
+    /// Pre-fills output to 3 items (soft=2, hard=4 → BetweenSoftAndHard → Evict(1)).
+    /// push_output pre-evicts 1 (queue: 3→2), then calls try_push.
+    /// OLD try_push: called get_admission_decision again, saw 2 items ≥ soft=2, evicted
+    /// a second time (2→1), then pushed → 2 items. Double-eviction.
+    /// NEW try_push: Evict branch does not pop. Checks at_or_above_hard(2,_) = false,
+    /// enqueues → 3 items. Correct.
+    pub fn run_push_output_drop_oldest_evicts_oldest_once<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        if IN == 0 || OUT == 0 {
+            return;
+        }
+
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+
+        // Pre-fill output port 0 with 3 items (between soft=2 and hard=4 for
+        // TEST_DROP_OLDEST_POLICY). Use TEST_EDGE_POLICY for the push — its caps
+        // (max=16, soft=14) admit all items unconditionally at this fill level.
+        for i in 0u64..3 {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(i + 1));
+            let tok = out_mgrs[0]
+                .store(Message::new(hdr, OutP::default()))
+                .expect("store filler");
+            assert_eq!(
+                out_links[0].try_push(tok, &TEST_EDGE_POLICY, &out_mgrs[0]),
+                crate::edge::EnqueueResult::Enqueued,
+            );
+        }
+
+        // Push one input so step() fires process_message → Output → push_output.
+        let in_tok = {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(clock.now_ticks());
+            in_mgrs[0]
+                .store(Message::new(hdr, InP::default()))
+                .expect("store input")
+        };
+        assert_eq!(
+            in_links[0].try_push(in_tok, &TEST_EDGE_POLICY, &in_mgrs[0]),
+            crate::edge::EnqueueResult::Enqueued,
+        );
+
+        // Output policy is TEST_DROP_OLDEST_POLICY (max=4, soft=2, DropOldest).
+        // With 3 items pre-filled, push_output sees Evict(1).
+        let mut ctx = build_step_context_with_out_policy(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            TEST_DROP_OLDEST_POLICY,
+            &clock,
+            &mut tele,
+        );
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert_eq!(res, crate::node::StepResult::MadeProgress);
+
+        // 3 pre-filled − 1 evicted + 1 pushed = 3. Double-eviction gives 2.
+        let occ = out_links[0].occupancy(&TEST_DROP_OLDEST_POLICY);
+        assert_eq!(
+            *occ.items(),
+            3,
+            "expected 3 items (exactly 1 evicted, 1 pushed); double-eviction gives 2"
+        );
+    }
+
+    /// push_output must free the manager slot when output is backpressured (DropNewest).
+    /// A leaked token would exhaust manager capacity and eventually panic on store.
+    /// Uses MemoryManager::available() before and after to verify the invariant.
+    pub fn run_push_output_no_token_leak_on_backpressure<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        if IN == 0 || OUT == 0 {
+            return;
+        }
+
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        // Tight DropNewest: max=2, soft=1. One item in queue puts it at soft,
+        // so the next push triggers DropNewest immediately.
+        let tight_drop_newest = EdgePolicy::new(
+            QueueCaps::new(2, 1, None, None),
+            AdmissionPolicy::DropNewest,
+            OverBudgetAction::Drop,
+        );
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+
+        // Pre-fill output port 0 with 1 item, using tight_drop_newest to confirm
+        // the first push is admitted (queue is empty → below soft).
+        {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(1));
+            let tok = out_mgrs[0]
+                .store(Message::new(hdr, OutP::default()))
+                .expect("store filler");
+            assert_eq!(
+                out_links[0].try_push(tok, &tight_drop_newest, &out_mgrs[0]),
+                crate::edge::EnqueueResult::Enqueued,
+            );
+        }
+
+        // Record manager availability after pre-fill. After the backpressured step
+        // this must be identical: push_output stores 1 token then frees it on DropNewest.
+        let available_before = out_mgrs[0].available();
+
+        // Push one input so step() fires.
+        let in_tok = {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(clock.now_ticks());
+            in_mgrs[0]
+                .store(Message::new(hdr, InP::default()))
+                .expect("store input")
+        };
+        assert_eq!(
+            in_links[0].try_push(in_tok, &TEST_EDGE_POLICY, &in_mgrs[0]),
+            crate::edge::EnqueueResult::Enqueued,
+        );
+
+        let mut ctx = build_step_context_with_out_policy(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            tight_drop_newest,
+            &clock,
+            &mut tele,
+        );
+
+        // step() → push_output: stores new token (1 slot used), hits DropNewest
+        // (queue already at soft=1), must free the stored token, return Backpressured.
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert_eq!(res, crate::node::StepResult::Backpressured);
+
+        // Slot must have been freed: available is unchanged.
+        assert_eq!(
+            out_mgrs[0].available(),
+            available_before,
+            "manager slot leaked: push_output must free token on DropNewest backpressure"
+        );
+
+        // Queue occupancy is also unchanged (the dropped item was never enqueued).
+        let occ = out_links[0].occupancy(&tight_drop_newest);
+        assert_eq!(
+            *occ.items(),
+            1,
+            "queue occupancy must not change on backpressure"
+        );
+    }
+
+    /// Regression: push_output with DropOldest at hard cap (EvictUntilBelowHard) must
+    /// not double-evict when the caller's pre-eviction leaves the queue above soft.
+    ///
+    /// Pre-fills output to 4 items (max=4 for TEST_DROP_OLDEST_POLICY → AtOrAboveHard
+    /// → EvictUntilBelowHard). push_output drains until below hard (4→3), then calls
+    /// try_push. 3 items > soft=2 → try_push decision is Evict(1).
+    /// OLD try_push: popped again (3→2), then pushed → 3 items. Double-eviction.
+    /// NEW try_push: Evict branch checks at_or_above_hard(3,_) = false, enqueues → 4.
+    pub fn run_push_output_evict_until_below_hard_no_double_eviction<
+        N,
+        const IN: usize,
+        const OUT: usize,
+        InP,
+        OutP,
+    >(
+        mut make_nodelink: impl FnMut() -> NodeLink<N, IN, OUT, InP, OutP>,
+    ) where
+        InP: crate::message::payload::Payload + Default + Clone,
+        OutP: crate::message::payload::Payload + Default + Clone,
+        N: crate::node::Node<IN, OUT, InP, OutP>,
+    {
+        if IN == 0 || OUT == 0 {
+            return;
+        }
+
+        let mut nlink = make_nodelink();
+        let clock = NoStdLinuxMonotonicClock::new();
+        let mut tele = make_graph_telemetry();
+        nlink.initialize(&clock, &mut tele).expect("init ok");
+
+        let (mut in_links, mut out_links) =
+            make_edge_links_for_node::<IN, OUT>(NodeIndex::new(0), NodeIndex::new(1));
+        let mut in_mgrs: [StaticMemoryManager<InP, 16>; IN] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+        let mut out_mgrs: [StaticMemoryManager<OutP, 16>; OUT] =
+            core::array::from_fn(|_| StaticMemoryManager::new());
+
+        // Pre-fill output port 0 to hard cap (4 items = max for TEST_DROP_OLDEST_POLICY).
+        // Use TEST_EDGE_POLICY for the push (large caps → always admits at this level).
+        for i in 0u64..4 {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(Ticks::new(i + 1));
+            let tok = out_mgrs[0]
+                .store(Message::new(hdr, OutP::default()))
+                .expect("store filler");
+            assert_eq!(
+                out_links[0].try_push(tok, &TEST_EDGE_POLICY, &out_mgrs[0]),
+                crate::edge::EnqueueResult::Enqueued,
+            );
+        }
+
+        // Push one input so step() fires.
+        let in_tok = {
+            let mut hdr = MessageHeader::empty();
+            hdr.set_creation_tick(clock.now_ticks());
+            in_mgrs[0]
+                .store(Message::new(hdr, InP::default()))
+                .expect("store input")
+        };
+        assert_eq!(
+            in_links[0].try_push(in_tok, &TEST_EDGE_POLICY, &in_mgrs[0]),
+            crate::edge::EnqueueResult::Enqueued,
+        );
+
+        // Output policy is TEST_DROP_OLDEST_POLICY (max=4, soft=2, DropOldest).
+        // With 4 items pre-filled, push_output sees EvictUntilBelowHard.
+        let mut ctx = build_step_context_with_out_policy(
+            &mut in_links,
+            &mut out_links,
+            &mut in_mgrs,
+            &mut out_mgrs,
+            TEST_DROP_OLDEST_POLICY,
+            &clock,
+            &mut tele,
+        );
+
+        let res = nlink.step(&mut ctx).expect("step ok");
+        assert_eq!(res, crate::node::StepResult::MadeProgress);
+
+        // 4 pre-filled − 1 evicted (EvictUntilBelowHard stops at 3 < hard=4) + 1 pushed = 4.
+        // Double-eviction (old try_push): evicts 1 more on Evict(1) branch → 3.
+        let occ = out_links[0].occupancy(&TEST_DROP_OLDEST_POLICY);
+        assert_eq!(
+            *occ.items(),
+            4,
+            "expected 4 items (1 pre-evicted, 1 pushed, net stable); \
+           double-eviction (old try_push Evict branch) gives 3"
+        );
     }
 }

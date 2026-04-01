@@ -21,8 +21,9 @@
 //!   via `GraphApi::write_all_edge_occupancies` and refreshes via `refresh_occupancies_for_node`.
 //! * Dequeue strategies (FIFO, EDF, QoS-weighted) live in runtimes; `DequeuePolicy` stays unchanged.
 
+use crate::node::StepResult;
 use crate::policy::WatermarkState;
-use crate::types::{DeadlineNs, NodeIndex};
+use crate::types::{DeadlineNs, NodeIndex, Ticks};
 
 /// Readiness level derived from inputs and backpressure state.
 ///
@@ -107,4 +108,96 @@ impl NodeSummary {
 pub trait DequeuePolicy {
     /// Select the next node index to step, or `None` if none should run.
     fn select_next(&mut self, candidates: &[NodeSummary]) -> Option<NodeIndex>;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent worker scheduling
+// ---------------------------------------------------------------------------
+
+/// Scheduling decision for a concurrent worker.
+///
+/// Returned by [`WorkerScheduler::decide`] to control per-worker stepping in
+/// scoped concurrent execution.
+///
+/// `#[non_exhaustive]` — future variants will be added as planned work lands:
+/// - `StepBatch(usize)` (C1 batch semantics — step N messages in one call)
+/// - `StepWithBudget { max_micros: u64 }` (R11 execution measurement)
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerDecision {
+    /// Step the node once.
+    Step,
+    /// Wait before calling `decide()` again. Duration in microseconds.
+    WaitMicros(u64),
+    /// This worker should exit.
+    Stop,
+}
+
+/// Per-worker state snapshot for scheduling decisions.
+///
+/// Populated by the codegen-generated worker loop before each
+/// [`WorkerScheduler::decide`] call. Edge occupancy is queried from concrete
+/// edge types (no dyn dispatch) and summarised here.
+///
+/// **Extensibility model:** `#[non_exhaustive]` — fields will be added as
+/// planned work lands. The codegen loop queries edges using concrete types
+/// (no dyn) and populates this snapshot. The scheduler never touches edges
+/// directly — it only sees the snapshot. New edge capabilities
+/// (peek_header, mailbox, urgency) are exposed by adding fields here, with
+/// the codegen loop doing the actual querying.
+///
+/// **Planned extensions (one field per planned item):**
+/// - `earliest_deadline: Option<DeadlineNs>` (R1 — from peeked input headers)
+/// - `max_input_urgency: Option<Urgency>` (R1 — highest urgency among inputs)
+/// - `inputs_fresh: bool` (R2 — all inputs within max_age threshold)
+/// - `input_liveness_ok: bool` (R5 — all inputs within liveness threshold)
+/// - `micros_since_last_step: u64` (R6 — for node liveness violation detection)
+/// - `criticality: CriticalityClass` (R8 — node's criticality tier)
+/// - `input_count: usize` / `inputs_ready_count: usize` (C2 — N→M per-port)
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct WorkerState {
+    /// Index of this node in the graph.
+    pub node_index: usize,
+    /// Total number of nodes in the graph.
+    pub node_count: usize,
+    /// Current clock tick (monotonic). Enables freshness/liveness calculations
+    /// without the scheduler needing a clock reference.
+    pub current_tick: Ticks,
+    /// Readiness derived from input availability and output pressure.
+    pub readiness: Readiness,
+    /// Max output backpressure (watermark across all outputs).
+    pub backpressure: WatermarkState,
+    /// Result of the last step, if any.
+    pub last_step: Option<StepResult>,
+    /// Whether the last step errored (NodeError details go to telemetry).
+    pub last_error: bool,
+}
+
+impl WorkerState {
+    /// Construct a new initial worker state for a given node.
+    #[inline]
+    pub const fn new(node_index: usize, node_count: usize, current_tick: Ticks) -> Self {
+        Self {
+            node_index,
+            node_count,
+            current_tick,
+            readiness: Readiness::NotReady,
+            backpressure: WatermarkState::BelowSoft,
+            last_step: None,
+            last_error: false,
+        }
+    }
+}
+
+/// Per-worker scheduling for concurrent execution.
+///
+/// Called from worker threads via **static dispatch** — the concrete scheduler
+/// type is a generic parameter on `ScopedGraphApi::run_scoped`, so no `dyn`.
+///
+/// Sequential runtimes use [`DequeuePolicy`] (centralized, one node per tick).
+/// Concurrent runtimes use `WorkerScheduler` (per-worker, one decision per step).
+pub trait WorkerScheduler: Send + Sync {
+    /// Decide what this worker should do next.
+    fn decide(&self, state: &WorkerState) -> WorkerDecision;
 }

@@ -15,10 +15,12 @@
 //!   }
 //!   edges {
 //!       <idx>: { ty: <TypePath>, payload: <Type>,
+//!                manager: <TypePath>,
 //!                from: (<usize>, <usize>), to: (<usize>, <usize>),
 //!                policy: <Expr>, name: <Expr or None> },
 //!       ...
 //!   }
+//!   concurrent;   // optional — emit the std concurrent graph flavor
 //!   ```
 //!   where:
 //!   - `<vis>` is a standard Rust visibility (e.g., `pub` or empty).
@@ -30,6 +32,11 @@
 //!   - `ingress_policy` is optional and only meaningful for **source** nodes
 //!     (nodes with `in_ports == 0 && out_ports > 0`). The generator may create
 //!     synthetic ingress edges from it.
+//!   - `concurrent` is an optional trailing keyword. When present, the
+//!     generator will emit **only** the concurrent (`std`-gated) graph
+//!     (inside `pub mod concurrent_graph`). When absent, only the non-std
+//!     graph is emitted. Manager types must satisfy `Clone + Send + 'static`
+//!     when concurrent is enabled.
 //!
 //! - **Output**: a fully populated [`crate::ast::GraphDef`]. Structural and
 //!   semantic validation (contiguous indices, port bounds, payload agreement,
@@ -48,9 +55,10 @@
 //!   1: { ty: my::MapU32,  in_ports: 1, out_ports: 1, in_payload: u32, out_payload: u32, name: Some("map") },
 //!   2: { ty: my::SinkU32, in_ports: 1, out_ports: 0, in_payload: u32, out_payload: (),  name: Some("sink") },
 //! }
+//!
 //! edges {
-//!   0: { ty: q::Ring<u32>, payload: u32, from: (0, 0), to: (1, 0), policy: QPOL, name: Some("src->map") },
-//!   1: { ty: q::Ring<u32>, payload: u32, from: (1, 0), to: (2, 0), policy: QPOL, name: Some("map->sink") },
+//!   0: { ty: StaticRing<8>, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (0, 0), to: (1, 0), policy: QPOL, name: Some("src->map") },
+//!   1: { ty: StaticRing<8>, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (1, 0), to: (2, 0), policy: QPOL, name: Some("map->sink") },
 //! }
 //! ```
 //!
@@ -158,6 +166,7 @@ impl Parse for GraphDef {
             let (mut ty, mut payload) = (None::<TypePath>, None::<Type>);
             let (mut from_node, mut from_port, mut to_node, mut to_port) = (None, None, None, None);
             let (mut policy, mut name_opt) = (None, None);
+            let mut manager_ty = None::<TypePath>;
 
             // ty: <TypePath>, payload: <Type>, from: (<usize>,<usize>), to: (...), policy: <Expr>, name: <Expr?>
             while !body.is_empty() {
@@ -166,6 +175,7 @@ impl Parse for GraphDef {
                 match key.to_string().as_str() {
                     "ty" => ty = Some(body.parse()?),
                     "payload" => payload = Some(body.parse()?),
+                    "manager" => manager_ty = Some(body.parse()?),
                     "from" => {
                         let paren;
                         parenthesized!(paren in body);
@@ -202,6 +212,7 @@ impl Parse for GraphDef {
                 idx,
                 ty: ty.ok_or_else(|| err("edge.ty is required"))?,
                 payload: payload.ok_or_else(|| err("edge.payload is required"))?,
+                manager_ty: manager_ty.ok_or_else(|| err("edge.manager is required"))?,
                 from_node: from_node.ok_or_else(|| err("edge.from is required"))?,
                 from_port: from_port.ok_or_else(|| err("edge.from is required"))?,
                 to_node: to_node.ok_or_else(|| err("edge.to is required"))?,
@@ -215,9 +226,24 @@ impl Parse for GraphDef {
             }
         }
 
+        // Optional trailing `concurrent;`
+        let mut emit_concurrent = false;
+        if !input.is_empty() {
+            let concurrent_kw: Ident = input.parse()?;
+            if concurrent_kw != "concurrent" {
+                return Err(syn::Error::new_spanned(
+                    concurrent_kw,
+                    "expected `concurrent;`",
+                ));
+            }
+            input.parse::<Token![;]>()?;
+            emit_concurrent = true;
+        }
+
         Ok(GraphDef {
             vis,
             name,
+            emit_concurrent,
             nodes,
             edges,
         })

@@ -14,12 +14,12 @@ pub mod validate;
 pub mod bench;
 
 use crate::node::Node;
-use crate::prelude::{PlatformClock, Telemetry};
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 use crate::{
     edge::{link::EdgeDescriptor, Edge, EdgeOccupancy},
     errors::{GraphError, NodeError},
     graph::validate::{GraphDescBuf, GraphValidator},
-    message::{payload::Payload, Message},
+    message::payload::Payload,
     node::{link::NodeDescriptor, StepContext, StepResult},
     policy::{EdgePolicy, NodePolicy},
 };
@@ -79,10 +79,16 @@ pub trait GraphNodeTypes<const I: usize, const IN: usize, const OUT: usize> {
     type OutP: Payload;
 
     /// Queue type used for input ports.
-    type InQ: Edge<Item = Message<Self::InP>>;
+    type InQ: Edge;
 
     /// Queue type used for output ports.
-    type OutQ: Edge<Item = Message<Self::OutP>>;
+    type OutQ: Edge;
+
+    /// Memory manager type for input ports.
+    type InM: MemoryManager<Self::InP>;
+
+    /// Memory manager type for output ports.
+    type OutM: MemoryManager<Self::OutP>;
 }
 
 /// Builder for per-node execution contexts.
@@ -106,6 +112,7 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
     ///
     /// # Returns
     /// A fully wired [`StepContext`] for the node, ready for execution.
+    #[allow(clippy::type_complexity)]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
         &'graph mut self,
         clock: &'clock C,
@@ -120,6 +127,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
         <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
         <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
         <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+        <Self as GraphNodeTypes<I, IN, OUT>>::InM,
+        <Self as GraphNodeTypes<I, IN, OUT>>::OutM,
         C,
         T,
     >
@@ -147,6 +156,8 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
                 <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
                 <Self as GraphNodeTypes<I, IN, OUT>>::InQ,
                 <Self as GraphNodeTypes<I, IN, OUT>>::OutQ,
+                <Self as GraphNodeTypes<I, IN, OUT>>::InM,
+                <Self as GraphNodeTypes<I, IN, OUT>>::OutM,
                 C,
                 T,
             >,
@@ -157,44 +168,6 @@ pub trait GraphNodeContextBuilder<const I: usize, const IN: usize, const OUT: us
         EdgePolicy: Copy,
         C: PlatformClock + Sized,
         T: Telemetry + Sized;
-}
-
-/// Std-only: move `node I` and owned endpoint queues to a worker thread.
-#[cfg(feature = "std")]
-pub trait GraphNodeOwnedEndpointHandoff<const I: usize, const IN: usize, const OUT: usize>:
-    GraphNodeTypes<I, IN, OUT> + GraphNodeAccess<I>
-{
-    /// Node type to be moved to workers (usually the same as `GraphNodeAccess<I>::Node`).
-    type NodeOwned: Node<
-            IN,
-            OUT,
-            <Self as GraphNodeTypes<I, IN, OUT>>::InP,
-            <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
-        > + Send
-        + 'static;
-
-    /// Take ownership of node `I` and produce owned endpoint queues + policies.
-    #[allow(clippy::complexity)]
-    fn take_node_and_endpoints(
-        &mut self,
-    ) -> (
-        Self::NodeOwned,
-        [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
-        [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
-        [EdgePolicy; IN],
-        [EdgePolicy; OUT],
-    )
-    where
-        <Self as GraphNodeTypes<I, IN, OUT>>::InQ: Send + 'static,
-        <Self as GraphNodeTypes<I, IN, OUT>>::OutQ: Send + 'static;
-
-    /// (Optional) Reattach ownership after the worker is done.
-    fn put_node_and_endpoints(
-        &mut self,
-        node: Self::NodeOwned,
-        inputs: [<Self as GraphNodeTypes<I, IN, OUT>>::InQ; IN],
-        outputs: [<Self as GraphNodeTypes<I, IN, OUT>>::OutQ; OUT],
-    );
 }
 
 /// Unified runtime-facing graph API.
@@ -359,68 +332,6 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
             <Self as GraphNodeTypes<I, IN, OUT>>::OutP,
         >>::policy(<Self as GraphNodeAccess<I>>::node_ref(self))
     }
-
-    // ===== std-only: by-index owned handoff for worker threads =====
-
-    /// Opaque, owned bundle containing a node and its owned endpoints for
-    /// transfer to worker threads.
-    #[cfg(feature = "std")]
-    type OwnedBundle: Send + 'static;
-
-    /// Moves the node at `index` and its owned endpoints out of the graph.
-    ///
-    /// The returned bundle can be executed off-thread and later reattached via
-    /// [`put_owned_bundle_by_index`](Self::put_owned_bundle_by_index).
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`GraphError`] if `index` is invalid, the node is already
-    /// detached, or ownership cannot be transferred.
-    #[cfg(feature = "std")]
-    fn take_owned_bundle_by_index(&mut self, index: usize)
-        -> Result<Self::OwnedBundle, GraphError>;
-
-    /// Reattaches a previously taken owned bundle back into the graph.
-    ///
-    /// After reattachment, the node is once again managed by the graph and can
-    /// be stepped by index or handed off again.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`GraphError`] if the bundle does not match the target graph
-    /// slot or the slot is already occupied.
-    #[cfg(feature = "std")]
-    fn put_owned_bundle_by_index(&mut self, bundle: Self::OwnedBundle) -> Result<(), GraphError>;
-
-    /// Executes a single step on an owned bundle outside the graph.
-    ///
-    /// This is the worker-thread counterpart to
-    /// [`step_node_by_index`](Self::step_node_by_index), operating directly on
-    /// the detached bundle.
-    ///
-    /// # Parameters
-    ///
-    /// * `bundle` — The detached node bundle to execute.
-    /// * `clock` — A clock-like source used by the node during execution.
-    /// * `telemetry` — A sink for emitting per-step metrics or traces.
-    ///
-    /// # Returns
-    ///
-    /// A [`StepResult`] indicating the outcome of the step.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`NodeError`] if the node’s step fails.
-    #[cfg(feature = "std")]
-    fn step_owned_bundle<C, T>(
-        bundle: &mut Self::OwnedBundle,
-        clock: &C,
-        telemetry: &mut T,
-    ) -> Result<StepResult, NodeError>
-    where
-        EdgePolicy: Copy,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized;
 }
 
 /// Opaque, runtime-owned buffer of edge occupancy snapshots.
@@ -451,3 +362,64 @@ pub trait GraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize> {
 ///
 /// See also: [`EdgeOccupancy`], [`GraphApi`].
 pub type EdgeOccupancyBuf<const E: usize> = [EdgeOccupancy; E];
+
+// ---------------------------------------------------------------------------
+// Concurrent scoped execution
+// ---------------------------------------------------------------------------
+
+/// Extension trait for graphs that support concurrent execution via scoped threads.
+///
+/// The runtime provides a [`WorkerScheduler`] that controls per-worker stepping.
+/// The graph sets up scoped threads and disjoint node borrows; the scheduler
+/// decides when each worker steps, waits, or exits.
+///
+/// This trait is `#[cfg(feature = "std")]` because it requires `std::thread::scope`.
+/// [`GraphApi`] remains `no_std`-compatible.
+///
+/// # Edge and manager handles
+///
+/// Edges must implement [`ScopedEdge`](crate::edge::ScopedEdge) and managers
+/// must implement [`ScopedManager`](crate::memory::ScopedManager) to produce
+/// per-worker handles. Arc-based types (e.g. `ConcurrentEdge`,
+/// `ConcurrentMemoryManager`) return clones; future lock-free types will
+/// return split producer/consumer handles via
+/// [`EdgeHandleKind`](crate::edge::EdgeHandleKind).
+///
+/// # Scheduling model
+///
+/// The codegen-generated implementation:
+/// 1. Obtains per-worker edge and manager handles via `ScopedEdge::scoped_handle`
+///    and `ScopedManager::scoped_handle` (before node borrows)
+/// 2. Takes disjoint `&mut` borrows of each node (tuple field access)
+/// 3. Spawns one scoped thread per node
+/// 4. Each worker loop:
+///    - Queries edge occupancy from concrete types (no dyn dispatch)
+///    - Builds a [`WorkerState`] snapshot (readiness, backpressure, tick, last result)
+///    - Calls `scheduler.decide(&state)` (static dispatch via `S`)
+///    - Acts on the [`WorkerDecision`]: step, wait, or exit
+///
+/// The runtime controls execution policy by choosing which [`WorkerScheduler`]
+/// to pass. Different runtimes can implement different strategies (backoff,
+/// EDF, throughput, criticality-aware) without changing the graph.
+///
+/// [`WorkerScheduler`]: crate::scheduling::WorkerScheduler
+/// [`WorkerState`]: crate::scheduling::WorkerState
+/// [`WorkerDecision`]: crate::scheduling::WorkerDecision
+#[cfg(feature = "std")]
+pub trait ScopedGraphApi<const NODE_COUNT: usize, const EDGE_COUNT: usize>:
+    GraphApi<NODE_COUNT, EDGE_COUNT>
+{
+    /// Run the graph concurrently with scheduler-controlled workers.
+    ///
+    /// Spawns one scoped thread per node. Each worker calls
+    /// `scheduler.decide()` before every step. All threads join when
+    /// all workers return (scope exit).
+    ///
+    /// Clock and telemetry are moved into the scope and distributed to workers
+    /// via `Clone`. After this method returns, all threads have joined.
+    fn run_scoped<C, T, S>(&mut self, clock: C, telemetry: T, scheduler: S)
+    where
+        C: PlatformClock + Clone + Send + Sync + 'static,
+        T: Telemetry + Clone + Send + 'static,
+        S: crate::scheduling::WorkerScheduler + 'static;
+}

@@ -14,18 +14,6 @@ use crate::memory::{BufferDescriptor, MemoryClass};
 use crate::message::payload::Payload;
 use crate::types::{DeadlineNs, QoSClass, SequenceNumber, Ticks, TraceId};
 
-/// Helper trait to expose the minimal admission hints for a single item or a
-pub trait AdmissionInfo {
-    /// Total byte footprint of this item (header + payload).
-    fn item_bytes(&self) -> usize;
-
-    /// Optional absolute deadline hint for admission logic.
-    fn deadline(&self) -> Option<DeadlineNs>;
-
-    /// QoS class hint for admission logic.
-    fn qos(&self) -> QoSClass;
-}
-
 /// A compact bitfield of message flags.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +175,6 @@ impl MessageHeader {
     pub fn sync_from_payload<P: Payload>(&mut self, payload: &P) {
         let desc = payload.buffer_descriptor();
         self.payload_size_bytes = *desc.bytes();
-        self.memory_class = *desc.class();
     }
 
     /// Return the trace id.
@@ -323,7 +310,6 @@ impl<P: Payload> Message<P> {
     pub fn new(mut header: MessageHeader, payload: P) -> Self {
         let desc = payload.buffer_descriptor();
         header.payload_size_bytes = *desc.bytes();
-        header.memory_class = *desc.class();
         Self { header, payload }
     }
 
@@ -333,26 +319,20 @@ impl<P: Payload> Message<P> {
         let mut header = self.header;
         let desc = payload.buffer_descriptor();
         header.payload_size_bytes = *desc.bytes();
-        header.memory_class = *desc.class();
         Message { header, payload }
     }
 
     /// Transform payloads while preserving header metadata correctly.
     #[inline]
     pub fn map_payload<Q: Payload>(self, f: impl FnOnce(P) -> Q) -> Message<Q> {
-        // Move out of `self` explicitly.
         let Message {
             mut header,
             payload,
         } = self;
 
-        // Produce the new payload by consuming the old one.
         let new_payload = f(payload);
-
-        // Recompute size and placement from the new payload.
         let desc = new_payload.buffer_descriptor();
         header.payload_size_bytes = *desc.bytes();
-        header.memory_class = *desc.class();
 
         Message {
             header,
@@ -396,27 +376,7 @@ impl<P: Payload> Payload for Message<P> {
     fn buffer_descriptor(&self) -> BufferDescriptor {
         let payload_desc = self.payload.buffer_descriptor();
         // Add header size to the payload byte size, keep the payload memory class.
-        BufferDescriptor::new(
-            *payload_desc.bytes() + mem::size_of::<MessageHeader>(),
-            *payload_desc.class(),
-        )
-    }
-}
-
-impl<P: Payload> AdmissionInfo for Message<P> {
-    #[inline]
-    fn item_bytes(&self) -> usize {
-        *self.buffer_descriptor().bytes()
-    }
-
-    #[inline]
-    fn deadline(&self) -> Option<DeadlineNs> {
-        *self.header().deadline_ns()
-    }
-
-    #[inline]
-    fn qos(&self) -> QoSClass {
-        *self.header().qos()
+        BufferDescriptor::new(*payload_desc.bytes() + mem::size_of::<MessageHeader>())
     }
 }
 
@@ -425,10 +385,7 @@ impl<'a, P: Payload + 'a> Payload for &'a Message<P> {
     #[inline]
     fn buffer_descriptor(&self) -> BufferDescriptor {
         let payload_desc = self.payload.buffer_descriptor();
-        BufferDescriptor::new(
-            *payload_desc.bytes() + mem::size_of::<MessageHeader>(),
-            *payload_desc.class(),
-        )
+        BufferDescriptor::new(*payload_desc.bytes() + mem::size_of::<MessageHeader>())
     }
 }
 

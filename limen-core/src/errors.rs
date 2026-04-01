@@ -1,8 +1,8 @@
 //! Error families used across Limen Core.
 //!
-//! Errors are designed to be allocation-free in P0, bounded in P1, and richer
-//! in P2. The types here avoid `std::error::Error` unless the `std` feature is
-//! enabled.
+//! Errors are designed to stay lightweight and `no_std` friendly by default.
+//! Implementations of `std::error::Error` are only provided when the `std`
+//! feature is enabled.
 
 use core::fmt;
 
@@ -393,6 +393,45 @@ impl fmt::Display for OutputError {
 
 #[cfg(feature = "std")]
 impl Error for OutputError {}
+
+// ***** Memory Errors *****
+
+/// Errors originating from memory manager operations.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryError {
+    /// No free slots available in the manager.
+    NoFreeSlots,
+    /// Token index is out of range (invalid token) or the slot is not allocated.
+    BadToken,
+    /// Attempted to free a slot that is not currently allocated.
+    NotAllocated,
+    /// Attempted to borrow (read or write) but slot is already borrowed
+    /// in an incompatible way.
+    AlreadyBorrowed,
+    /// Attempted to free a slot while borrows are still active.
+    BorrowActive,
+    /// A synchronization primitive (lock) was poisoned.
+    Poisoned,
+}
+
+impl fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MemoryError::NoFreeSlots => f.write_str("no free slots in memory manager"),
+            MemoryError::BadToken => f.write_str("token index out of range or slot not allocated"),
+            MemoryError::NotAllocated => {
+                f.write_str("attempted to free a slot that is not allocated")
+            }
+            MemoryError::AlreadyBorrowed => f.write_str("slot already borrowed incompatibly"),
+            MemoryError::BorrowActive => f.write_str("cannot free slot while borrows are active"),
+            MemoryError::Poisoned => f.write_str("synchronization primitive is poisoned"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Error for MemoryError {}
 
 // ***** Runtime Errors *****
 

@@ -2,7 +2,7 @@ use limen_core::edge::EdgeOccupancy;
 use limen_core::graph::bench::TestPipeline;
 use limen_core::graph::GraphApi;
 use limen_core::memory::PlacementAcceptance;
-use limen_core::message::{Message, MessageFlags};
+use limen_core::message::MessageFlags;
 use limen_core::node::bench::{
     TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
 };
@@ -18,8 +18,11 @@ use limen_core::runtime::bench::TestNoStdRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 
-// Concrete queue type used by the test pipelines (matches your bench graphs)
-type Q32 = limen_core::edge::bench::TestSpscRingBuf<Message<u32>, 8>;
+// Concrete queue type used by the test pipelines
+type Q32 = limen_core::edge::bench::TestSpscRingBuf<8>;
+
+// Memory manager type (one per real edge)
+type Mgr32 = limen_core::memory::static_manager::StaticMemoryManager<u32, 8>;
 
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
@@ -99,12 +102,16 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let q0: Q32 = Q32::default();
     let q1: Q32 = Q32::default();
 
+    // managers
+    let mgr0: Mgr32 = Mgr32::default();
+    let mgr1: Mgr32 = Mgr32::default();
+
     // telemetry
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
 
     // graph
-    let mut graph = TestPipeline::new(src, map, snk, q0, q1);
+    let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
 
     // runtime
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =

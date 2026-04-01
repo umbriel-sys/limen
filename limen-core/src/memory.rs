@@ -1,5 +1,15 @@
 //! Memory classes and placement descriptors for zero-copy data paths.
 
+pub mod header_store;
+pub mod manager;
+pub mod static_manager;
+
+#[cfg(feature = "alloc")]
+pub mod heap_manager;
+
+#[cfg(feature = "std")]
+pub mod concurrent_manager;
+
 /// The memory class associated with a payload.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -180,33 +190,28 @@ impl PlacementAcceptance {
     }
 }
 
-/// A descriptor of a buffer/payload view for size accounting and placement.
+/// A descriptor of a buffer/payload view for size accounting.
+///
+/// Memory class information is now owned by the [`MemoryManager`] rather than
+/// the payload itself — see `MemoryManager::memory_class()`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferDescriptor {
     /// The byte size of the payload.
     bytes: usize,
-    /// The memory class where this payload currently resides.
-    class: MemoryClass,
 }
 
 impl BufferDescriptor {
     /// Construct a new buffer descriptor.
     #[inline]
-    pub const fn new(bytes: usize, class: MemoryClass) -> Self {
-        Self { bytes, class }
+    pub const fn new(bytes: usize) -> Self {
+        Self { bytes }
     }
 
     /// Return the byte size of the payload.
     #[inline]
     pub const fn bytes(&self) -> &usize {
         &self.bytes
-    }
-
-    /// Return the memory class where this payload resides.
-    #[inline]
-    pub const fn class(&self) -> &MemoryClass {
-        &self.class
     }
 }
 

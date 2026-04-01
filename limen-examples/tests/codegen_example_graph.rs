@@ -5,14 +5,21 @@ mod generated {
     use limen_core::node::source::Source;
     use limen_core::node::Node;
 
-    // Pulled from build.rs: $OUT_DIR/generated/simple_example_graph.rs
+    // Pulled from build.rs: $OUT_DIR/generated/simple_example_nostd_graph.rs
     include!(concat!(
         env!("OUT_DIR"),
-        "/generated/simple_example_graph.rs"
+        "/generated/simple_example_nostd_graph.rs"
+    ));
+
+    // Pulled from build.rs: $OUT_DIR/generated/simple_example_concurrent_graph.rs
+    #[cfg(feature = "std")]
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/generated/simple_example_concurrent_graph.rs"
     ));
 }
 
-// #[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std"))]
 #[path = "codegen_example_graph/no_std.rs"]
 mod no_std;
 

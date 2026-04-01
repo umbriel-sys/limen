@@ -338,7 +338,7 @@ impl QueueCaps {
 
 /// Watermark state derived from queue occupancy and caps.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WatermarkState {
     /// Well below soft watermarks.
     BelowSoft,

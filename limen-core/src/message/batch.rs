@@ -12,9 +12,10 @@
 //! in both `alloc` and `no-alloc` builds.
 
 use crate::{
-    memory::{BufferDescriptor, MemoryClass},
-    message::{payload::Payload, AdmissionInfo, Message, MessageHeader},
-    types::{DeadlineNs, QoSClass},
+    memory::BufferDescriptor,
+    message::{payload::Payload, Message, MessageHeader},
+    prelude::MemoryManager,
+    types::MessageToken,
 };
 
 use core::{mem, slice};
@@ -127,7 +128,7 @@ impl<'a, P: Payload> Payload for Batch<'a, P> {
             .sum();
 
         let header_bytes = self.messages.len() * mem::size_of::<MessageHeader>();
-        BufferDescriptor::new(total_payload_bytes + header_bytes, MemoryClass::Host)
+        BufferDescriptor::new(total_payload_bytes + header_bytes)
     }
 }
 
@@ -148,10 +149,7 @@ impl<'a, P: Payload> Payload for &'a Batch<'a, P> {
 /// - `Owned(Vec<I>)`: when `alloc` feature is enabled and we can own a Vec.
 /// - `Borrowed(&'a mut [I], len)`: stack/heapless-backed buffer with explicit length.
 #[derive(Debug)]
-pub enum BatchView<'a, I>
-where
-    I: Payload,
-{
+pub enum BatchView<'a, I> {
     /// Owned variant (alloc-enabled). Stores the entire `Vec<I>`.
     #[cfg(feature = "alloc")]
     Owned(alloc::vec::Vec<I>),
@@ -160,10 +158,7 @@ where
     Borrowed(&'a mut [I], usize),
 }
 
-impl<'a, I> BatchView<'a, I>
-where
-    I: Payload,
-{
+impl<'a, I> BatchView<'a, I> {
     /// Construct from an owned Vec (alloc feature required).
     #[cfg(feature = "alloc")]
     #[inline]
@@ -211,6 +206,16 @@ where
             #[cfg(feature = "alloc")]
             BatchView::Owned(v) => v.as_mut_slice().iter_mut(),
             BatchView::Borrowed(buf, n) => buf[..*n].iter_mut(),
+        }
+    }
+
+    /// Return an immutable slice over the valid items.
+    #[inline]
+    pub fn as_slice(&self) -> &[I] {
+        match self {
+            #[cfg(feature = "alloc")]
+            BatchView::Owned(v) => v.as_slice(),
+            BatchView::Borrowed(buf, n) => &buf[..*n],
         }
     }
 }
@@ -325,7 +330,7 @@ impl<'a, P: Payload> Payload for BatchView<'a, Message<P>> {
                 let total_payload_bytes: usize =
                     v.iter().map(|m| m.header().payload_size_bytes).sum();
                 let header_bytes = v.len() * mem::size_of::<MessageHeader>();
-                BufferDescriptor::new(total_payload_bytes + header_bytes, MemoryClass::Host)
+                BufferDescriptor::new(total_payload_bytes + header_bytes)
             }
 
             BatchView::Borrowed(buf, n) => {
@@ -334,7 +339,7 @@ impl<'a, P: Payload> Payload for BatchView<'a, Message<P>> {
                     .map(|m| m.header().payload_size_bytes)
                     .sum();
                 let header_bytes = *n * mem::size_of::<MessageHeader>();
-                BufferDescriptor::new(total_payload_bytes + header_bytes, MemoryClass::Host)
+                BufferDescriptor::new(total_payload_bytes + header_bytes)
             }
         }
     }
@@ -348,61 +353,82 @@ impl<'a, P: Payload> Payload for &'a BatchView<'a, Message<P>> {
     }
 }
 
-impl<'a, P: Payload> AdmissionInfo for BatchView<'a, Message<P>> {
+/// Lazy guard-yielding iterator over messages in a batch.
+///
+/// Backed by token resolution through a memory manager. Each `next()` call
+/// takes a `ReadGuard` from the manager — no copying, no contiguous buffer
+/// required.
+///
+/// Nodes can:
+/// - iterate and process one at a time (default `step_batch`)
+/// - iterate and copy into a node-owned scratch buffer (`InferenceModel`)
+pub struct BatchMessageIter<'edge, 'mgr, P: Payload, M: MemoryManager<P>> {
+    tokens: core::slice::Iter<'edge, MessageToken>,
+    manager: &'mgr M,
+    /// Number of leading tokens that were popped (rest are peeked).
+    stride: usize,
+    /// Total number of tokens in the batch.
+    len: usize,
+    _pd: core::marker::PhantomData<P>,
+}
+
+impl<'edge, 'mgr, P: Payload, M: MemoryManager<P>> BatchMessageIter<'edge, 'mgr, P, M> {
+    /// Construct a new `BatchMessageIter` from token slice, manager, and stride.
     #[inline]
-    fn item_bytes(&self) -> usize {
-        // Use the BatchView's Payload impl which sums header+payload sizes.
-        let desc = self.buffer_descriptor();
-        *desc.bytes()
-    }
-
-    #[inline]
-    fn deadline(&self) -> Option<DeadlineNs> {
-        // Use the last message's deadline as the batch-level hint if present.
-        // If empty, return None.
-        let last_header_opt = match self {
-            #[cfg(feature = "alloc")]
-            BatchView::Owned(v) => v.last().map(|m| m.header()),
-            BatchView::Borrowed(buf, n) => {
-                if *n == 0 {
-                    None
-                } else {
-                    buf.get(*n - 1).map(|m| m.header())
-                }
-            }
-        };
-
-        last_header_opt.map(|h| *h.deadline_ns()).unwrap_or(None)
-    }
-
-    #[inline]
-    fn qos(&self) -> QoSClass {
-        // Compute the highest QoS across all messages in the batch.
-        // Default to BestEffort when the batch is empty.
-        let mut best = QoSClass::BestEffort;
-
-        match self {
-            #[cfg(feature = "alloc")]
-            BatchView::Owned(v) => {
-                for m in v.iter() {
-                    let q = *m.header().qos();
-                    // Choose the numerically/ordinarily higher QoS. Assumes QoSClass: PartialOrd + Copy.
-                    if q > best {
-                        best = q;
-                    }
-                }
-            }
-            BatchView::Borrowed(buf, n) => {
-                for m in &buf[..*n] {
-                    let q = *m.header().qos();
-                    if q > best {
-                        best = q;
-                    }
-                }
-            }
+    pub fn new(
+        tokens: core::slice::Iter<'edge, MessageToken>,
+        manager: &'mgr M,
+        stride: usize,
+        len: usize,
+    ) -> Self {
+        Self {
+            tokens,
+            manager,
+            stride,
+            len,
+            _pd: core::marker::PhantomData,
         }
+    }
 
-        best
+    /// How many items were popped (will be freed after the callback).
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    /// Total batch length (popped + peeked).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the batch is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Whether this is a sliding window batch (stride < len).
+    #[inline]
+    pub fn is_sliding(&self) -> bool {
+        self.stride < self.len
+    }
+}
+
+impl<'edge, 'mgr, P: Payload, M: MemoryManager<P>> Iterator
+    for BatchMessageIter<'edge, 'mgr, P, M>
+{
+    type Item = M::ReadGuard<'mgr>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let &token = self.tokens.next()?;
+        self.manager.read(token).ok()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.tokens.size_hint()
     }
 }
 

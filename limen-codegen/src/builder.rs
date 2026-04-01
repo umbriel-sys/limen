@@ -11,45 +11,49 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use limen_codegen::builder::{GraphBuilder, Node, Edge};
-//! use syn::parse_quote;
+//! use limen_codegen::builder::{GraphBuilder, GraphVisibility, Node, Edge};
+//! use limen_core::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
 //!
-//! let edge_policy: syn::Expr = parse_quote! {
-//!     limen_core::policy::EdgePolicy::default()
-//! };
+//! let edge_policy = EdgePolicy::new(
+//!     QueueCaps::new(8, 6, None, None),
+//!     AdmissionPolicy::DropNewest,
+//!     OverBudgetAction::Drop,
+//! );
 //!
-//! let ast = GraphBuilder::new(parse_quote!(pub), parse_quote!(MyGraph))
+//! let ast = GraphBuilder::new("MyGraph", GraphVisibility::Public)
 //!     .node(
 //!         Node::new(0)
-//!             .ty(parse_quote!(MySource))
+//!             .ty::<my_crate::Source>()
 //!             .in_ports(0)
 //!             .out_ports(1)
-//!             .in_payload(parse_quote!(()))
-//!             .out_payload(parse_quote!(u32))
-//!             .name(parse_quote!(Some("source")))
-//!             .ingress_policy(edge_policy.clone()),
+//!             .in_payload::<()>()
+//!             .out_payload::<u32>()
+//!             .name(Some("source"))
+//!             .ingress_policy(edge_policy),
 //!     )
 //!     .node(
 //!         Node::new(1)
-//!             .ty(parse_quote!(MyMap))
+//!             .ty::<my_crate::MapU32>()
 //!             .in_ports(1)
 //!             .out_ports(1)
-//!             .in_payload(parse_quote!(u32))
-//!             .out_payload(parse_quote!(u32))
-//!             .name(parse_quote!(Some("map"))),
+//!             .in_payload::<u32>()
+//!             .out_payload::<u32>()
+//!             .name(Some("map")),
 //!     )
 //!     .edge(
 //!         Edge::new(0)
-//!             .ty(parse_quote!(limen_core::edge::spsc_ringbuf::SpscRingbuf<limen_core::message::Message<u32>>))
-//!             .payload(parse_quote!(u32))
+//!             .ty::<limen_core::edge::spsc_array::StaticRing<8>>()
+//!             .payload::<u32>()
+//!             .manager_ty::<limen_core::memory::static_manager::StaticMemoryManager<u32, 8>>()
 //!             .from(0, 0)
 //!             .to(1, 0)
-//!             .policy(edge_policy.clone())
-//!             .name(parse_quote!(Some("source->map"))),
+//!             .policy(edge_policy)
+//!             .name(Some("source->map")),
 //!     )
+//!     .concurrent(false)
 //!     .finish();
 //!
-//! // limen_codegen::expand_ast_to_file(ast, out_path)?;
+//! // writer.write("my_graph")?;
 //! ```
 
 use crate::ast;
@@ -62,7 +66,6 @@ use syn::{Expr, Ident, Type, TypePath, Visibility};
 
 // Bring core types in so the builder can accept "real" NodeLink/EdgeLink values.
 use limen_core::edge::link::EdgeLink;
-use limen_core::message::Message;
 use limen_core::node::link::NodeLink;
 use limen_core::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction};
 
@@ -104,6 +107,7 @@ pub struct GraphBuilder {
     name: Option<Ident>,
     nodes: Vec<ast::NodeDef>,
     edges: Vec<ast::EdgeDef>,
+    emit_concurrent: bool,
 }
 
 impl GraphBuilder {
@@ -123,6 +127,7 @@ impl GraphBuilder {
             name: Some(name_ident),
             nodes: Vec::new(),
             edges: Vec::new(),
+            emit_concurrent: false,
         }
     }
 
@@ -134,17 +139,16 @@ impl GraphBuilder {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use limen_codegen::builder::{GraphBuilder, Node};
-    /// use syn::parse_quote;
+    /// use limen_codegen::builder::{GraphBuilder, GraphVisibility, Node};
     ///
-    /// let gb = GraphBuilder::new(parse_quote!(pub), parse_quote!(MyGraph))
+    /// let gb = GraphBuilder::new("MyGraph", GraphVisibility::Public)
     ///     .node(
     ///         Node::new(0)
-    ///             .ty(parse_quote!(MySource))
+    ///             .ty::<MySource>()
     ///             .in_ports(0)
     ///             .out_ports(1)
-    ///             .in_payload(parse_quote!(()))
-    ///             .out_payload(parse_quote!(u32))
+    ///             .in_payload::<()>()
+    ///             .out_payload::<u32>()
     ///     );
     /// ```
     pub fn node(mut self, n: Node) -> Self {
@@ -211,19 +215,25 @@ impl GraphBuilder {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use limen_codegen::builder::{GraphBuilder, Edge};
-    /// use syn::parse_quote;
+    /// use limen_codegen::builder::{GraphBuilder, GraphVisibility, Edge};
+    /// use limen_core::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
     ///
-    /// let policy: syn::Expr = parse_quote!(limen_core::policy::EdgePolicy::default());
+    /// let policy = EdgePolicy::new(
+    ///     QueueCaps::new(8, 6, None, None),
+    ///     AdmissionPolicy::DropNewest,
+    ///     OverBudgetAction::Drop,
+    /// );
     ///
-    /// let gb = GraphBuilder::new(parse_quote!(pub), parse_quote!(MyGraph))
+    /// let gb = GraphBuilder::new("MyGraph", GraphVisibility::Public)
     ///     .edge(
     ///         Edge::new(0)
-    ///             .ty(parse_quote!(limen_core::edge::NoQueue<u32>))
-    ///             .payload(parse_quote!(u32))
+    ///             .ty::<limen_core::edge::spsc_array::StaticRing<8>>()
+    ///             .payload::<u32>()
+    ///             .manager_ty::<limen_core::memory::static_manager::StaticMemoryManager<u32, 8>>()
     ///             .from(0, 0)
     ///             .to(1, 0)
     ///             .policy(policy)
+    ///             .name(Some("source->map"))
     ///     );
     /// ```
     pub fn edge(mut self, e: Edge) -> Self {
@@ -232,20 +242,25 @@ impl GraphBuilder {
     }
 
     /// Append an Edge described by a core `EdgeLink`. The builder extracts the
-    /// queue type, payload type, endpoints, policy, and id and converts them
-    /// into an `ast::EdgeDef`.
-    pub fn edge_from_link<Q, P>(mut self, link: EdgeLink<Q, P>) -> Self
+    /// queue type, endpoints, policy, and id and converts them into an
+    /// `ast::EdgeDef`.
+    ///
+    /// The payload type `P` and memory manager type `M` must be supplied
+    /// explicitly because `EdgeLink` does not carry them.
+    pub fn edge_from_link<Q, P, M>(mut self, link: EdgeLink<Q>) -> Self
     where
         P: Payload + 'static,
-        Q: limen_core::edge::Edge<Item = Message<P>> + 'static,
+        Q: limen_core::edge::Edge + 'static,
+        M: 'static,
     {
         let id = *link.id().as_usize();
 
-        // Queue type and payload type
+        // Queue type, payload type, and manager type
         let q_ty = type_of_val_to_syn_type::<Q>();
         let p_ty = type_of_val_to_syn_type::<P>();
+        let m_ty = type_of_val_to_syn_type::<M>();
 
-        // Endpoint indices: upstream and downstream NodeIndex / PortIndex -> usize
+        // Endpoint indices
         let up = link.upstream_port();
         let dn = link.downstream_port();
         let from_node = *up.node().as_usize();
@@ -268,6 +283,10 @@ impl GraphBuilder {
                 _ => panic!("edge queue type must be a path"),
             },
             payload: p_ty,
+            manager_ty: match m_ty {
+                Type::Path(tp) => tp,
+                _ => panic!("edge manager type must be a path"),
+            },
             from_node,
             from_port,
             to_node,
@@ -276,6 +295,16 @@ impl GraphBuilder {
             name_opt,
         });
 
+        self
+    }
+
+    /// Control whether to emit the std-only scoped execution API
+    /// (`ScopedGraphApi`) for the generated graph.
+    ///
+    /// This does not change the graph structure. It only controls whether
+    /// codegen emits the extra `run_scoped(..)` implementation.
+    pub fn concurrent(mut self, emit_concurrent: bool) -> Self {
+        self.emit_concurrent = emit_concurrent;
         self
     }
 
@@ -292,16 +321,19 @@ impl GraphBuilder {
         ast::GraphDef {
             vis: self.vis.expect("visibility required"),
             name: self.name.expect("name required"),
+            emit_concurrent: self.emit_concurrent,
             nodes: self.nodes,
             edges: self.edges,
         }
     }
+
     /// Finalize and produce a `GeneratedGraph` that owns the AST and can write it to file.
     pub fn finish(self) -> GraphWriter {
         GraphWriter {
             g: ast::GraphDef {
                 vis: self.vis.expect("visibility required"),
                 name: self.name.expect("name required"),
+                emit_concurrent: self.emit_concurrent,
                 nodes: self.nodes,
                 edges: self.edges,
             },
@@ -480,6 +512,7 @@ pub struct Edge {
     idx: usize,
     ty: Option<TypePath>,
     payload: Option<Type>,
+    manager_ty: Option<TypePath>,
     from_node: Option<usize>,
     from_port: Option<usize>,
     to_node: Option<usize>,
@@ -498,6 +531,7 @@ impl Edge {
             idx,
             ty: None,
             payload: None,
+            manager_ty: None,
             from_node: None,
             from_port: None,
             to_node: None,
@@ -526,6 +560,25 @@ impl Edge {
     pub fn payload<T: 'static>(mut self) -> Self {
         let t = type_of_val_to_syn_type::<T>();
         self.payload = Some(t);
+        self
+    }
+
+    /// Set the memory manager type for this edge using a real Rust type `M`.
+    ///
+    /// Every edge must specify a manager type. For `no_std` graphs, use
+    /// `StaticMemoryManager<P, DEPTH>` where `DEPTH` matches the queue's
+    /// `max_items`. For `std` concurrent graphs, use `ConcurrentMemoryManager<P>`.
+    pub fn manager_ty<M: 'static>(mut self) -> Self {
+        let t = type_of_val_to_syn_type::<M>();
+        match t {
+            Type::Path(tp) => {
+                self.manager_ty = Some(TypePath {
+                    qself: None,
+                    path: tp.path,
+                });
+            }
+            _ => panic!("manager_ty: expected a path type for memory manager"),
+        }
         self
     }
 
@@ -562,6 +615,7 @@ impl Edge {
             idx: self.idx,
             ty: self.ty.expect("edge.ty"),
             payload: self.payload.expect("edge.payload"),
+            manager_ty: self.manager_ty.expect("edge.manager_ty"),
             from_node: self.from_node.expect("edge.from.node"),
             from_port: self.from_port.expect("edge.from.port"),
             to_node: self.to_node.expect("edge.to.node"),

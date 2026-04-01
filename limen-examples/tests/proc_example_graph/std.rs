@@ -1,9 +1,10 @@
-use super::concurrent_graph::ProcExampleGraphStd;
+use super::ProcExampleConcurrentGraph;
 
+use limen_core::edge::spsc_concurrent::ConcurrentEdge;
 use limen_core::edge::EdgeOccupancy;
 use limen_core::graph::GraphApi as _;
 use limen_core::memory::PlacementAcceptance;
-use limen_core::message::{Message, MessageFlags};
+use limen_core::message::MessageFlags;
 use limen_core::node::bench::{
     TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
 };
@@ -16,12 +17,14 @@ use limen_core::prelude::concurrent::{spawn_telemetry_core, TelemetrySender};
 use limen_core::prelude::graph_telemetry::GraphTelemetry;
 use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
 use limen_core::prelude::sink::IoLineWriter;
-use limen_core::runtime::bench::concurrent_runtime::TestStdRuntime;
+use limen_core::runtime::bench::concurrent_runtime::TestScopedRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 
-// Concrete queue type used by the test pipelines (matches bench graphs)
-type Q32 = limen_core::edge::bench::TestSpscRingBuf<Message<u32>, 8>;
+// Concrete queue type used by the test pipelines
+type Q32 = ConcurrentEdge;
+
+type Mgr32 = limen_core::memory::concurrent_manager::ConcurrentMemoryManager<u32>;
 
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
@@ -31,7 +34,7 @@ type NoStdTestClock = NoStdLinuxMonotonicClock;
 type StdTestTelemetryInner = GraphTelemetry<3, 3, IoLineWriter<std::io::Stdout>>;
 type StdTestTelemetry = TelemetrySender<StdTestTelemetryInner>;
 
-type StdRuntime = TestStdRuntime<ProcExampleGraphStd, NoStdTestClock, StdTestTelemetry, 3, 3>;
+type StdRuntime = TestScopedRuntime<NoStdTestClock, StdTestTelemetry, 3, 3>;
 
 #[test]
 fn proc_macro_std_pipeline_runs_with_std_runtime() {
@@ -91,8 +94,11 @@ fn proc_macro_std_pipeline_runs_with_std_runtime() {
     );
 
     // queues
-    let q0: Q32 = Q32::default();
-    let q1: Q32 = Q32::default();
+    let q0: Q32 = Q32::new(32);
+    let q1: Q32 = Q32::new(32);
+
+    let mgr0: Mgr32 = Mgr32::new(8);
+    let mgr1: Mgr32 = Mgr32::new(8);
 
     // telemetry: GraphTelemetry wrapped in a concurrent TelemetrySender
     let sink = IoLineWriter::<std::io::Stdout>::stdout_writer();
@@ -101,12 +107,12 @@ fn proc_macro_std_pipeline_runs_with_std_runtime() {
     let telemetry: StdTestTelemetry = telemetry_core.sender();
 
     // graph (proc-macro std / concurrent flavor)
-    let mut graph = ProcExampleGraphStd::new(src, map, snk, q0, q1);
+    let mut graph = ProcExampleConcurrentGraph::new(src, map, snk, q0, q1, mgr0, mgr1);
 
     // runtime
     let mut runtime: StdRuntime = StdRuntime::new();
 
-    // init (moves bundles to worker threads)
+    // init
     runtime.init(&mut graph, clock, telemetry).unwrap();
 
     // graph remains valid (descriptors intact)
@@ -115,20 +121,24 @@ fn proc_macro_std_pipeline_runs_with_std_runtime() {
     graph.write_all_edge_occupancies(&mut occ).unwrap();
     println!(
         "--- [initial_graph_occupancies] --- {:?}\n",
-        runtime.occupancies()
+        LimenRuntime::<ProcExampleConcurrentGraph, 3, 3>::occupancies(&runtime)
     );
 
     for _ in 0..9 {
         let _ = runtime.step(&mut graph).unwrap();
 
-        println!("--- [graph_occupancies] --- {:?}", runtime.occupancies());
+        println!(
+            "--- [graph_occupancies] --- {:?}",
+            LimenRuntime::<ProcExampleConcurrentGraph, 3, 3>::occupancies(&runtime)
+        );
     }
 
-    // request stop and run one final step to reattach bundles
-    LimenRuntime::<ProcExampleGraphStd, 3, 3>::request_stop(&mut runtime);
-    let _ = LimenRuntime::<ProcExampleGraphStd, 3, 3>::step(&mut runtime, &mut graph).unwrap();
+    // request stop and run one final step
+    LimenRuntime::<ProcExampleConcurrentGraph, 3, 3>::request_stop(&mut runtime);
+    let _ =
+        LimenRuntime::<ProcExampleConcurrentGraph, 3, 3>::step(&mut runtime, &mut graph).unwrap();
 
-    // validate again (nodes reattached)
+    // validate again
     graph.validate_graph().unwrap();
 
     // Safely inspect telemetry, if present.

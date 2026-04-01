@@ -3,12 +3,11 @@
 //! This module defines a minimal `Source` trait and a `SourceNode` adapter that
 //! plugs a source into the existing `Node` and `Edge` contracts without changing
 //! any runtime or graph APIs. It also includes:
-//! - `SourceIngressEdge`: a borrowing, no-alloc adapter that exposes **ingress
+//! //! - `SourceIngressEdge`: a borrowing, no-alloc adapter that exposes **ingress
 //!   pressure** (items/bytes before the source) as an `Edge` so that the graph
 //!   and runtimes can uniformly sample it with their existing occupancy code.
-//! - `probe` (std-only): a lock-free, cross-thread ingress pressure probe using
-//!   atomics; the graph holds a typed `Edge` wrapper and the worker thread
-//!   updates the paired `Updater`.
+//! - `IngressProbe` / `NoProbe` / `IngressProbeImpl`: platform-agnostic ingress
+//!   pressure observer — zero-cost `NoProbe` by default; replace for real occupancy
 //!
 //! ### Design notes
 //! * A `Source` has **no input ports** and one or more **output ports**. It can
@@ -23,10 +22,12 @@ use crate::errors::NodeError;
 use crate::errors::QueueError;
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
-use crate::node::{Node, NodeCapabilities, NodeKind, OutStepContext, StepContext, StepResult};
-use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy};
-use crate::prelude::{BatchView, EdgeDescriptor, PlatformClock, Telemetry};
-use crate::types::{EdgeIndex, NodeIndex, PortId};
+use crate::node::{Node, NodeCapabilities, NodeKind, ProcessResult, StepContext, StepResult};
+use crate::policy::{BatchingPolicy, EdgePolicy, NodePolicy, WatermarkState};
+use crate::prelude::{
+    BatchView, EdgeDescriptor, HeaderStore, MemoryManager, PlatformClock, Telemetry,
+};
+use crate::types::{EdgeIndex, MessageToken, NodeIndex, PortId};
 
 use core::marker::PhantomData;
 
@@ -165,7 +166,7 @@ where
 impl<S, OutP, const OUT: usize> Node<0, OUT, (), OutP> for SourceNode<S, OutP, OUT>
 where
     S: Source<OutP, OUT>,
-    OutP: Payload,
+    OutP: Payload + Copy,
 {
     #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
@@ -216,60 +217,67 @@ where
         Ok(())
     }
 
-    fn process_message<'graph, 'telemetry, 'clock, OutQ, C, T>(
+    #[inline]
+    fn process_message<C>(
         &mut self,
         _msg: &Message<()>,
-        out_ctx: &mut OutStepContext<'graph, '_, 'clock, OUT, OutP, OutQ, C, T>,
-    ) -> Result<StepResult, NodeError>
+        _sys_clock: &C,
+    ) -> Result<ProcessResult<OutP>, NodeError>
     where
-        OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
     {
-        if let Some((port, msg)) = self.src.try_produce() {
-            match out_ctx.out_try_push(port, msg) {
-                EnqueueResult::Enqueued => Ok(StepResult::MadeProgress),
-                EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
-                    Ok(StepResult::Backpressured)
-                }
-            }
+        if let Some((_port, msg)) = self.src.try_produce() {
+            Ok(ProcessResult::Output(msg))
         } else {
-            Ok(StepResult::NoInput)
+            Err(NodeError::no_input())
         }
     }
 
     #[inline]
-    fn step<'g, 't, 'ck, InQ, OutQ, C, T>(
+    fn step<'g, 't, 'ck, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'g, 't, 'ck, 0, OUT, (), OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<'g, 't, 'ck, 0, OUT, (), OutP, InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<()>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<()>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         if let Some((port, msg)) = self.src.try_produce() {
-            match ctx.out_try_push(port, msg) {
-                EnqueueResult::Enqueued => Ok(StepResult::MadeProgress),
-                EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
-                    Ok(StepResult::Backpressured)
-                }
-            }
+            ctx.push_output(port, msg)
         } else {
             Ok(StepResult::NoInput)
         }
     }
 
-    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, C, T>(
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
         &mut self,
-        ctx: &mut StepContext<'graph, 'telemetry, 'clock, 0, OUT, (), OutP, InQ, OutQ, C, T>,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            0,
+            OUT,
+            (),
+            OutP,
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<()>>,
-        OutQ: Edge<Item = Message<OutP>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<()>,
+        OutM: MemoryManager<OutP>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         let ingress_occ = self.source_ref().ingress_occupancy();
         if *ingress_occ.items() == 0 {
@@ -284,16 +292,15 @@ where
         let has_batch = match (fixed_opt, delta_opt) {
             (Some(fixed_n), None) => *ingress_occ.items() >= fixed_n,
             (None, Some(_max_delta_t)) => {
-                // Span constraint only: a non-empty queue can always produce a span-valid batch of size 1.
+                // Span constraint only: a non-empty queue can always produce a
+                // span-valid batch of size 1.
                 true
             }
             (Some(fixed_n), Some(max_delta_t)) => {
                 // Must be able to form a full fixed_n batch first.
                 if *ingress_occ.items() < fixed_n {
-                    // Not enough items to form the fixed-size batch.
                     false
                 } else {
-                    // Use the Source-provided non-blocking peek to get creation ticks.
                     let first_tick_opt = self.src.peek_ingress_creation_tick(0);
                     let last_tick_opt = self
                         .src
@@ -302,18 +309,14 @@ where
                     match (first_tick_opt, last_tick_opt) {
                         (Some(first_ticks), Some(last_ticks)) => {
                             let span = last_ticks.saturating_sub(first_ticks);
-                            // Compare numeric span against configured max_delta_t.
-                            // If max_delta_t is a wrapper, adjust accessor as needed
-                            // (e.g. `max_delta_t.as_u64()`).
                             span <= *max_delta_t.as_u64()
                         }
-                        // If ticks unavailable, we cannot validate span -> not ready.
                         _ => false,
                     }
                 }
             }
             (None, None) => {
-                // No batching configured: treat as single-message readiness (queue non-empty here).
+                // No batching configured: treat as single-message readiness.
                 true
             }
         };
@@ -322,29 +325,22 @@ where
             return Ok(StepResult::NoInput);
         }
 
-        // Desired batch size: fixed_n when present, otherwise 1.
         let batch_n: usize = fixed_opt.unwrap_or(1);
 
-        // Attempt to produce up to batch_n messages (consume only after validation).
         let mut made_progress = false;
 
         for _ in 0..batch_n {
             match self.src.try_produce() {
-                Some((port, msg)) => {
-                    match ctx.out_try_push(port, msg) {
-                        EnqueueResult::Enqueued => {
-                            made_progress = true;
-                            // continue attempting more items
-                        }
-                        EnqueueResult::DroppedNewest | EnqueueResult::Rejected => {
-                            // We produced an item but couldn't push it due to backpressure.
-                            // Return Backpressured so caller knows not all items were delivered.
-                            return Ok(StepResult::Backpressured);
-                        }
+                Some((port, msg)) => match ctx.push_output(port, msg) {
+                    Ok(StepResult::MadeProgress) => {
+                        made_progress = true;
                     }
-                }
+                    Ok(StepResult::Backpressured) | Err(_) => {
+                        return Ok(StepResult::Backpressured);
+                    }
+                    Ok(_) => {}
+                },
                 None => {
-                    // Source had no more items right now.
                     break;
                 }
             }
@@ -358,17 +354,17 @@ where
     }
 
     #[inline]
-    fn on_watchdog_timeout<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<StepResult, NodeError>
+    fn on_watchdog_timeout<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<StepResult, NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(StepResult::WaitingOnExternal)
     }
 
     #[inline]
-    fn stop<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<(), NodeError>
+    fn stop<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(())
     }
@@ -412,29 +408,28 @@ where
     OutP: Payload,
     S: Source<OutP, OUT> + ?Sized,
 {
-    type Item = Message<OutP>;
     #[inline]
-    fn try_push(&mut self, _i: Self::Item, _p: &EdgePolicy) -> EnqueueResult {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
         EnqueueResult::Rejected
     }
 
     #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
     #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // No buffering — nothing to peek at.
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
     #[inline]
-    fn try_peek_at(
-        &self,
-        _index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // No buffering — nothing to peek at.
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
 
@@ -444,13 +439,16 @@ where
     }
 
     #[inline]
-    fn try_pop_batch(
+    fn is_empty(&self) -> bool {
+        *self.src.ingress_occupancy().items() == 0
+    }
+
+    #[inline]
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         _policy: &BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         Err(QueueError::Empty)
     }
 }
@@ -521,27 +519,25 @@ where
     OutP: Payload,
     S: Source<OutP, OUT> + ?Sized,
 {
-    type Item = Message<OutP>;
-
     #[inline]
-    fn try_push(&mut self, _i: Self::Item, _pol: &EdgePolicy) -> EnqueueResult {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
         EnqueueResult::Rejected
     }
     #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
-    fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // Synthetic ingress monitor has no item to peek.
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
-    fn try_peek_at(
-        &self,
-        _index: usize,
-    ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-        // Synthetic ingress monitor has no item to peek.
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
     #[inline]
@@ -550,23 +546,55 @@ where
         self.edge.occupancy(policy)
     }
     #[inline]
-    fn try_pop_batch(
+    fn is_empty(&self) -> bool {
+        self.edge.is_empty()
+    }
+    #[inline]
+    fn try_pop_batch<H: HeaderStore>(
         &mut self,
         _policy: &BatchingPolicy,
-    ) -> Result<BatchView<'_, Self::Item>, QueueError>
-    where
-        Self::Item: Payload,
-    {
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         Err(QueueError::Empty)
     }
 }
 
-/// Std-only, lock-free ingress pressure probe for cross-thread sources.
+/// Platform-agnostic ingress pressure observer.
 ///
-/// A `SourceIngressProbe` holds atomic item/byte counters. The graph keeps a
-/// typed `SourceIngressProbeEdge<P>` so runtimes can sample occupancy like any
-/// other edge, while the worker thread updates the paired
-/// `SourceIngressUpdater`.
+/// Implemented by `NoProbe` (zero-cost no_std stub) and by
+/// `probe::SourceIngressProbe` (live atomic counters, std-only).
+/// Source node logic uses `IngressProbeImpl` uniformly — no `#[cfg]` in node bodies.
+pub trait IngressProbe: Send {
+    /// Return the current ingress occupancy snapshot using `policy` to compute
+    /// the watermark consistently with real edges.
+    fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy;
+}
+
+/// Zero-cost stub used on no_std targets where no real probe is wired up.
+pub struct NoProbe;
+
+impl IngressProbe for NoProbe {
+    #[inline]
+    fn occupancy(&self, _policy: &EdgePolicy) -> EdgeOccupancy {
+        EdgeOccupancy::new(0, 0, WatermarkState::BelowSoft)
+    }
+}
+
+/// Concrete ingress probe type used on `std` targets.
+///
+/// This resolves to [`probe::SourceIngressProbe`], which tracks ingress
+/// pressure using shared atomic counters.
+#[cfg(feature = "std")]
+pub type IngressProbeImpl = probe::SourceIngressProbe;
+
+/// Concrete ingress probe type used on `no_std` targets.
+///
+/// This resolves to [`NoProbe`], a zero-cost stub that reports no ingress
+/// pressure when no live probe implementation is available.
+#[cfg(not(feature = "std"))]
+pub type IngressProbeImpl = NoProbe;
+
+/// Std-only, lock-free ingress pressure probe for cross-thread sources.
 #[cfg(feature = "std")]
 pub mod probe {
     use super::*;
@@ -581,7 +609,7 @@ pub mod probe {
     }
 
     impl SourceIngressProbe {
-        /// Create a new probe with zeroed counters.
+        /// Create a new ingress probe with zeroed item and byte counters.
         #[inline]
         pub fn new() -> Self {
             Self {
@@ -590,19 +618,20 @@ pub mod probe {
             }
         }
 
-        /// Set the live **items** count (Relaxed ordering).
+        /// Set the current ingress item count snapshot.
         #[inline]
         pub fn set_items(&self, n: usize) {
             self.items.store(n, Ordering::Relaxed);
         }
 
-        /// Set the live **bytes** count (Relaxed ordering).
+        /// Set the current ingress byte count snapshot.
         #[inline]
         pub fn set_bytes(&self, b: usize) {
             self.bytes.store(b, Ordering::Relaxed);
         }
 
-        /// Compute an `EdgeOccupancy` snapshot using the provided policy.
+        /// Build an occupancy snapshot from the current probe counters using
+        /// `policy` to compute the watermark.
         #[inline]
         pub fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
             let items = self.items.load(Ordering::Relaxed);
@@ -620,10 +649,14 @@ pub mod probe {
         }
     }
 
-    /// Payload-typed wrapper that exposes a probe as an `Edge<Item = Message<P>>`.
-    ///
-    /// This lets the graph store a typed "monitor edge" while a worker thread
-    /// updates the same probe instance through `SourceIngressUpdater`.
+    impl super::IngressProbe for SourceIngressProbe {
+        #[inline]
+        fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
+            SourceIngressProbe::occupancy(self, policy)
+        }
+    }
+
+    /// Payload-typed wrapper that exposes a probe as an `Edge`.
     #[derive(Debug, Clone)]
     pub struct SourceIngressProbeEdge<P: Payload> {
         probe: SourceIngressProbe,
@@ -631,7 +664,7 @@ pub mod probe {
     }
 
     impl<P: Payload> SourceIngressProbeEdge<P> {
-        /// Wrap an existing probe as a typed edge.
+        /// Wrap a probe as a payload-typed ingress monitor edge.
         #[inline]
         pub fn new(probe: SourceIngressProbe) -> Self {
             Self {
@@ -640,7 +673,7 @@ pub mod probe {
             }
         }
 
-        /// Borrow the underlying probe (for testing or diagnostics).
+        /// Borrow the underlying ingress probe.
         #[inline]
         pub fn inner(&self) -> &SourceIngressProbe {
             &self.probe
@@ -648,30 +681,28 @@ pub mod probe {
     }
 
     impl<P: Payload> Edge for SourceIngressProbeEdge<P> {
-        type Item = Message<P>;
-
         #[inline]
-        fn try_push(&mut self, _i: Self::Item, _p: &EdgePolicy) -> EnqueueResult {
+        fn try_push<H: HeaderStore>(
+            &mut self,
+            _token: MessageToken,
+            _policy: &EdgePolicy,
+            _headers: &H,
+        ) -> EnqueueResult {
             EnqueueResult::Rejected
         }
 
         #[inline]
-        fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+        fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
         #[inline]
-        fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Probe is a monitor only; no peekable item.
+        fn try_peek(&self) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
         #[inline]
-        fn try_peek_at(
-            &self,
-            _index: usize,
-        ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Probe is a monitor only; no peekable item.
+        fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
 
@@ -681,34 +712,34 @@ pub mod probe {
         }
 
         #[inline]
-        fn try_pop_batch(
+        fn is_empty(&self) -> bool {
+            self.probe.items.load(core::sync::atomic::Ordering::Relaxed) == 0
+        }
+
+        #[inline]
+        fn try_pop_batch<H: HeaderStore>(
             &mut self,
             _policy: &BatchingPolicy,
-        ) -> Result<BatchView<'_, Self::Item>, QueueError>
-        where
-            Self::Item: Payload,
-        {
+            _headers: &H,
+        ) -> Result<BatchView<'_, MessageToken>, QueueError> {
             Err(QueueError::Empty)
         }
     }
 
     /// Cross-thread updater for a `SourceIngressProbe`.
-    ///
-    /// Clone and move this into the worker thread that owns the concrete
-    /// source; call `update()` whenever the device/FIFO depth changes.
     #[derive(Clone)]
     pub struct SourceIngressUpdater {
         probe: SourceIngressProbe,
     }
 
     impl SourceIngressUpdater {
-        /// Create a new updater bound to `probe`.
+        /// Create an updater for the given ingress probe.
         #[inline]
         pub fn new(probe: SourceIngressProbe) -> Self {
             Self { probe }
         }
 
-        /// Atomically update the items/bytes counters.
+        /// Update both ingress counters atomically from the caller's perspective.
         #[inline]
         pub fn update(&self, items: usize, bytes: usize) {
             self.probe.set_items(items);
@@ -716,10 +747,7 @@ pub mod probe {
         }
     }
 
-    /// Convenience: create a typed edge and its paired updater.
-    ///
-    /// The graph stores the returned `SourceIngressProbeEdge<P>`; the worker
-    /// keeps the `SourceIngressUpdater` and calls `update()` as pressure changes.
+    /// Convenience: create a typed probe edge and its paired updater.
     #[inline]
     pub fn new_probe_edge_pair<P: Payload>() -> (SourceIngressProbeEdge<P>, SourceIngressUpdater) {
         let probe = SourceIngressProbe::new();
@@ -728,28 +756,14 @@ pub mod probe {
         (edge, updater)
     }
 
-    /// Convenience: create an untyped probe and updater (if callers do not need a typed `Edge`).
+    /// Convenience: create an untyped probe and updater.
     #[inline]
     pub fn new_probe_pair() -> (SourceIngressProbe, SourceIngressUpdater) {
         let p = SourceIngressProbe::new();
         (p.clone(), SourceIngressUpdater::new(p))
     }
 
-    /// Link wrapper for a concurrent ingress **monitor edge** (std-only).
-    ///
-    /// `ConcurrentIngressEdgeLink<OutP>` wraps a typed [`SourceIngressProbeEdge<OutP>`]
-    /// together with the metadata needed by the graph (edge id, endpoints, and policy),
-    /// so runtimes can treat the source’s *ingress pressure* like any other edge.
-    ///
-    /// Characteristics:
-    /// - **No buffering**: `try_push`/`try_pop` always reject; only `occupancy()` is meaningful.
-    /// - **Cross-thread safe**: the paired [`SourceIngressUpdater`] (held by the worker thread)
-    ///   updates atomics that this link reads via the inner probe edge.
-    /// - **Typed** by `OutP` so the graph can keep payload-typed edge inventories.
-    ///
-    /// Typical use: expose a synthetic “ingress0” edge (often edge id 0) whose occupancy
-    /// reflects upstream device/FIFO depth for scheduling and diagnostics, without changing
-    /// queue contracts elsewhere in the system.
+    /// Link wrapper for a concurrent ingress monitor edge (std-only).
     #[derive(Debug)]
     pub struct ConcurrentIngressEdgeLink<OutP: Payload> {
         edge: SourceIngressProbeEdge<OutP>,
@@ -761,7 +775,8 @@ pub mod probe {
     }
 
     impl<OutP: Payload> ConcurrentIngressEdgeLink<OutP> {
-        /// Construct from a probe edge (paired with a `SourceIngressUpdater` on the worker).
+        /// Construct a concurrent ingress edge link from a probe-backed edge and its
+        /// descriptor metadata.
         #[inline]
         pub fn from_probe(
             probe_edge: SourceIngressProbeEdge<OutP>,
@@ -781,25 +796,25 @@ pub mod probe {
             }
         }
 
-        /// Edge descriptor.
+        /// Return the descriptor for this synthetic ingress edge.
         #[inline]
         pub fn descriptor(&self) -> EdgeDescriptor {
             EdgeDescriptor::new(self.id, self.upstream, self.downstream, self.name)
         }
 
-        /// Policy accessor.
+        /// Return the policy associated with this synthetic ingress edge.
         #[inline]
         pub fn policy(&self) -> EdgePolicy {
             self.policy
         }
 
-        /// Borrow the inner probe edge.
+        /// Borrow the inner probe-backed edge immutably.
         #[inline]
         pub fn inner(&self) -> &SourceIngressProbeEdge<OutP> {
             &self.edge
         }
 
-        /// Mutably borrow the inner probe edge.
+        /// Borrow the inner probe-backed edge mutably.
         #[inline]
         pub fn inner_mut(&mut self) -> &mut SourceIngressProbeEdge<OutP> {
             &mut self.edge
@@ -807,42 +822,41 @@ pub mod probe {
     }
 
     impl<OutP: Payload> Edge for ConcurrentIngressEdgeLink<OutP> {
-        type Item = Message<OutP>;
-
         #[inline]
-        fn try_push(&mut self, _i: Self::Item, _pol: &EdgePolicy) -> EnqueueResult {
+        fn try_push<H: HeaderStore>(
+            &mut self,
+            _token: MessageToken,
+            _policy: &EdgePolicy,
+            _headers: &H,
+        ) -> EnqueueResult {
             EnqueueResult::Rejected
         }
         #[inline]
-        fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+        fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
-        fn try_peek(&self) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Concurrent probe exposes occupancy only.
+        fn try_peek(&self) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
-        fn try_peek_at(
-            &self,
-            _index: usize,
-        ) -> Result<crate::edge::PeekResponse<'_, Self::Item>, QueueError> {
-            // Concurrent probe exposes occupancy only.
+        fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
             Err(QueueError::Empty)
         }
         #[inline]
         fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy {
-            // Delegate to the probe (reads atomics, computes watermark via policy).
             self.edge.occupancy(policy)
         }
         #[inline]
-        fn try_pop_batch(
+        fn is_empty(&self) -> bool {
+            self.edge.is_empty()
+        }
+        #[inline]
+        fn try_pop_batch<H: HeaderStore>(
             &mut self,
             _policy: &BatchingPolicy,
-        ) -> Result<BatchView<'_, Self::Item>, QueueError>
-        where
-            Self::Item: Payload,
-        {
+            _headers: &H,
+        ) -> Result<BatchView<'_, MessageToken>, QueueError> {
             Err(QueueError::Empty)
         }
     }

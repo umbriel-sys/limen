@@ -10,6 +10,9 @@
 //! - **Queue uniformity (per node)**:
 //!   - All *input* queues that feed a node must be of the **same queue type**.
 //!   - All *output* queues that leave a node must be of the **same queue type**.
+//! - **Manager uniformity (per node)**:
+//!   - All *input* edges that feed a node must use the **same manager type**.
+//!   - All *output* edges that leave a node must use the **same manager type**.
 //!
 //! The validator reports the *first* encountered error as a `String`. It is
 //! expected to be called after parsing (see `crate::parse`) and before code
@@ -33,6 +36,9 @@ use std::collections::BTreeSet;
 /// 4. **Queue uniformity per node**:
 ///    - All inbound edges to a given node use the same queue type.
 ///    - All outbound edges from a given node use the same queue type.
+/// 5. **Manager uniformity per node**:
+///    - All inbound edges to a given node use the same manager type.
+///    - All outbound edges from a given node use the same manager type.
 ///
 /// # Errors
 /// Returns `Err(String)` describing the first violation encountered. If all
@@ -68,6 +74,12 @@ pub fn validate_definition(g: &GraphDef) -> Result<(), String> {
     // - out_q_by_node[node_idx] = queue type name of outbound edges
     let mut in_q_by_node: BTreeMap<usize, String> = BTreeMap::new();
     let mut out_q_by_node: BTreeMap<usize, String> = BTreeMap::new();
+
+    // Track per-node manager types to enforce uniformity:
+    // - in_m_by_node[node_idx] = manager type name of inbound edges
+    // - out_m_by_node[node_idx] = manager type name of outbound edges
+    let mut in_m_by_node: BTreeMap<usize, String> = BTreeMap::new();
+    let mut out_m_by_node: BTreeMap<usize, String> = BTreeMap::new();
 
     for e in &g.edges {
         // --- Port bounds ---
@@ -127,6 +139,25 @@ pub fn validate_definition(g: &GraphDef) -> Result<(), String> {
                 }
             })
             .or_insert(qn);
+
+        // --- Manager uniformity per node ---
+        let mn = e.manager_ty.to_token_stream().to_string();
+        in_m_by_node
+            .entry(e.to_node)
+            .and_modify(|s| {
+                if *s != mn {
+                    *s = "__MISMATCH__".into()
+                }
+            })
+            .or_insert(mn.clone());
+        out_m_by_node
+            .entry(e.from_node)
+            .and_modify(|s| {
+                if *s != mn {
+                    *s = "__MISMATCH__".into()
+                }
+            })
+            .or_insert(mn);
     }
 
     // Finalize queue-type uniformity checks.
@@ -138,6 +169,17 @@ pub fn validate_definition(g: &GraphDef) -> Result<(), String> {
     for (i, s) in out_q_by_node {
         if s == "__MISMATCH__" {
             return Err(format!("node {} has non-uniform output queue types", i));
+        }
+    }
+
+    for (i, s) in in_m_by_node {
+        if s == "__MISMATCH__" {
+            return Err(format!("node {} has non-uniform input manager types", i));
+        }
+    }
+    for (i, s) in out_m_by_node {
+        if s == "__MISMATCH__" {
+            return Err(format!("node {} has non-uniform output manager types", i));
         }
     }
 

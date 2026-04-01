@@ -654,21 +654,29 @@ mod tests {
 
     #[test]
     fn write_excludes_read() {
+        use std::sync::Barrier;
+
         let mgr = Arc::new(ConcurrentMemoryManager::<u32>::new(4));
         let t = mgr.store_shared(make_msg(7)).unwrap();
 
+        // Barrier: writer signals after acquiring the lock, reader waits before reading
+        let barrier = Arc::new(Barrier::new(2));
+
         let mwriter = mgr.clone();
+        let bwriter = barrier.clone();
         let writer = thread::spawn(move || {
             let mut w = mwriter.read_mut_shared(t).unwrap();
             *w.payload_mut() = 42;
-            // hold write lock briefly
+            // Signal: lock is held and value is written
+            bwriter.wait();
+            // Hold lock until reader has had a chance to block on it
             std::thread::sleep(Duration::from_millis(50));
         });
 
-        // Give writer a moment to take lock
-        std::thread::sleep(Duration::from_millis(10));
+        // Wait until writer confirms it holds the lock with value written
+        barrier.wait();
 
-        // Attempt to read: should block until writer releases; when success, value is visible
+        // Now read_shared must block until writer releases; when it returns, value is 42
         let g = mgr.read_shared(t).unwrap();
         assert_eq!(*g.payload(), 42);
 

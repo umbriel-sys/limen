@@ -355,7 +355,9 @@ mod tests {
     use crate::memory::static_manager::StaticMemoryManager;
     use crate::message::{Message, MessageHeader};
     use crate::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
-    use crate::prelude::{HeaderStore, MemoryManager as _};
+    use crate::prelude::{
+        create_test_tensor_filled_with, HeaderStore, MemoryManager as _, TestTensor,
+    };
     use crate::types::Ticks;
 
     // Helper to construct a MessageHeader with a creation tick and payload size.
@@ -366,10 +368,10 @@ mod tests {
         h
     }
 
-    // Helper to construct a Message<u32> with a header.
-    fn make_msg_with_tick(tick: u64) -> Message<u32> {
+    // Helper to construct a Message<TestTensor> with a header.
+    fn make_msg_with_tick(tick: u64) -> Message<TestTensor> {
         let h = mk_header(tick);
-        Message::new(h, 0u32)
+        Message::new(h, create_test_tensor_filled_with(0))
     }
 
     // Ring constructor used by the contract harness.
@@ -391,10 +393,10 @@ mod tests {
 
     #[test]
     fn pushes_and_pops_tokens_with_byte_accounting() {
-        // Use a static memory manager to allocate Message<u32> instances and
+        // Use a static memory manager to allocate Message<TestTensor> instances and
         // obtain MessageToken values. The manager also implements HeaderStore.
         const MGR_DEPTH: usize = 64;
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut ring = make_ring();
 
         // Store two messages and obtain tokens.

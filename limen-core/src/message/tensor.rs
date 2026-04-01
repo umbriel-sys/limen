@@ -366,6 +366,66 @@ fn checked_product(shape: &[usize]) -> Option<usize> {
     Some(acc)
 }
 
+/// Canonical shape used by shared test and benchmark tensor fixtures.
+///
+/// This shape is fixed at `3 × 3` so all common test payloads use the same
+/// rank-2 layout across memory, message, and benchmark code.
+#[cfg(any(test, feature = "bench"))]
+pub const TEST_TENSOR_SHAPE: [usize; 2] = [3, 3];
+
+/// Total live element count of [`TestTensor`].
+///
+/// This is the product of [`TEST_TENSOR_SHAPE`] and is fixed at `9`.
+#[cfg(any(test, feature = "bench"))]
+pub const TEST_TENSOR_ELEMENT_COUNT: usize = 9;
+
+/// Total live payload byte count of [`TestTensor`].
+///
+/// This reflects the tensor payload size reported through [`Payload`], not the
+/// full in-memory size of the `Tensor` struct itself.
+#[cfg(any(test, feature = "bench"))]
+pub const TEST_TENSOR_BYTE_COUNT: usize = TEST_TENSOR_ELEMENT_COUNT * mem::size_of::<u32>();
+
+/// Shared rank-2 tensor payload used by tests and benchmarks.
+///
+/// This alias standardizes on a `3 × 3` tensor of `u32` values with exactly
+/// `9` live elements.
+#[cfg(any(test, feature = "bench"))]
+pub type TestTensor = Tensor<u32, TEST_TENSOR_ELEMENT_COUNT, 2>;
+
+/// Create a shared test tensor with every element set to the same value.
+///
+/// The returned tensor always has shape [`TEST_TENSOR_SHAPE`].
+#[cfg(any(test, feature = "bench"))]
+#[inline]
+pub fn create_test_tensor_filled_with(value: u32) -> TestTensor {
+    Tensor::filled(TEST_TENSOR_SHAPE, value)
+}
+
+/// Create a shared test tensor from explicit `3 × 3` element values.
+///
+/// The input array is flattened in row-major order into a tensor with shape
+/// [`TEST_TENSOR_SHAPE`], so `values[0][0]` becomes the first element and
+/// `values[2][2]` becomes the last.
+#[cfg(any(test, feature = "bench"))]
+#[inline]
+pub fn create_test_tensor_from_array(values: [[u32; 3]; 3]) -> TestTensor {
+    Tensor::from_shape(
+        TEST_TENSOR_SHAPE,
+        &[
+            values[0][0],
+            values[0][1],
+            values[0][2],
+            values[1][0],
+            values[1][1],
+            values[1][2],
+            values[2][0],
+            values[2][1],
+            values[2][2],
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

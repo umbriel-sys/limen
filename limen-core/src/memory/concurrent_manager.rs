@@ -1,5 +1,3 @@
-// src/memory/concurrent_manager.rs
-#![cfg(feature = "std")]
 //! Concurrent heap-backed memory manager with lock-free freelist.
 //!
 //! This module implements a production-ready concurrent memory manager that
@@ -59,7 +57,6 @@ use crate::memory::manager::MemoryManager;
 use crate::memory::MemoryClass;
 use crate::message::payload::Payload;
 use crate::message::{Message, MessageHeader};
-#[cfg(feature = "std")]
 use crate::prelude::ScopedManager;
 use crate::types::MessageToken;
 
@@ -579,7 +576,6 @@ impl<P: Payload> MemoryManager<P> for ConcurrentMemoryManager<P> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<P: Payload + Send + Sync> ScopedManager<P> for ConcurrentMemoryManager<P> {
     type Handle<'a>
         = ConcurrentMemoryManager<P>
@@ -602,27 +598,28 @@ impl<P: Payload + Send + Sync> ScopedManager<P> for ConcurrentMemoryManager<P> {
 mod tests {
     use super::*;
     use crate::message::MessageHeader;
+    use crate::prelude::{create_test_tensor_filled_with, TestTensor, TEST_TENSOR_BYTE_COUNT};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
-    // Helper: build a simple Message<u32>.
-    fn make_msg(val: u32) -> Message<u32> {
-        Message::new(MessageHeader::empty(), val)
+    // Helper: build a simple Message<TestTensor>.
+    fn make_msg(val: u32) -> Message<TestTensor> {
+        Message::new(MessageHeader::empty(), create_test_tensor_filled_with(val))
     }
 
     // --- Concurrency-oriented tests ------------------------------------------------
 
     #[test]
     fn basic_store_read_free() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
 
         let t = mgr.store_shared(make_msg(10)).unwrap();
         assert_eq!(mgr.available(), 3);
 
         {
             let g = mgr.read_shared(t).unwrap();
-            assert_eq!(*g.payload(), 10);
+            assert_eq!(*g.payload(), create_test_tensor_filled_with(10));
         }
 
         mgr.free_shared(t).unwrap();
@@ -631,19 +628,19 @@ mod tests {
 
     #[test]
     fn concurrent_reads_same_slot() {
-        let mgr = Arc::new(ConcurrentMemoryManager::<u32>::new(4));
+        let mgr = Arc::new(ConcurrentMemoryManager::<TestTensor>::new(4));
         let t = mgr.store_shared(make_msg(5)).unwrap();
 
         let m1 = mgr.clone();
         let th1 = thread::spawn(move || {
             let g = m1.read_shared(t).unwrap();
-            assert_eq!(*g.payload(), 5);
+            assert_eq!(*g.payload(), create_test_tensor_filled_with(5));
         });
 
         let m2 = mgr.clone();
         let th2 = thread::spawn(move || {
             let g = m2.read_shared(t).unwrap();
-            assert_eq!(*g.payload(), 5);
+            assert_eq!(*g.payload(), create_test_tensor_filled_with(5));
         });
 
         th1.join().unwrap();
@@ -656,7 +653,7 @@ mod tests {
     fn write_excludes_read() {
         use std::sync::Barrier;
 
-        let mgr = Arc::new(ConcurrentMemoryManager::<u32>::new(4));
+        let mgr = Arc::new(ConcurrentMemoryManager::<TestTensor>::new(4));
         let t = mgr.store_shared(make_msg(7)).unwrap();
 
         // Barrier: writer signals after acquiring the lock, reader waits before reading
@@ -666,7 +663,7 @@ mod tests {
         let bwriter = barrier.clone();
         let writer = thread::spawn(move || {
             let mut w = mwriter.read_mut_shared(t).unwrap();
-            *w.payload_mut() = 42;
+            *w.payload_mut() = create_test_tensor_filled_with(42);
             // Signal: lock is held and value is written
             bwriter.wait();
             // Hold lock until reader has had a chance to block on it
@@ -678,14 +675,14 @@ mod tests {
 
         // Now read_shared must block until writer releases; when it returns, value is 42
         let g = mgr.read_shared(t).unwrap();
-        assert_eq!(*g.payload(), 42);
+        assert_eq!(*g.payload(), create_test_tensor_filled_with(42));
 
         writer.join().unwrap();
     }
 
     #[test]
     fn allocate_exhaustion_and_reuse() {
-        let mgr = ConcurrentMemoryManager::<u32>::new(2);
+        let mgr = ConcurrentMemoryManager::<TestTensor>::new(2);
         let t0 = mgr.store_shared(make_msg(1)).unwrap();
         let t1 = mgr.store_shared(make_msg(2)).unwrap();
         assert_eq!(mgr.available(), 0);
@@ -708,7 +705,7 @@ mod tests {
 
     #[test]
     fn store_read_free_cycle() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         assert_eq!(mgr.available(), 4);
         assert_eq!(mgr.capacity(), 4);
 
@@ -717,7 +714,7 @@ mod tests {
 
         {
             let msg = mgr.read_shared(token).unwrap();
-            assert_eq!(*msg.payload(), 42);
+            assert_eq!(*msg.payload(), create_test_tensor_filled_with(42));
         }
 
         mgr.free_shared(token).unwrap();
@@ -726,20 +723,20 @@ mod tests {
 
     #[test]
     fn read_mut_works() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         let token = mgr.store_shared(make_msg(10)).unwrap();
 
         {
             // mutable borrow, must be declared mut binding
             let mut msg = mgr.read_mut_shared(token).unwrap();
-            *msg.payload_mut() = 99;
+            *msg.payload_mut() = create_test_tensor_filled_with(99);
             // mutable guard dropped here
         }
 
         {
             // now we can take an immutable borrow safely
             let msg = mgr.read_shared(token).unwrap();
-            assert_eq!(*msg.payload(), 99);
+            assert_eq!(*msg.payload(), create_test_tensor_filled_with(99));
         }
 
         // free now that no borrows exist
@@ -748,12 +745,12 @@ mod tests {
 
     #[test]
     fn peek_header_works() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         let token = mgr.store_shared(make_msg(7)).unwrap();
 
         {
             let header = mgr.peek_header(token).unwrap();
-            assert_eq!(*header.payload_size_bytes(), core::mem::size_of::<u32>());
+            assert_eq!(*header.payload_size_bytes(), TEST_TENSOR_BYTE_COUNT);
             // header dropped at end of scope
         }
 
@@ -762,7 +759,7 @@ mod tests {
 
     #[test]
     fn capacity_exhaustion() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(2);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(2);
         let _t0 = mgr.store_shared(make_msg(1)).unwrap();
         let _t1 = mgr.store_shared(make_msg(2)).unwrap();
         assert_eq!(mgr.available(), 0);
@@ -773,7 +770,7 @@ mod tests {
 
     #[test]
     fn double_free_detected() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         let token = mgr.store_shared(make_msg(1)).unwrap();
         mgr.free_shared(token).unwrap();
 
@@ -783,7 +780,7 @@ mod tests {
 
     #[test]
     fn bad_token_detected() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         let bad = MessageToken::new(99);
 
         assert!(matches!(mgr.read_shared(bad), Err(MemoryError::BadToken)));
@@ -792,7 +789,7 @@ mod tests {
 
     #[test]
     fn read_freed_slot_is_bad_token() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         let token = mgr.store_shared(make_msg(1)).unwrap();
         mgr.free_shared(token).unwrap();
 
@@ -808,26 +805,29 @@ mod tests {
 
     #[test]
     fn slot_reuse_after_free() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(1);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(1);
         let t0 = mgr.store_shared(make_msg(10)).unwrap();
         mgr.free_shared(t0).unwrap();
 
         // Slot 0 should be reused.
         let t1 = mgr.store_shared(make_msg(20)).unwrap();
         assert_eq!(t1.index(), 0);
-        assert_eq!(*mgr.read_shared(t1).unwrap().payload(), 20);
+        assert_eq!(
+            *mgr.read_shared(t1).unwrap().payload(),
+            create_test_tensor_filled_with(20)
+        );
     }
 
     #[test]
     fn memory_class_configurable() {
-        let mgr: ConcurrentMemoryManager<u32> =
+        let mgr: ConcurrentMemoryManager<TestTensor> =
             ConcurrentMemoryManager::with_memory_class(4, MemoryClass::Device(0));
         assert_eq!(mgr.memory_class(), MemoryClass::Device(0));
     }
 
     #[test]
     fn default_memory_class_is_host() {
-        let mgr: ConcurrentMemoryManager<u32> = ConcurrentMemoryManager::new(4);
+        let mgr: ConcurrentMemoryManager<TestTensor> = ConcurrentMemoryManager::new(4);
         assert_eq!(mgr.memory_class(), MemoryClass::Host);
     }
 }

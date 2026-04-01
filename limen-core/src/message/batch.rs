@@ -434,18 +434,24 @@ impl<'edge, 'mgr, P: Payload, M: MemoryManager<P>> Iterator
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use core::mem::size_of;
+    use crate::prelude::{create_test_tensor_filled_with, TestTensor, TEST_TENSOR_BYTE_COUNT};
 
-    /// Helper: construct a Message<u32> with an empty header and given payload.
-    fn make_msg_u32(v: u32) -> Message<u32> {
-        Message::new(MessageHeader::empty(), v)
+    use super::*;
+
+    /// Helper: construct a `Message<TestTensor>` with an empty header and a
+    /// uniformly-filled shared test tensor payload.
+    fn make_msg_tensor(v: u32) -> Message<TestTensor> {
+        Message::new(MessageHeader::empty(), create_test_tensor_filled_with(v))
     }
 
     #[test]
     fn batch_basic_props() {
         // Build a small array of messages and create a Batch view.
-        let arr: [Message<u32>; 3] = [make_msg_u32(10), make_msg_u32(11), make_msg_u32(12)];
+        let arr: [Message<TestTensor>; 3] = [
+            make_msg_tensor(10),
+            make_msg_tensor(11),
+            make_msg_tensor(12),
+        ];
 
         // Build a Batch directly over a slice.
         let batch = Batch::new(&arr[..2]); // first two items
@@ -453,8 +459,8 @@ mod tests {
         assert!(!batch.is_empty());
         assert_eq!(batch.messages().len(), 2);
 
-        // total_payload_bytes should be sum of u32 sizes
-        assert_eq!(batch.total_payload_bytes(), 2 * size_of::<u32>());
+        // total_payload_bytes should be sum of test tensor payload sizes
+        assert_eq!(batch.total_payload_bytes(), 2 * TEST_TENSOR_BYTE_COUNT);
 
         // initially flags are not set
         assert!(!batch.first_flagged());
@@ -464,11 +470,11 @@ mod tests {
     #[test]
     fn batchview_borrowed_basic_and_mutation() {
         // Prepare 4 messages but claim only first 3 are valid for the batch.
-        let mut arr: [Message<u32>; 4] = [
-            make_msg_u32(100),
-            make_msg_u32(101),
-            make_msg_u32(102),
-            make_msg_u32(103),
+        let mut arr: [Message<TestTensor>; 4] = [
+            make_msg_tensor(100),
+            make_msg_tensor(101),
+            make_msg_tensor(102),
+            make_msg_tensor(103),
         ];
 
         // Create Borrowed BatchView with length = 3
@@ -478,18 +484,25 @@ mod tests {
 
         // Mutate payloads via iter_mut()
         for (i, m) in bv.iter_mut().enumerate() {
-            *m.payload_mut() = 200 + (i as u32);
+            *m.payload_mut() = create_test_tensor_filled_with(200 + (i as u32));
         }
 
         // Convert to public Batch and inspect values without using vec
         let batch = bv.as_batch();
-        let mut vals = [0u32; 3];
+        let mut vals = [TestTensor::default(); 3];
         let mut i = 0;
         for m in batch.iter() {
-            vals[i] = *m.payload();
+            vals[i] = m.payload().clone();
             i += 1;
         }
-        assert_eq!(vals, [200u32, 201u32, 202u32]);
+        assert_eq!(
+            vals,
+            [
+                create_test_tensor_filled_with(200),
+                create_test_tensor_filled_with(201),
+                create_test_tensor_filled_with(202),
+            ]
+        );
 
         // Set first/last flags through BatchView helpers
         {
@@ -510,10 +523,10 @@ mod tests {
         use alloc::vec::Vec;
 
         // Create an owned vector of messages.
-        let mut vec: Vec<Message<u32>> = Vec::new();
-        vec.push(make_msg_u32(1));
-        vec.push(make_msg_u32(2));
-        vec.push(make_msg_u32(3));
+        let mut vec: Vec<Message<TestTensor>> = Vec::new();
+        vec.push(make_msg_tensor(1));
+        vec.push(make_msg_tensor(2));
+        vec.push(make_msg_tensor(3));
 
         let mut bv = BatchView::from_owned(vec);
         assert_eq!(bv.len(), 3);
@@ -522,18 +535,25 @@ mod tests {
         // Mutate last payload via iter_mut()
         for (i, m) in bv.iter_mut().enumerate() {
             if i == 2 {
-                *m.payload_mut() = 42u32;
+                *m.payload_mut() = create_test_tensor_filled_with(42);
             }
         }
 
         // Inspect via as_batch into an owned Vec
         let batch = bv.as_batch();
-        let mut xs: Vec<u32> = Vec::new();
+        let mut xs: Vec<TestTensor> = Vec::new();
         for m in batch.iter() {
-            xs.push(*m.payload());
+            xs.push(m.payload().clone());
         }
         // compare to a slice instead of using `vec![]` macro
-        assert_eq!(xs.as_slice(), &[1u32, 2u32, 42u32]);
+        assert_eq!(
+            xs.as_slice(),
+            &[
+                create_test_tensor_filled_with(1),
+                create_test_tensor_filled_with(2),
+                create_test_tensor_filled_with(42),
+            ]
+        );
 
         // Check header helpers and then consume owned vec
         {
@@ -550,12 +570,15 @@ mod tests {
         let ov = bv.into_vec();
         assert_eq!(ov.len(), 3);
         // Confirm the final payload value (42) survived.
-        assert_eq!(*ov.last().unwrap().payload(), 42u32);
+        assert_eq!(
+            *ov.last().unwrap().payload(),
+            create_test_tensor_filled_with(42)
+        );
     }
 
     #[test]
     fn batch_assert_flags_consistent_no_panic_when_correct() {
-        let mut arr: [Message<u32>; 2] = [make_msg_u32(7), make_msg_u32(8)];
+        let mut arr: [Message<TestTensor>; 2] = [make_msg_tensor(7), make_msg_tensor(8)];
 
         // set flags explicitly on headers and make a Batch
         {

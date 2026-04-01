@@ -86,6 +86,7 @@ use crate::memory::manager::MemoryManager;
 use crate::memory::static_manager::StaticMemoryManager;
 use crate::message::{Message, MessageHeader};
 use crate::policy::{AdmissionPolicy, BatchingPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
+use crate::prelude::{create_test_tensor_filled_with, TestTensor};
 use crate::types::{DeadlineNs, MessageToken, Ticks};
 
 const TEST_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
@@ -98,14 +99,17 @@ const TEST_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
 const MGR_DEPTH: usize = 32;
 
 /// Build a simple test message with a creation tick and default header fields.
-fn make_msg_u32(tick: u64) -> Message<u32> {
+fn make_msg_tensor(tick: u64) -> Message<TestTensor> {
     let mut h = MessageHeader::empty();
     h.set_creation_tick(Ticks::new(tick));
-    Message::new(h, 0u32)
+    Message::new(h, create_test_tensor_filled_with(0))
 }
 
 /// Store a message in the manager, returning its token. Panics on failure.
-fn store(mgr: &mut StaticMemoryManager<u32, MGR_DEPTH>, msg: Message<u32>) -> MessageToken {
+fn store(
+    mgr: &mut StaticMemoryManager<TestTensor, MGR_DEPTH>,
+    msg: Message<TestTensor>,
+) -> MessageToken {
     mgr.store(msg).expect("memory manager store failed")
 }
 
@@ -255,7 +259,7 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // empty behaviour
@@ -264,7 +268,7 @@ where
     assert!(q.is_empty());
 
     // push
-    let m = make_msg_u32(1);
+    let m = make_msg_tensor(1);
     let token = store(&mut mgr, m);
     assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
 
@@ -306,12 +310,12 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     let mut tokens = [MessageToken::INVALID; 5];
     for (i, t) in (1u64..6u64).enumerate() {
-        let m = make_msg_u32(t);
+        let m = make_msg_tensor(t);
         tokens[i] = store(&mut mgr, m);
         assert_eq!(
             q.try_push(tokens[i], &policy, &mgr),
@@ -336,13 +340,13 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     let occ0 = q.occupancy(&policy);
     assert_eq!(*occ0.items(), 0usize);
 
-    let m = make_msg_u32(1);
+    let m = make_msg_tensor(1);
     let token = store(&mut mgr, m);
     assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
 
@@ -362,13 +366,13 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // push 5 items: ticks 1..=5
     let mut tokens = [MessageToken::INVALID; 5];
     for (i, t) in (1u64..=5u64).enumerate() {
-        let m = make_msg_u32(t);
+        let m = make_msg_tensor(t);
         tokens[i] = store(&mut mgr, m);
         assert_eq!(
             q.try_push(tokens[i], &policy, &mgr),
@@ -403,12 +407,12 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // ticks 10,11,12,30
     for t in [10u64, 11u64, 12u64, 30u64].iter() {
-        let m = make_msg_u32(*t);
+        let m = make_msg_tensor(*t);
         let token = store(&mut mgr, m);
         assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
     }
@@ -449,12 +453,12 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // ticks: 100,101,102,110
     for t in [100u64, 101u64, 102u64, 110u64].iter() {
-        let m = make_msg_u32(*t);
+        let m = make_msg_tensor(*t);
         let token = store(&mut mgr, m);
         assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
     }
@@ -496,12 +500,12 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // push ticks 1..=6
     for t in 1u64..=6u64 {
-        let m = make_msg_u32(t);
+        let m = make_msg_tensor(t);
         let token = store(&mut mgr, m);
         assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
     }
@@ -538,11 +542,11 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     for t in [1u64, 2u64, 3u64].iter() {
-        let m = make_msg_u32(*t);
+        let m = make_msg_tensor(*t);
         let token = store(&mut mgr, m);
         assert_eq!(q.try_push(token, &policy, &mgr), EnqueueResult::Enqueued);
     }
@@ -577,15 +581,15 @@ where
     // --- DropNewest: second push should be dropped (queue retains first item).
     {
         let mut q = make();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let policy = EdgePolicy::new(caps, AdmissionPolicy::DropNewest, OverBudgetAction::Drop);
 
-        let a_msg = make_msg_u32(1);
+        let a_msg = make_msg_tensor(1);
         let a_token = store(&mut mgr, a_msg);
         assert_eq!(q.try_push(a_token, &policy, &mgr), EnqueueResult::Enqueued);
 
         // second push enters BetweenSoftAndHard -> DropNewest expected
-        let b_msg = make_msg_u32(2);
+        let b_msg = make_msg_tensor(2);
         let b_token = store(&mut mgr, b_msg);
         let res = q.try_push(b_token, &policy, &mgr);
         assert_eq!(res, EnqueueResult::DroppedNewest);
@@ -605,20 +609,20 @@ where
     // Caller must pre-evict (via try_pop) before retrying.
     {
         let mut q = make();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
         // caps: max_items=3, soft_items=1
 
         // Fill to hard cap. All succeed despite being above soft (soft=1).
-        let a_token = store(&mut mgr, make_msg_u32(1));
-        let b_token = store(&mut mgr, make_msg_u32(2));
-        let c_token = store(&mut mgr, make_msg_u32(3));
+        let a_token = store(&mut mgr, make_msg_tensor(1));
+        let b_token = store(&mut mgr, make_msg_tensor(2));
+        let c_token = store(&mut mgr, make_msg_tensor(3));
         assert_eq!(q.try_push(a_token, &policy, &mgr), EnqueueResult::Enqueued);
         assert_eq!(q.try_push(b_token, &policy, &mgr), EnqueueResult::Enqueued);
         assert_eq!(q.try_push(c_token, &policy, &mgr), EnqueueResult::Enqueued);
 
         // At hard cap: Rejected without pre-eviction.
-        let d_token = store(&mut mgr, make_msg_u32(4));
+        let d_token = store(&mut mgr, make_msg_tensor(4));
         assert_eq!(q.try_push(d_token, &policy, &mgr), EnqueueResult::Rejected);
 
         // Pre-evict oldest (a), then push succeeds.
@@ -637,14 +641,14 @@ where
     // --- Block: core cannot block so we expect Rejected when BetweenSoftAndHard
     {
         let mut q = make();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let policy = EdgePolicy::new(caps, AdmissionPolicy::Block, OverBudgetAction::Drop);
 
-        let a_msg = make_msg_u32(1);
+        let a_msg = make_msg_tensor(1);
         let a_token = store(&mut mgr, a_msg);
         assert_eq!(q.try_push(a_token, &policy, &mgr), EnqueueResult::Enqueued);
 
-        let b_msg = make_msg_u32(2);
+        let b_msg = make_msg_tensor(2);
         let b_token = store(&mut mgr, b_msg);
         let res = q.try_push(b_token, &policy, &mgr);
         assert_eq!(res, EnqueueResult::Rejected);
@@ -658,18 +662,18 @@ where
     // --- DeadlineAndQoSAware: in core policy.decide this resolves to Admit between soft/hard.
     {
         let mut q = make();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let policy = EdgePolicy::new(
             caps,
             AdmissionPolicy::DeadlineAndQoSAware,
             OverBudgetAction::Drop,
         );
 
-        let a_msg = make_msg_u32(1);
+        let a_msg = make_msg_tensor(1);
         let a_token = store(&mut mgr, a_msg);
         assert_eq!(q.try_push(a_token, &policy, &mgr), EnqueueResult::Enqueued);
 
-        let b_msg = make_msg_u32(2);
+        let b_msg = make_msg_tensor(2);
         let b_token = store(&mut mgr, b_msg);
         let res = q.try_push(b_token, &policy, &mgr);
         // core's EdgePolicy::decide returns Admit for DeadlineAndQoSAware between soft/hard
@@ -695,18 +699,18 @@ where
 {
     let caps = QueueCaps::new(4, 2, None, None);
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy_drop_newest =
         EdgePolicy::new(caps, AdmissionPolicy::DropNewest, OverBudgetAction::Drop);
 
     // push two items so the queue sits BetweenSoftAndHard for our caps.
-    let m1 = make_msg_u32(1);
+    let m1 = make_msg_tensor(1);
     let t1 = store(&mut mgr, m1);
     assert_eq!(
         q.try_push(t1, &policy_drop_newest, &mgr),
         EnqueueResult::Enqueued
     );
-    let m2 = make_msg_u32(2);
+    let m2 = make_msg_tensor(2);
     let t2 = store(&mut mgr, m2);
     assert_eq!(
         q.try_push(t2, &policy_drop_newest, &mgr),
@@ -714,7 +718,7 @@ where
     );
 
     // Create a new token to test admission decision against.
-    let m3 = make_msg_u32(3);
+    let m3 = make_msg_tensor(3);
     let t3 = store(&mut mgr, m3);
 
     // Ask the queue for an admission decision for the new token.
@@ -735,7 +739,7 @@ where
     // Create a queue and fill it so occupancy reports AtOrAboveHard.
     // Use a fill policy that will not evict while we grow the queue.
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy_fill = EdgePolicy::new(
         caps,
         AdmissionPolicy::DeadlineAndQoSAware,
@@ -744,7 +748,7 @@ where
 
     // push enough single messages to reach the configured max_items/hard state.
     for _ in 0..*caps.max_items() {
-        let m = make_msg_u32(10);
+        let m = make_msg_tensor(10);
         let token = store(&mut mgr, m);
         let _ = q.try_push(token, &policy_fill, &mgr);
     }
@@ -754,7 +758,7 @@ where
         EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
 
     // Small token: should prompt EvictUntilBelowHard.
-    let small_msg = make_msg_u32(20);
+    let small_msg = make_msg_tensor(20);
     let small_token = store(&mut mgr, small_msg);
     let decision_small = q.get_admission_decision(&policy_drop_oldest, small_token, &mgr);
     assert_eq!(
@@ -764,7 +768,7 @@ where
 
     // Now craft a token whose header reports a huge payload_size_bytes
     // that by itself exceeds the hard byte cap.
-    let mut large_msg = make_msg_u32(30);
+    let mut large_msg = make_msg_tensor(30);
     large_msg.header_mut().set_payload_size_bytes(2048);
     let large_token = store(&mut mgr, large_msg);
 
@@ -783,10 +787,10 @@ where
 {
     let caps = QueueCaps::new(100, 50, None, None);
     let q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
 
     // Create a token with a specific deadline.
-    let mut m = make_msg_u32(1);
+    let mut m = make_msg_tensor(1);
     m.header_mut().set_deadline_ns(Some(DeadlineNs::new(2000)));
     let token = store(&mut mgr, m);
 
@@ -815,7 +819,7 @@ where
     Q: Edge,
 {
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = TEST_EDGE_POLICY;
 
     // empty behaviour
@@ -824,7 +828,7 @@ where
     // push ticks 1..=4
     let mut tokens = [MessageToken::INVALID; 4];
     for (i, t) in (1u64..=4u64).enumerate() {
-        let m = make_msg_u32(t);
+        let m = make_msg_tensor(t);
         tokens[i] = store(&mut mgr, m);
         assert_eq!(
             q.try_push(tokens[i], &policy, &mgr),
@@ -862,16 +866,16 @@ where
 {
     let caps = QueueCaps::new(4, 2, None, None);
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
 
     // Push two items so queue is BetweenSoftAndHard.
-    let t1 = store(&mut mgr, make_msg_u32(1));
-    let t2 = store(&mut mgr, make_msg_u32(2));
+    let t1 = store(&mut mgr, make_msg_tensor(1));
+    let t2 = store(&mut mgr, make_msg_tensor(2));
     assert_eq!(q.try_push(t1, &policy, &mgr), EnqueueResult::Enqueued);
     assert_eq!(q.try_push(t2, &policy, &mgr), EnqueueResult::Enqueued);
 
-    let probe = store(&mut mgr, make_msg_u32(3));
+    let probe = store(&mut mgr, make_msg_tensor(3));
 
     // Call get_admission_decision three times.
     let d1 = q.get_admission_decision(&policy, probe, &mgr);
@@ -897,7 +901,7 @@ where
 {
     let caps = QueueCaps::new(8, 6, Some(4096), Some(2048));
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = EdgePolicy::new(
         caps,
         AdmissionPolicy::DeadlineAndQoSAware,
@@ -907,7 +911,7 @@ where
     // Push 4 items, each reporting 100 bytes.
     let mut tokens = [MessageToken::default(); 4];
     for (i, slot) in tokens.iter_mut().enumerate() {
-        let mut m = make_msg_u32(i as u64 + 1);
+        let mut m = make_msg_tensor(i as u64 + 1);
         m.header_mut().set_payload_size_bytes(100);
         let t = store(&mut mgr, m);
         assert_eq!(q.try_push(t, &policy, &mgr), EnqueueResult::Enqueued);
@@ -943,11 +947,11 @@ where
     // max_items=4, soft=2. Fill to max so occupancy is AtOrAboveHard.
     let caps = QueueCaps::new(4, 2, None, None);
     let mut q = make();
-    let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+    let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
     let policy = EdgePolicy::new(caps, AdmissionPolicy::DropOldest, OverBudgetAction::Drop);
 
     let tokens: [MessageToken; 4] = core::array::from_fn(|i| {
-        let t = store(&mut mgr, make_msg_u32(i as u64 + 1));
+        let t = store(&mut mgr, make_msg_tensor(i as u64 + 1));
         assert_eq!(q.try_push(t, &policy, &mgr), EnqueueResult::Enqueued);
         t
     });
@@ -955,7 +959,7 @@ where
     assert_eq!(*q.occupancy(&policy).items(), 4);
 
     // New item to push.
-    let new_token = store(&mut mgr, make_msg_u32(10));
+    let new_token = store(&mut mgr, make_msg_tensor(10));
 
     // --- caller-driven pre-eviction loop (mirrors StepContext::push_output) ---
     loop {
@@ -1004,16 +1008,16 @@ where
 
     for fill in 0usize..=4 {
         let mut q = make();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
 
         // Fill to `fill` items.
         for i in 0..fill {
-            let t = store(&mut mgr, make_msg_u32(i as u64));
+            let t = store(&mut mgr, make_msg_tensor(i as u64));
             let _ = q.try_push(t, &policy, &mgr);
         }
         let before = *q.occupancy(&policy).items();
 
-        let probe = store(&mut mgr, make_msg_u32(99));
+        let probe = store(&mut mgr, make_msg_tensor(99));
         let _ = q.try_push(probe, &policy, &mgr);
         let after = *q.occupancy(&policy).items();
 

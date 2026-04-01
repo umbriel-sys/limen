@@ -121,7 +121,7 @@ mod tests {
     use crate::memory::static_manager::StaticMemoryManager;
     use crate::message::{Message, MessageHeader};
     use crate::policy::{AdmissionPolicy, BatchingPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
-    use crate::prelude::HeaderStore as _;
+    use crate::prelude::{create_test_tensor_filled_with, HeaderStore as _, TestTensor};
     use crate::types::{QoSClass, Ticks};
 
     const POLICY: EdgePolicy = EdgePolicy::new(
@@ -132,14 +132,17 @@ mod tests {
 
     const MGR_DEPTH: usize = 32;
 
-    fn make_msg(tick: u64, qos: QoSClass) -> Message<u32> {
+    fn make_msg(tick: u64, qos: QoSClass) -> Message<TestTensor> {
         let mut h = MessageHeader::empty();
         h.set_creation_tick(Ticks::new(tick));
         h.set_qos(qos);
-        Message::new(h, 0u32)
+        Message::new(h, create_test_tensor_filled_with(0))
     }
 
-    fn store(mgr: &mut StaticMemoryManager<u32, MGR_DEPTH>, msg: Message<u32>) -> MessageToken {
+    fn store(
+        mgr: &mut StaticMemoryManager<TestTensor, MGR_DEPTH>,
+        msg: Message<TestTensor>,
+    ) -> MessageToken {
         mgr.store(msg).expect("memory manager store failed")
     }
 
@@ -158,7 +161,7 @@ mod tests {
 
     #[test]
     fn routes_latency_critical_to_hi_and_others_to_lo() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         let t_hi = store(&mut mgr, make_msg(1, QoSClass::LatencyCritical));
@@ -179,7 +182,7 @@ mod tests {
 
     #[test]
     fn peek_prefers_hi_when_both_non_empty() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         // Push lo first, then hi — peek should still return hi.
@@ -202,7 +205,7 @@ mod tests {
 
     #[test]
     fn pop_batch_prefers_hi_when_non_empty() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         // lo: ticks 1,2,3
@@ -254,7 +257,7 @@ mod tests {
 
     #[test]
     fn occupancy_is_sum_of_lanes() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         let t1 = store(&mut mgr, make_msg(1, QoSClass::LatencyCritical));
@@ -266,13 +269,13 @@ mod tests {
         let occ = q.occupancy(&POLICY);
         assert_eq!(*occ.items(), 2usize);
 
-        // bytes should reflect stored payload sizes (u32 = 4 bytes each).
+        // bytes should reflect stored payload sizes for the shared test tensor payload.
         assert!(*occ.bytes() > 0usize);
     }
 
     #[test]
     fn is_empty_reflects_both_lanes() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         assert!(q.is_empty());
@@ -298,7 +301,7 @@ mod tests {
 
     #[test]
     fn background_qos_routes_to_lo() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         let t_bg = store(&mut mgr, make_msg(1, QoSClass::Background));
@@ -318,7 +321,7 @@ mod tests {
 
     #[test]
     fn lane_specific_admission_interactions_smoke_test() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<2>::new(), TestSpscRingBuf::<2>::new());
 
         let small_caps_policy = EdgePolicy::new(
@@ -367,7 +370,7 @@ mod tests {
 
     #[test]
     fn hi_drains_before_lo_across_multiple_pops() {
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
         let mut q = Priority2::new(TestSpscRingBuf::<16>::new(), TestSpscRingBuf::<16>::new());
 
         // Interleave pushes: lo, hi, lo, hi

@@ -415,16 +415,19 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     use super::*;
-    use crate::message::MessageHeader;
+    use crate::{
+        message::MessageHeader,
+        prelude::{create_test_tensor_filled_with, TestTensor, TEST_TENSOR_BYTE_COUNT},
+    };
 
-    // Helper: build a simple Message<u32>.
-    fn make_msg(val: u32) -> Message<u32> {
-        Message::new(MessageHeader::empty(), val)
+    // Helper: build a simple Message<TestTensor>.
+    fn make_msg(val: u32) -> Message<TestTensor> {
+        Message::new(MessageHeader::empty(), create_test_tensor_filled_with(val))
     }
 
     #[test]
     fn store_read_free_cycle() {
-        let mut mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         assert_eq!(mgr.available(), 4);
         assert_eq!(mgr.capacity(), 4);
 
@@ -433,7 +436,7 @@ mod tests {
 
         {
             let msg = mgr.read(token).unwrap();
-            assert_eq!(*msg.payload(), 42);
+            assert_eq!(*msg.payload(), create_test_tensor_filled_with(42));
         }
 
         mgr.free(token).unwrap();
@@ -442,18 +445,18 @@ mod tests {
 
     #[test]
     fn read_mut_works() {
-        let mut mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         let token = mgr.store(make_msg(10)).unwrap();
 
         {
             let mut write_guard = mgr.read_mut(token).unwrap();
             let msg = core::ops::DerefMut::deref_mut(&mut write_guard);
-            *msg.payload_mut() = 99;
+            *msg.payload_mut() = create_test_tensor_filled_with(99);
         }
 
         {
             let msg = mgr.read(token).unwrap();
-            assert_eq!(*msg.payload(), 99);
+            assert_eq!(*msg.payload(), create_test_tensor_filled_with(99));
         }
 
         mgr.free(token).unwrap();
@@ -461,12 +464,12 @@ mod tests {
 
     #[test]
     fn peek_header_works() {
-        let mut mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         let token = mgr.store(make_msg(7)).unwrap();
 
         {
             let header = mgr.peek_header(token).unwrap();
-            assert_eq!(*header.payload_size_bytes(), core::mem::size_of::<u32>());
+            assert_eq!(*header.payload_size_bytes(), TEST_TENSOR_BYTE_COUNT);
         }
 
         mgr.free(token).unwrap();
@@ -474,7 +477,7 @@ mod tests {
 
     #[test]
     fn capacity_exhaustion() {
-        let mut mgr: StaticMemoryManager<u32, 2> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 2> = StaticMemoryManager::new();
         let _t0 = mgr.store(make_msg(1)).unwrap();
         let _t1 = mgr.store(make_msg(2)).unwrap();
         assert_eq!(mgr.available(), 0);
@@ -485,7 +488,7 @@ mod tests {
 
     #[test]
     fn double_free_detected() {
-        let mut mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         let token = mgr.store(make_msg(1)).unwrap();
         mgr.free(token).unwrap();
 
@@ -495,7 +498,7 @@ mod tests {
 
     #[test]
     fn bad_token_detected() {
-        let mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         let bad = MessageToken::new(99);
 
         assert!(matches!(mgr.read(bad), Err(MemoryError::BadToken)));
@@ -504,7 +507,7 @@ mod tests {
 
     #[test]
     fn read_freed_slot_is_bad_token() {
-        let mut mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         let token = mgr.store(make_msg(1)).unwrap();
         mgr.free(token).unwrap();
 
@@ -514,26 +517,29 @@ mod tests {
 
     #[test]
     fn slot_reuse_after_free() {
-        let mut mgr: StaticMemoryManager<u32, 1> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, 1> = StaticMemoryManager::new();
         let t0 = mgr.store(make_msg(10)).unwrap();
         mgr.free(t0).unwrap();
 
         // Slot 0 should be reused.
         let t1 = mgr.store(make_msg(20)).unwrap();
         assert_eq!(t1.index(), 0);
-        assert_eq!(*mgr.read(t1).unwrap().payload(), 20);
+        assert_eq!(
+            *mgr.read(t1).unwrap().payload(),
+            create_test_tensor_filled_with(20)
+        );
     }
 
     #[test]
     fn memory_class_configurable() {
-        let mgr: StaticMemoryManager<u32, 4> =
+        let mgr: StaticMemoryManager<TestTensor, 4> =
             StaticMemoryManager::with_memory_class(MemoryClass::Device(0));
         assert_eq!(mgr.memory_class(), MemoryClass::Device(0));
     }
 
     #[test]
     fn default_memory_class_is_host() {
-        let mgr: StaticMemoryManager<u32, 4> = StaticMemoryManager::new();
+        let mgr: StaticMemoryManager<TestTensor, 4> = StaticMemoryManager::new();
         assert_eq!(mgr.memory_class(), MemoryClass::Host);
     }
 }

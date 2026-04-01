@@ -228,6 +228,7 @@ mod tests {
     use crate::memory::static_manager::StaticMemoryManager;
     use crate::message::{Message, MessageHeader};
     use crate::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
+    use crate::prelude::{create_test_tensor_filled_with, TestTensor};
     use crate::types::{EdgeIndex, NodeIndex, PortId, PortIndex, Ticks};
 
     const POLICY: EdgePolicy = EdgePolicy::new(
@@ -238,10 +239,10 @@ mod tests {
 
     const MGR_DEPTH: usize = 32;
 
-    fn make_msg_u32(tick: u64) -> Message<u32> {
+    fn make_msg_tensor(tick: u64) -> Message<TestTensor> {
         let mut h = MessageHeader::empty();
         h.set_creation_tick(Ticks::new(tick));
-        Message::new(h, 0u32)
+        Message::new(h, create_test_tensor_filled_with(0))
     }
 
     fn make_link() -> EdgeLink<TestSpscRingBuf<16>> {
@@ -295,10 +296,10 @@ mod tests {
     #[test]
     fn edge_link_forwards_to_inner_queue() {
         let mut link = make_link();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
 
         // Push a token via the link.
-        let m = make_msg_u32(42);
+        let m = make_msg_tensor(42);
         let token = mgr.store(m).expect("store");
         assert_eq!(link.try_push(token, &POLICY, &mgr), EnqueueResult::Enqueued);
 
@@ -322,13 +323,13 @@ mod tests {
     #[test]
     fn edge_link_occupancy_delegates() {
         let mut link = make_link();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
 
         let occ0 = link.occupancy(&POLICY);
         assert_eq!(*occ0.items(), 0usize);
 
-        let t1 = mgr.store(make_msg_u32(1)).expect("store");
-        let t2 = mgr.store(make_msg_u32(2)).expect("store");
+        let t1 = mgr.store(make_msg_tensor(1)).expect("store");
+        let t2 = mgr.store(make_msg_tensor(2)).expect("store");
         assert_eq!(link.try_push(t1, &POLICY, &mgr), EnqueueResult::Enqueued);
         assert_eq!(link.try_push(t2, &POLICY, &mgr), EnqueueResult::Enqueued);
 
@@ -339,10 +340,10 @@ mod tests {
     #[test]
     fn edge_link_queue_accessor() {
         let mut link = make_link();
-        let mut mgr: StaticMemoryManager<u32, MGR_DEPTH> = StaticMemoryManager::new();
+        let mut mgr: StaticMemoryManager<TestTensor, MGR_DEPTH> = StaticMemoryManager::new();
 
         // Push via the link, then verify through the inner queue accessor.
-        let token = mgr.store(make_msg_u32(7)).expect("store");
+        let token = mgr.store(make_msg_tensor(7)).expect("store");
         assert_eq!(link.try_push(token, &POLICY, &mgr), EnqueueResult::Enqueued);
 
         assert!(!link.queue().is_empty());

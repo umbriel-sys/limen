@@ -17,15 +17,15 @@
 //! GraphBuilder::new()
 //!     .vis(pub)
 //!     .name("TestPipeline")
-//!     .node(Node::new(0).ty("TestCounterSourceU32_2<C, 32>").in_ports(0).out_ports(1)
-//!           .in_payload("()").out_payload("u32").name("src").ingress_policy("Q_32_POLICY"))
-//!     .node(Node::new(1).ty("TestIdentityModelNodeU32_2<32>").in_ports(1).out_ports(1)
-//!           .in_payload("u32").out_payload("u32").name("map"))
-//!     .node(Node::new(2).ty("TestSinkNodeU32_2").in_ports(1).out_ports(0)
-//!           .in_payload("u32").out_payload("()").name("snk"))
-//!     .edge(Edge::new(0).ty("Q32").payload("u32").manager("StaticMemoryManager<u32, 8>")
+//!     .node(Node::new(0).ty("TestCounterSourceTensor<C, 32>").in_ports(0).out_ports(1)
+//!           .in_payload("()").out_payload("TestTensor").name("src").ingress_policy("Q_32_POLICY"))
+//!     .node(Node::new(1).ty("TestIdentityModelNodeTensor<32>").in_ports(1).out_ports(1)
+//!           .in_payload("TestTensor").out_payload("TestTensor").name("map"))
+//!     .node(Node::new(2).ty("TestSinkNodeTensor").in_ports(1).out_ports(0)
+//!           .in_payload("TestTensor").out_payload("()").name("snk"))
+//!     .edge(Edge::new(0).ty("Q32").payload("TestTensor").manager("StaticMemoryManager<TestTensor, 8>")
 //!           .from(0, 0).to(1, 0).policy("Q_32_POLICY").name("e0"))
-//!     .edge(Edge::new(1).ty("Q32").payload("u32").manager("StaticMemoryManager<u32, 8>")
+//!     .edge(Edge::new(1).ty("Q32").payload("TestTensor").manager("StaticMemoryManager<TestTensor, 8>")
 //!           .from(1, 0).to(2, 0).policy("Q_32_POLICY").name("e1"))
 //!     .concurrent(false)          // ← no ScopedGraphApi emitted
 //!     .finish()
@@ -33,9 +33,9 @@
 //! // Invocation 2 — std graph (concurrent runtime, ScopedGraphApi):
 //! GraphBuilder::new()
 //!     // ... same nodes ...
-//!     .edge(Edge::new(0).ty("ConcurrentEdge").payload("u32").manager("ConcurrentMemoryManager<u32>")
+//!     .edge(Edge::new(0).ty("ConcurrentEdge").payload("TestTensor").manager("ConcurrentMemoryManager<TestTensor>")
 //!           .from(0, 0).to(1, 0).policy("Q_32_POLICY").name("e0"))
-//!     .edge(Edge::new(1).ty("ConcurrentEdge").payload("u32").manager("ConcurrentMemoryManager<u32>")
+//!     .edge(Edge::new(1).ty("ConcurrentEdge").payload("TestTensor").manager("ConcurrentMemoryManager<TestTensor>")
 //!           .from(1, 0).to(2, 0).policy("Q_32_POLICY").name("e1"))
 //!     .concurrent(true)           // ← emits ScopedGraphApi + run_scoped impl
 //!     .finish()
@@ -61,7 +61,7 @@ use crate::{
     errors::{GraphError, NodeError},
     graph::{GraphApi, GraphEdgeAccess, GraphNodeAccess, GraphNodeContextBuilder, GraphNodeTypes},
     node::{
-        bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2},
+        bench::{TestCounterSourceTensor, TestIdentityModelNodeTensor, TestSinkNodeTensor},
         sink::SinkNode,
         source::{Source as _, SourceNode, EXTERNAL_INGRESS_NODE},
         Node as _, StepContext, StepResult,
@@ -69,7 +69,7 @@ use crate::{
     policy::{AdmissionPolicy, EdgePolicy, NodePolicy, OverBudgetAction},
     prelude::{
         EdgeDescriptor, EdgeLink, NodeDescriptor, NodeLink, PlatformClock, StaticMemoryManager,
-        Telemetry,
+        Telemetry, TestTensor,
     },
     types::{EdgeIndex, NodeIndex, PortId, PortIndex},
 };
@@ -88,28 +88,29 @@ const Q_32_POLICY: EdgePolicy = EdgePolicy {
 };
 
 // Test memory manager type (one per real edge).
-type Mgr32 = StaticMemoryManager<u32, 8>;
+type Mgr32 = StaticMemoryManager<TestTensor, 8>;
 
 // Test source node types.
 #[allow(type_alias_bounds)]
-type SrcNode<SrcClk: PlatformClock> = SourceNode<TestCounterSourceU32_2<SrcClk, 32>, u32, 1>;
+type SrcNode<SrcClk: PlatformClock> =
+    SourceNode<TestCounterSourceTensor<SrcClk, 32>, TestTensor, 1>;
 const INGRESS_POLICY: EdgePolicy = Q_32_POLICY;
 
 // Test model node types.
 const TEST_MAX_BATCH: usize = 32;
-type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
 
 // Test sink node types.
-type SnkNode = SinkNode<TestSinkNodeU32_2, u32, 1>;
+type SnkNode = SinkNode<TestSinkNodeTensor, TestTensor, 1>;
 
 /// concrete graph implementation used for testing.
 #[allow(clippy::complexity)]
 pub struct TestPipeline<SrcClk: PlatformClock> {
     /// Nodes held in the graph.
     nodes: (
-        NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>,
-        NodeLink<MapNode, 1, 1, u32, u32>,
-        NodeLink<SnkNode, 1, 0, u32, ()>,
+        NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>,
+        NodeLink<MapNode, 1, 1, TestTensor, TestTensor>,
+        NodeLink<SnkNode, 1, 0, TestTensor, ()>,
     ),
     /// Edges held in the graph.
     edges: (EdgeLink<Q32>, EdgeLink<Q32>),
@@ -133,13 +134,21 @@ impl<SrcClk: PlatformClock> TestPipeline<SrcClk> {
         let node_2: SnkNode = node_2.into();
 
         let nodes = (
-            NodeLink::<SrcNode<SrcClk>, 0, 1, (), u32>::new(
+            NodeLink::<SrcNode<SrcClk>, 0, 1, (), TestTensor>::new(
                 node_0,
                 NodeIndex::from(0usize),
                 Some("src"),
             ),
-            NodeLink::<MapNode, 1, 1, u32, u32>::new(node_1, NodeIndex::from(1usize), Some("map")),
-            NodeLink::<SnkNode, 1, 0, u32, ()>::new(node_2, NodeIndex::from(2usize), Some("snk")),
+            NodeLink::<MapNode, 1, 1, TestTensor, TestTensor>::new(
+                node_1,
+                NodeIndex::from(1usize),
+                Some("map"),
+            ),
+            NodeLink::<SnkNode, 1, 0, TestTensor, ()>::new(
+                node_2,
+                NodeIndex::from(2usize),
+                Some("snk"),
+            ),
         );
 
         let edges = (
@@ -309,7 +318,7 @@ impl<SrcClk: PlatformClock> GraphApi<3, 3> for TestPipeline<SrcClk> {
 
 // ===== GraphNodeAccess<I> =====
 impl<SrcClk: PlatformClock> GraphNodeAccess<0> for TestPipeline<SrcClk> {
-    type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>;
+    type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.0
@@ -320,7 +329,7 @@ impl<SrcClk: PlatformClock> GraphNodeAccess<0> for TestPipeline<SrcClk> {
     }
 }
 impl<SrcClk: PlatformClock> GraphNodeAccess<1> for TestPipeline<SrcClk> {
-    type Node = NodeLink<MapNode, 1, 1, u32, u32>;
+    type Node = NodeLink<MapNode, 1, 1, TestTensor, TestTensor>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.1
@@ -331,7 +340,7 @@ impl<SrcClk: PlatformClock> GraphNodeAccess<1> for TestPipeline<SrcClk> {
     }
 }
 impl<SrcClk: PlatformClock> GraphNodeAccess<2> for TestPipeline<SrcClk> {
-    type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
+    type Node = NodeLink<SnkNode, 1, 0, TestTensor, ()>;
     #[inline]
     fn node_ref(&self) -> &Self::Node {
         &self.nodes.2
@@ -370,7 +379,7 @@ impl<SrcClk: PlatformClock> GraphEdgeAccess<2> for TestPipeline<SrcClk> {
 // node 0: IN=0, OUT=1
 impl<SrcClk: PlatformClock> GraphNodeTypes<0, 0, 1> for TestPipeline<SrcClk> {
     type InP = ();
-    type OutP = u32;
+    type OutP = TestTensor;
     type InQ = NoQueue;
     type OutQ = Q32;
     type InM = StaticMemoryManager<(), 1>;
@@ -378,8 +387,8 @@ impl<SrcClk: PlatformClock> GraphNodeTypes<0, 0, 1> for TestPipeline<SrcClk> {
 }
 // node 1: IN=1, OUT=1
 impl<SrcClk: PlatformClock> GraphNodeTypes<1, 1, 1> for TestPipeline<SrcClk> {
-    type InP = u32;
-    type OutP = u32;
+    type InP = TestTensor;
+    type OutP = TestTensor;
     type InQ = Q32;
     type OutQ = Q32;
     type InM = Mgr32;
@@ -387,7 +396,7 @@ impl<SrcClk: PlatformClock> GraphNodeTypes<1, 1, 1> for TestPipeline<SrcClk> {
 }
 // node 2: IN=1, OUT=0
 impl<SrcClk: PlatformClock> GraphNodeTypes<2, 1, 0> for TestPipeline<SrcClk> {
-    type InP = u32;
+    type InP = TestTensor;
     type OutP = ();
     type InQ = Q32;
     type OutQ = NoQueue;
@@ -399,7 +408,7 @@ impl<SrcClk: PlatformClock> GraphNodeTypes<2, 1, 0> for TestPipeline<SrcClk> {
 // node 0: in=[], out=[edge id 1]
 impl<SrcClk: PlatformClock> GraphNodeContextBuilder<0, 0, 1> for TestPipeline<SrcClk>
 where
-    Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>>,
+    Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>>,
 {
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
@@ -539,7 +548,7 @@ where
 // node 1: in=[edge id 1], out=[edge id 2]
 impl<SrcClk: PlatformClock> GraphNodeContextBuilder<1, 1, 1> for TestPipeline<SrcClk>
 where
-    Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, u32, u32>>,
+    Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, TestTensor, TestTensor>>,
 {
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
@@ -682,7 +691,7 @@ where
 // node 2: in=[edge id 2], out=[]
 impl<SrcClk: PlatformClock> GraphNodeContextBuilder<2, 1, 0> for TestPipeline<SrcClk>
 where
-    Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, u32, ()>>,
+    Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, TestTensor, ()>>,
 {
     #[inline]
     fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
@@ -850,7 +859,7 @@ pub mod concurrent_graph {
             ScopedGraphApi,
         },
         node::{
-            bench::{TestCounterSourceU32_2, TestIdentityModelNodeU32_2},
+            bench::{TestCounterSourceTensor, TestIdentityModelNodeTensor},
             source::SourceNode,
             StepContext, StepResult,
         },
@@ -862,15 +871,15 @@ pub mod concurrent_graph {
         types::{EdgeIndex, NodeIndex, PortId, PortIndex},
     };
 
-    type ConcMgr32 = ConcurrentMemoryManager<u32>;
+    type ConcMgr32 = ConcurrentMemoryManager<TestTensor>;
 
     #[allow(type_alias_bounds)]
     type SrcNode<SrcClk: PlatformClock + Send + 'static> =
-        SourceNode<TestCounterSourceU32_2<SrcClk, 32>, u32, 1>;
+        SourceNode<TestCounterSourceTensor<SrcClk, 32>, TestTensor, 1>;
 
     const TEST_MAX_BATCH: usize = 32;
-    type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
-    type SnkNode = SinkNode<TestSinkNodeU32_2, u32, 1>;
+    type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
+    type SnkNode = SinkNode<TestSinkNodeTensor, TestTensor, 1>;
 
     /// Concrete std graph using `ConcurrentEdge` (Arc-backed, Clone+Send+Sync).
     ///
@@ -880,9 +889,9 @@ pub mod concurrent_graph {
     #[allow(clippy::complexity)]
     pub struct TestPipelineStd<SrcClk: PlatformClock + Send + 'static> {
         nodes: (
-            NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>,
-            NodeLink<MapNode, 1, 1, u32, u32>,
-            NodeLink<SnkNode, 1, 0, u32, ()>,
+            NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>,
+            NodeLink<MapNode, 1, 1, TestTensor, TestTensor>,
+            NodeLink<SnkNode, 1, 0, TestTensor, ()>,
         ),
         edges: (EdgeLink<ConcurrentEdge>, EdgeLink<ConcurrentEdge>),
         managers: (ConcMgr32, ConcMgr32),
@@ -907,17 +916,17 @@ pub mod concurrent_graph {
             let node_0: SrcNode<SrcClk> = node_0.into();
             let node_2: SnkNode = node_2.into();
 
-            let n0 = NodeLink::<SrcNode<SrcClk>, 0, 1, (), u32>::new(
+            let n0 = NodeLink::<SrcNode<SrcClk>, 0, 1, (), TestTensor>::new(
                 node_0,
                 NodeIndex::from(0usize),
                 Some("src"),
             );
-            let n1 = NodeLink::<MapNode, 1, 1, u32, u32>::new(
+            let n1 = NodeLink::<MapNode, 1, 1, TestTensor, TestTensor>::new(
                 node_1,
                 NodeIndex::from(1usize),
                 Some("map"),
             );
-            let n2 = NodeLink::<SnkNode, 1, 0, u32, ()>::new(
+            let n2 = NodeLink::<SnkNode, 1, 0, TestTensor, ()>::new(
                 node_2,
                 NodeIndex::from(2usize),
                 Some("snk"),
@@ -1232,7 +1241,7 @@ pub mod concurrent_graph {
     where
         SrcNode<SrcClk>: Send,
         ConcurrentEdge: crate::edge::ScopedEdge,
-        ConcMgr32: crate::memory::manager::ScopedManager<u32>,
+        ConcMgr32: crate::memory::manager::ScopedManager<TestTensor>,
     {
         fn run_scoped<C, T, S>(&mut self, clock: C, telemetry: T, scheduler: S)
         where
@@ -1375,7 +1384,7 @@ pub mod concurrent_graph {
 
     // ===== GraphNodeAccess<I> =====
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeAccess<0> for TestPipelineStd<SrcClk> {
-        type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>;
+        type Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             &self.nodes.0
@@ -1386,7 +1395,7 @@ pub mod concurrent_graph {
         }
     }
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeAccess<1> for TestPipelineStd<SrcClk> {
-        type Node = NodeLink<MapNode, 1, 1, u32, u32>;
+        type Node = NodeLink<MapNode, 1, 1, TestTensor, TestTensor>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             &self.nodes.1
@@ -1397,7 +1406,7 @@ pub mod concurrent_graph {
         }
     }
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeAccess<2> for TestPipelineStd<SrcClk> {
-        type Node = NodeLink<SnkNode, 1, 0, u32, ()>;
+        type Node = NodeLink<SnkNode, 1, 0, TestTensor, ()>;
         #[inline]
         fn node_ref(&self) -> &Self::Node {
             &self.nodes.2
@@ -1435,22 +1444,22 @@ pub mod concurrent_graph {
     // ===== GraphNodeTypes<I, IN, OUT> =====
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeTypes<0, 0, 1> for TestPipelineStd<SrcClk> {
         type InP = ();
-        type OutP = u32;
+        type OutP = TestTensor;
         type InQ = NoQueue;
         type OutQ = ConcurrentEdge;
         type InM = StaticMemoryManager<(), 1>;
         type OutM = ConcMgr32;
     }
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeTypes<1, 1, 1> for TestPipelineStd<SrcClk> {
-        type InP = u32;
-        type OutP = u32;
+        type InP = TestTensor;
+        type OutP = TestTensor;
         type InQ = ConcurrentEdge;
         type OutQ = ConcurrentEdge;
         type InM = ConcMgr32;
         type OutM = ConcMgr32;
     }
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeTypes<2, 1, 0> for TestPipelineStd<SrcClk> {
-        type InP = u32;
+        type InP = TestTensor;
         type OutP = ();
         type InQ = ConcurrentEdge;
         type OutQ = NoQueue;
@@ -1464,7 +1473,7 @@ pub mod concurrent_graph {
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeContextBuilder<0, 0, 1>
         for TestPipelineStd<SrcClk>
     where
-        Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), u32>>,
+        Self: GraphNodeAccess<0, Node = NodeLink<SrcNode<SrcClk>, 0, 1, (), TestTensor>>,
     {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
@@ -1562,7 +1571,7 @@ pub mod concurrent_graph {
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeContextBuilder<1, 1, 1>
         for TestPipelineStd<SrcClk>
     where
-        Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, u32, u32>>,
+        Self: GraphNodeAccess<1, Node = NodeLink<MapNode, 1, 1, TestTensor, TestTensor>>,
     {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(
@@ -1664,7 +1673,7 @@ pub mod concurrent_graph {
     impl<SrcClk: PlatformClock + Send + 'static> GraphNodeContextBuilder<2, 1, 0>
         for TestPipelineStd<SrcClk>
     where
-        Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, u32, ()>>,
+        Self: GraphNodeAccess<2, Node = NodeLink<SnkNode, 1, 0, TestTensor, ()>>,
     {
         #[inline]
         fn make_step_context<'graph, 'telemetry, 'clock, C, T>(

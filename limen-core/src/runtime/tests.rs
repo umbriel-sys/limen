@@ -6,7 +6,7 @@ use crate::graph::GraphApi;
 use crate::memory::PlacementAcceptance;
 use crate::message::MessageFlags;
 use crate::node::bench::{
-    TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
+    TestCounterSourceTensor, TestIdentityModelNodeTensor, TestSinkNodeTensor, TestTensorBackend,
 };
 use crate::node::NodeCapabilities;
 use crate::policy::{
@@ -15,6 +15,7 @@ use crate::policy::{
 use crate::prelude::graph_telemetry::GraphTelemetry;
 use crate::prelude::linux::NoStdLinuxMonotonicClock;
 use crate::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
+use crate::prelude::TestTensor;
 use crate::runtime::bench::TestNoStdRuntime;
 use crate::runtime::LimenRuntime;
 use crate::types::{QoSClass, SequenceNumber, TraceId};
@@ -34,7 +35,7 @@ const INGRESS_POLICY: EdgePolicy = EdgePolicy {
 };
 
 const TEST_MAX_BATCH: usize = 32;
-type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
 
 type NoStdTestTelemetry = GraphTelemetry<3, 3, FmtLineWriter<FixedBuffer<2048>>>;
 
@@ -70,7 +71,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let clock = NoStdLinuxMonotonicClock::new();
 
     // nodes
-    let src = TestCounterSourceU32_2::new(
+    let src = TestCounterSourceTensor::new(
         clock,
         0,
         TraceId::new(0u64),
@@ -85,7 +86,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
     );
 
     let map = MapNode::new(
-        TestU32Backend,
+        TestTensorBackend,
         (),
         node_policy,
         NodeCapabilities::default(),
@@ -94,7 +95,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32_2::new(
+    let snk = TestSinkNodeTensor::new(
         NodeCapabilities::default(),
         node_policy,
         [PlacementAcceptance::default()],
@@ -110,8 +111,8 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
 
     // managers
-    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<u32, 8>::new();
-    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<u32, 8>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 8>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 8>::new();
 
     // graph
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
@@ -221,7 +222,7 @@ fn std_pipeline_runs_with_std_runtime() {
     let clock = NoStdLinuxMonotonicClock::new();
 
     // nodes
-    let src = TestCounterSourceU32_2::new(
+    let src = TestCounterSourceTensor::new(
         clock,
         0,
         TraceId::new(0u64),
@@ -236,7 +237,7 @@ fn std_pipeline_runs_with_std_runtime() {
     );
 
     let map = MapNode::new(
-        TestU32Backend,
+        TestTensorBackend,
         (),
         NodePolicy::new(
             BatchingPolicy::none(),
@@ -249,7 +250,7 @@ fn std_pipeline_runs_with_std_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32_2::new(
+    let snk = TestSinkNodeTensor::new(
         NodeCapabilities::default(),
         NodePolicy::new(
             BatchingPolicy::none(),
@@ -271,8 +272,8 @@ fn std_pipeline_runs_with_std_runtime() {
     let telemetry: StdTestTelemetry = telemetry_core.sender();
 
     // managers
-    let mgr0 = crate::memory::concurrent_manager::ConcurrentMemoryManager::<u32>::new(8);
-    let mgr1 = crate::memory::concurrent_manager::ConcurrentMemoryManager::<u32>::new(8);
+    let mgr0 = crate::memory::concurrent_manager::ConcurrentMemoryManager::<TestTensor>::new(8);
+    let mgr1 = crate::memory::concurrent_manager::ConcurrentMemoryManager::<TestTensor>::new(8);
 
     // graph
     let mut graph = TestPipelineStd::new(src, map, snk, q0, q1, mgr0, mgr1);

@@ -19,7 +19,7 @@ mod generated {
     ));
 }
 
-#[cfg(not(feature = "std"))]
+// #[cfg(not(feature = "std"))]
 #[path = "codegen_example_graph/no_std.rs"]
 mod no_std;
 

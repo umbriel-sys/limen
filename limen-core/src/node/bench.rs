@@ -10,6 +10,7 @@ use crate::message::{MessageFlags, MessageHeader};
 use crate::node::model::InferenceModel;
 use crate::node::sink::Sink;
 use crate::node::source::Source;
+use crate::prelude::{create_test_tensor_from_array, TestTensor, TEST_TENSOR_BYTE_COUNT};
 use crate::types::{DeadlineNs, QoSClass, SequenceNumber, TraceId};
 
 #[cfg(feature = "std")]
@@ -64,21 +65,51 @@ fn random_test_node_delay(random_state: &mut u32, max_delay_microseconds: u32) {
 }
 
 // -----------------------------------------------------------------------------
-// TestSourceNodeU32: 0 inputs, 1 output (u32 payload), emits incrementing values
+// Test source node: 0 inputs, 1 output (TestTensor payload), emits
+// incrementing counter values encoded into a 3x3 tensor.
 // -----------------------------------------------------------------------------
 
+/// Encode a monotonically increasing counter into the shared `TestTensor`.
+///
+/// The counter is formatted as a zero-padded 9-digit decimal string
+/// (`counter % 1_000_000_000`) and then mapped row-major into the 3×3 tensor.
+///
+/// Examples:
+/// - `19`    -> `000000019` -> `[[0,0,0],[0,0,0],[0,1,9]]`
+/// - `10119` -> `000010119` -> `[[0,0,0],[0,1,0],[1,1,9]]`
+#[inline]
+fn create_test_tensor_from_counter(counter: u32) -> TestTensor {
+    let counter_modulo_nine_digits = counter % 1_000_000_000;
+
+    let digit_0 = (counter_modulo_nine_digits / 100_000_000) % 10;
+    let digit_1 = (counter_modulo_nine_digits / 10_000_000) % 10;
+    let digit_2 = (counter_modulo_nine_digits / 1_000_000) % 10;
+    let digit_3 = (counter_modulo_nine_digits / 100_000) % 10;
+    let digit_4 = (counter_modulo_nine_digits / 10_000) % 10;
+    let digit_5 = (counter_modulo_nine_digits / 1_000) % 10;
+    let digit_6 = (counter_modulo_nine_digits / 100) % 10;
+    let digit_7 = (counter_modulo_nine_digits / 10) % 10;
+    let digit_8 = counter_modulo_nine_digits % 10;
+
+    create_test_tensor_from_array([
+        [digit_0, digit_1, digit_2],
+        [digit_3, digit_4, digit_5],
+        [digit_6, digit_7, digit_8],
+    ])
+}
+
 /// A test source that:
-/// - Produces an incrementing `u32` on each `try_produce()`.
+/// - Produces an incrementing counter encoded into a `TestTensor` on each `try_produce()`.
 /// - Exposes *ingress* pressure via either an internal backlog or a std probe.
-pub struct TestCounterSourceU32_2<Clock, const BACKLOG_CAP: usize>
+pub struct TestCounterSourceTensor<Clock, const BACKLOG_CAP: usize>
 where
     Clock: PlatformClock,
 {
     /// Monotonic platform clock used to stamp creation ticks.
     clock: Clock,
 
-    // Next value to emit.
-    next_value_to_emit: u32,
+    // Next counter value to encode and emit.
+    next_counter_value_to_emit: u32,
 
     // Header template fields:
     trace_id: TraceId,
@@ -96,7 +127,7 @@ where
     // ---- Upstream pressure modelling ----
     // Layout: circular buffer with head index (oldest) and len (number of items).
     // Capacity is small and fixed for tests.
-    backlog: [Option<Message<u32>>; BACKLOG_CAP],
+    backlog: [Option<Message<TestTensor>>; BACKLOG_CAP],
     backlog_head: usize,
     backlog_len: usize,
     backlog_bytes: usize,
@@ -108,11 +139,11 @@ where
     ingress_updater: Option<SourceIngressUpdater>,
 }
 
-impl<Clock, const BACKLOG_CAP: usize> TestCounterSourceU32_2<Clock, BACKLOG_CAP>
+impl<Clock, const BACKLOG_CAP: usize> TestCounterSourceTensor<Clock, BACKLOG_CAP>
 where
     Clock: PlatformClock,
 {
-    /// Create a new TestCounterSourceU32_2.
+    /// Create a new tensor-producing test source.
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         clock: Clock,
@@ -131,13 +162,13 @@ where
         // Use a plain `panic!` with a string literal so this is `const`-friendly.
         if BACKLOG_CAP < ingress_policy.caps.max_items {
             panic!(
-                "TestCounterSourceU32_2: backlog capacity must be >= ingress_policy.caps.max_items"
+                "TestCounterSourceTensor: backlog capacity must be >= ingress_policy.caps.max_items"
             );
         }
 
         Self {
             clock,
-            next_value_to_emit: starting_value_inclusive,
+            next_counter_value_to_emit: starting_value_inclusive,
             trace_id,
             next_sequence: starting_sequence,
             deadline_ns,
@@ -167,7 +198,7 @@ where
     }
 
     #[inline]
-    fn make_message(&self) -> Message<u32> {
+    fn make_message(&self) -> Message<TestTensor> {
         Message::new(
             MessageHeader::new(
                 self.trace_id,
@@ -175,11 +206,11 @@ where
                 self.clock.now_ticks(),
                 self.deadline_ns,
                 self.qos,
-                core::mem::size_of::<u32>(),
+                TEST_TENSOR_BYTE_COUNT,
                 self.flags,
                 MemoryClass::Host,
             ),
-            self.next_value_to_emit,
+            create_test_tensor_from_counter(self.next_counter_value_to_emit),
         )
     }
 
@@ -195,9 +226,9 @@ where
 
             self.backlog_len += 1;
             to_add = to_add.saturating_sub(1);
-            self.backlog_bytes = self.backlog_len * core::mem::size_of::<u32>();
+            self.backlog_bytes = self.backlog_len * TEST_TENSOR_BYTE_COUNT;
 
-            self.next_value_to_emit = self.next_value_to_emit.wrapping_add(1);
+            self.next_counter_value_to_emit = self.next_counter_value_to_emit.wrapping_add(1);
             self.next_sequence = SequenceNumber::new(self.next_sequence.as_u64().wrapping_add(1));
         }
     }
@@ -207,7 +238,7 @@ where
     /// Returns `None` if the backlog is empty. This is destructive: it removes the
     /// oldest item and advances the ring head.
     #[inline]
-    fn try_pop_from_backlog(&mut self) -> Option<Message<u32>> {
+    fn try_pop_from_backlog(&mut self) -> Option<Message<TestTensor>> {
         if self.backlog_len == 0 {
             return None;
         }
@@ -222,7 +253,7 @@ where
         self.backlog_len = self.backlog_len.saturating_sub(1);
 
         // Keep bytes consistent with counters.
-        self.backlog_bytes = self.backlog_len * core::mem::size_of::<u32>();
+        self.backlog_bytes = self.backlog_len * TEST_TENSOR_BYTE_COUNT;
 
         message
     }
@@ -240,7 +271,8 @@ where
     }
 }
 
-impl<Clock, const BACKLOG_CAP: usize> Source<u32, 1> for TestCounterSourceU32_2<Clock, BACKLOG_CAP>
+impl<Clock, const BACKLOG_CAP: usize> Source<TestTensor, 1>
+    for TestCounterSourceTensor<Clock, BACKLOG_CAP>
 where
     Clock: PlatformClock,
 {
@@ -252,7 +284,7 @@ where
     }
 
     #[inline]
-    fn try_produce(&mut self) -> Option<(usize, Message<u32>)> {
+    fn try_produce(&mut self) -> Option<(usize, Message<TestTensor>)> {
         // Random test delay.
         #[cfg(feature = "std")]
         let mut random_seed: u32 = {
@@ -325,20 +357,20 @@ where
 }
 
 // -----------------------------------------------------------------------------
-// Test backend + model for u32 → u32 identity, no alloc, no dyn, no unsafe.
+// Test backend + model for TestTensor -> TestTensor identity, no alloc, no dyn, no unsafe.
 // -----------------------------------------------------------------------------
 
 /// ---------- Test model ----------
-pub struct TestU32Model;
+pub struct TestTensorModel;
 
-impl ComputeModel<u32, u32> for TestU32Model {
+impl ComputeModel<TestTensor, TestTensor> for TestTensorModel {
     #[inline]
     fn init(&mut self) -> Result<(), InferenceError> {
         Ok(())
     }
 
     #[inline]
-    fn infer_one(&mut self, inp: &u32, out: &mut u32) -> Result<(), InferenceError> {
+    fn infer_one(&mut self, inp: &TestTensor, out: &mut TestTensor) -> Result<(), InferenceError> {
         #[cfg(feature = "std")]
         let mut random_seed: u32 = {
             let now = std::time::SystemTime::now()
@@ -357,8 +389,8 @@ impl ComputeModel<u32, u32> for TestU32Model {
     #[inline]
     fn infer_batch(
         &mut self,
-        inputs: crate::message::batch::Batch<'_, u32>,
-        outputs: &mut [u32],
+        inputs: crate::message::batch::Batch<'_, TestTensor>,
+        outputs: &mut [TestTensor],
     ) -> Result<(), InferenceError> {
         #[cfg(feature = "std")]
         let mut random_seed: u32 = {
@@ -404,10 +436,10 @@ impl ComputeModel<u32, u32> for TestU32Model {
 
 /// ---------- Test backend ----------
 #[derive(Clone, Copy, Debug, Default)]
-pub struct TestU32Backend;
+pub struct TestTensorBackend;
 
-impl ComputeBackend<u32, u32> for TestU32Backend {
-    type Model = TestU32Model;
+impl ComputeBackend<TestTensor, TestTensor> for TestTensorBackend {
+    type Model = TestTensorModel;
     type Error = InferenceError;
 
     // Unit descriptor: no artifact needed for this test model.
@@ -420,15 +452,15 @@ impl ComputeBackend<u32, u32> for TestU32Backend {
 
     #[inline]
     fn load_model<'d>(&self, _desc: Self::ModelDescriptor<'d>) -> Result<Self::Model, Self::Error> {
-        Ok(TestU32Model)
+        Ok(TestTensorModel)
     }
 }
 
-/// Alias preserving the old test node name.
-pub type TestIdentityModelNodeU32_2<const MAX_BATCH: usize> =
-    InferenceModel<TestU32Backend, u32, u32, MAX_BATCH>;
+/// Identity model node using the shared `TestTensor` payload.
+pub type TestIdentityModelNodeTensor<const MAX_BATCH: usize> =
+    InferenceModel<TestTensorBackend, TestTensor, TestTensor, MAX_BATCH>;
 
-impl<const MAX_BATCH: usize> TestIdentityModelNodeU32_2<MAX_BATCH> {
+impl<const MAX_BATCH: usize> TestIdentityModelNodeTensor<MAX_BATCH> {
     /// Construct the identity test node with your policy/capability params.
     #[inline]
     pub fn new_identity(
@@ -437,7 +469,7 @@ impl<const MAX_BATCH: usize> TestIdentityModelNodeU32_2<MAX_BATCH> {
         input_placement_acceptance: [PlacementAcceptance; 1],
         output_placement_acceptance: [PlacementAcceptance; 1],
     ) -> Result<Self, InferenceError> {
-        let backend = TestU32Backend;
+        let backend = TestTensorBackend;
         InferenceModel::new(
             backend,
             (),
@@ -456,19 +488,19 @@ impl<const MAX_BATCH: usize> TestIdentityModelNodeU32_2<MAX_BATCH> {
 }
 
 // -----------------------------------------------------------------------------
-// TestSinkNodeU32: 1 input, 0 outputs, logs full Message<u32>
-// Implements `sink::Sink<u32, 1>` so it can be used via `SinkNode<_, u32, 1>`.
+// Test sink node: 1 input, 0 outputs, logs full Message<TestTensor>
+// Implements `sink::Sink<TestTensor, 1>` so it can be used via `SinkNode<_, TestTensor, 1>`.
 // -----------------------------------------------------------------------------
 
 /// test sink
-pub struct TestSinkNodeU32_2 {
+pub struct TestSinkNodeTensor {
     node_capabilities: NodeCapabilities,
     node_policy: NodePolicy,
     input_placement_acceptance: [PlacementAcceptance; 1],
     printer: fn(&str),
 }
 
-impl TestSinkNodeU32_2 {
+impl TestSinkNodeTensor {
     /// new
     pub const fn new(
         node_capabilities: NodeCapabilities,
@@ -521,7 +553,7 @@ impl<const N: usize> core::fmt::Write for FixedBuf<N> {
     }
 }
 
-impl Sink<u32, 1> for TestSinkNodeU32_2 {
+impl Sink<TestTensor, 1> for TestSinkNodeTensor {
     type Error = core::convert::Infallible;
 
     #[inline]
@@ -530,7 +562,7 @@ impl Sink<u32, 1> for TestSinkNodeU32_2 {
     }
 
     #[inline]
-    fn consume(&mut self, msg: &Message<u32>) -> Result<(), Self::Error> {
+    fn consume(&mut self, msg: &Message<TestTensor>) -> Result<(), Self::Error> {
         #[cfg(feature = "std")]
         let mut random_seed: u32 = {
             let now = std::time::SystemTime::now()
@@ -581,7 +613,7 @@ mod tests {
 
     // ------------- 1) Source node ----------------
     //
-    // Runs the node contract tests for TestCounterSourceU32_2.
+    // Runs the node contract tests for TestCounterSourceTensor
     crate::run_node_contract_tests!(test_counter_source_contract, {
         make_nodelink: || {
             // Build a clock instance to pass into the constructor.
@@ -600,7 +632,7 @@ mod tests {
             let ingress_policy = TEST_INGRESS_POLICY;
 
             // Make the source instance (BACKLOG_CAP choose e.g. 8).
-            let src: TestCounterSourceU32_2<_, 16> = TestCounterSourceU32_2::new(
+            let src: TestCounterSourceTensor<_, 16> = TestCounterSourceTensor::new(
                 clock,
                 start_value,
                 trace_id,
@@ -615,7 +647,7 @@ mod tests {
             );
 
             // Convert Source -> SourceNode using the convenience.
-            // into_sourcenode consumes `src` and returns SourceNode<_, u32, 1>.
+            // into_sourcenode consumes `src` and returns SourceNode<_, TestTensor, 1>.
             let src_node = src.into_sourcenode(crate::policy::NodePolicy::default());
 
             // Construct a NodeLink owning the SourceNode. Use NodeIndex::new(0) and a static name.
@@ -635,7 +667,7 @@ mod tests {
             let output_accept = [crate::memory::PlacementAcceptance::default(); 1];
 
             // Construct the model-backed inference node (MAX_BATCH choose a reasonable constant)
-            let node = TestIdentityModelNodeU32_2::<8>::new_identity(
+            let node = TestIdentityModelNodeTensor::<8>::new_identity(
                 node_caps,
                 node_policy,
                 input_accept,
@@ -650,7 +682,7 @@ mod tests {
 
     // ------------- 3) Sink node ----------------
     //
-    // Runs the node contract tests for TestSinkNodeU32_2 wrapped in SinkNode.
+    // Runs the node contract tests for TestSinkNodeTensor wrapped in SinkNode.
     crate::run_node_contract_tests!(test_sink_node_contract, {
         make_nodelink: || {
             let node_caps = crate::node::NodeCapabilities::default();
@@ -658,7 +690,7 @@ mod tests {
             let input_accept = [crate::memory::PlacementAcceptance::default(); 1];
 
             // Create sink instance; provide a simple printer that ignores the string in tests.
-            let sink = TestSinkNodeU32_2::new(node_caps, node_policy, input_accept, |_s| {});
+            let sink = TestSinkNodeTensor::new(node_caps, node_policy, input_accept, |_s| {});
 
             // Wrap into SinkNode via From::from (or SinkNode::new)
             let sink_node = crate::node::sink::SinkNode::from(sink);

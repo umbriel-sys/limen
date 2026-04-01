@@ -5,7 +5,7 @@ use limen_core::graph::GraphApi;
 use limen_core::memory::PlacementAcceptance;
 use limen_core::message::MessageFlags;
 use limen_core::node::bench::{
-    TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
+    TestCounterSourceTensor, TestIdentityModelNodeTensor, TestSinkNodeTensor, TestTensorBackend,
 };
 use limen_core::node::NodeCapabilities;
 use limen_core::policy::{
@@ -15,6 +15,7 @@ use limen_core::policy::{
 use limen_core::prelude::graph_telemetry::GraphTelemetry;
 use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
 use limen_core::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
+use limen_core::prelude::TestTensor;
 use limen_core::runtime::bench::TestNoStdRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
@@ -22,10 +23,10 @@ use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 // Concrete queue type used by the test pipelines (matches bench graphs)
 type Q32 = limen_core::edge::bench::TestSpscRingBuf<8>;
 
-type Mgr32 = limen_core::memory::static_manager::StaticMemoryManager<u32, 8>;
+type Mgr32 = limen_core::memory::static_manager::StaticMemoryManager<TestTensor, 8>;
 
 const TEST_MAX_BATCH: usize = 32;
-type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
 
 type NoStdTestTelemetry = GraphTelemetry<3, 3, FmtLineWriter<FixedBuffer<2048>>>;
 
@@ -64,7 +65,7 @@ fn proc_macro_core_pipeline_runs_with_nostd_runtime() {
     let clock = NoStdLinuxMonotonicClock::new();
 
     // nodes
-    let src = TestCounterSourceU32_2::new(
+    let src = TestCounterSourceTensor::new(
         clock,
         0,
         TraceId::new(0u64),
@@ -79,7 +80,7 @@ fn proc_macro_core_pipeline_runs_with_nostd_runtime() {
     );
 
     let map = MapNode::new(
-        TestU32Backend,
+        TestTensorBackend,
         (),
         node_policy,
         NodeCapabilities::default(),
@@ -88,7 +89,7 @@ fn proc_macro_core_pipeline_runs_with_nostd_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32_2::new(
+    let snk = TestSinkNodeTensor::new(
         NodeCapabilities::default(),
         node_policy,
         [PlacementAcceptance::default()],

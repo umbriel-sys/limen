@@ -8,7 +8,7 @@ use limen_core::graph::GraphApi as _;
 use limen_core::memory::PlacementAcceptance;
 use limen_core::message::MessageFlags;
 use limen_core::node::bench::{
-    TestCounterSourceU32_2, TestIdentityModelNodeU32_2, TestSinkNodeU32_2, TestU32Backend,
+    TestCounterSourceTensor, TestIdentityModelNodeTensor, TestSinkNodeTensor, TestTensorBackend,
 };
 use limen_core::node::NodeCapabilities;
 use limen_core::policy::{
@@ -19,6 +19,7 @@ use limen_core::prelude::concurrent::{spawn_telemetry_core, TelemetrySender};
 use limen_core::prelude::graph_telemetry::GraphTelemetry;
 use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
 use limen_core::prelude::sink::IoLineWriter;
+use limen_core::prelude::TestTensor;
 use limen_core::runtime::bench::concurrent_runtime::TestScopedRuntime;
 use limen_core::runtime::LimenRuntime;
 use limen_core::types::{QoSClass, SequenceNumber, TraceId};
@@ -26,10 +27,10 @@ use limen_core::types::{QoSClass, SequenceNumber, TraceId};
 // Concrete queue type used by the test pipelines
 type Q32 = ConcurrentEdge;
 
-type Mgr32 = limen_core::memory::concurrent_manager::ConcurrentMemoryManager<u32>;
+type Mgr32 = limen_core::memory::concurrent_manager::ConcurrentMemoryManager<TestTensor>;
 
 const TEST_MAX_BATCH: usize = 32;
-type MapNode = TestIdentityModelNodeU32_2<TEST_MAX_BATCH>;
+type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
 
 type NoStdTestClock = NoStdLinuxMonotonicClock;
 
@@ -56,7 +57,7 @@ fn codegen_std_pipeline_runs_with_std_runtime() {
     let clock = NoStdLinuxMonotonicClock::new();
 
     // nodes
-    let src = TestCounterSourceU32_2::new(
+    let src = TestCounterSourceTensor::new(
         clock,
         0,
         TraceId::new(0u64),
@@ -71,7 +72,7 @@ fn codegen_std_pipeline_runs_with_std_runtime() {
     );
 
     let map = MapNode::new(
-        TestU32Backend,
+        TestTensorBackend,
         (),
         NodePolicy::new(
             BatchingPolicy::none(),
@@ -84,7 +85,7 @@ fn codegen_std_pipeline_runs_with_std_runtime() {
     )
     .unwrap();
 
-    let snk = TestSinkNodeU32_2::new(
+    let snk = TestSinkNodeTensor::new(
         NodeCapabilities::default(),
         NodePolicy::new(
             BatchingPolicy::none(),

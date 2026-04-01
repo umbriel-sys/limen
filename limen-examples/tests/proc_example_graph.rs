@@ -5,6 +5,7 @@ use limen_core::edge::Edge;
 use limen_core::node::source::Source;
 use limen_core::node::Node;
 use limen_core::policy::{AdmissionPolicy, EdgePolicy, OverBudgetAction, QueueCaps};
+use limen_core::prelude::TestTensor;
 
 /// Example edge policy used by the proc-macro graph.
 const EXAMPLE_EDGE_POLICY: EdgePolicy = EdgePolicy::new(
@@ -18,27 +19,27 @@ define_graph! {
 
     nodes {
         0: {
-            ty: limen_core::node::bench::TestCounterSourceU32_2<limen_core::prelude::linux::NoStdLinuxMonotonicClock, 32>,
+            ty: limen_core::node::bench::TestCounterSourceTensor<limen_core::prelude::linux::NoStdLinuxMonotonicClock, 32>,
             in_ports: 0,
             out_ports: 1,
             in_payload: (),
-            out_payload: u32,
+            out_payload: TestTensor,
             name: Some("src"),
             ingress_policy: EXAMPLE_EDGE_POLICY
         },
         1: {
-            ty: limen_core::node::bench::TestIdentityModelNodeU32_2<32>,
+            ty: limen_core::node::bench::TestIdentityModelNodeTensor<32>,
             in_ports: 1,
             out_ports: 1,
-            in_payload: u32,
-            out_payload: u32,
+            in_payload: TestTensor,
+            out_payload: TestTensor,
             name: Some("map")
         },
         2: {
-            ty: limen_core::node::bench::TestSinkNodeU32_2,
+            ty: limen_core::node::bench::TestSinkNodeTensor,
             in_ports: 1,
             out_ports: 0,
-            in_payload: u32,
+            in_payload: TestTensor,
             out_payload: (),
             name: Some("sink")
         },
@@ -47,8 +48,8 @@ define_graph! {
     edges {
         0: {
             ty: limen_core::edge::bench::TestSpscRingBuf<8>,
-            payload: u32,
-            manager: limen_core::memory::static_manager::StaticMemoryManager<u32, 8>,
+            payload: TestTensor,
+            manager: limen_core::memory::static_manager::StaticMemoryManager<TestTensor, 8>,
             from: (0, 0),
             to: (1, 0),
             policy: EXAMPLE_EDGE_POLICY,
@@ -56,8 +57,8 @@ define_graph! {
         },
         1: {
             ty: limen_core::edge::bench::TestSpscRingBuf<8>,
-            payload: u32,
-            manager: limen_core::memory::static_manager::StaticMemoryManager<u32, 8>,
+            payload: TestTensor,
+            manager: limen_core::memory::static_manager::StaticMemoryManager<TestTensor, 8>,
             from: (1, 0),
             to: (2, 0),
             policy: EXAMPLE_EDGE_POLICY,
@@ -73,27 +74,27 @@ define_graph! {
 
     nodes {
         0: {
-            ty: limen_core::node::bench::TestCounterSourceU32_2<limen_core::prelude::linux::NoStdLinuxMonotonicClock, 32>,
+            ty: limen_core::node::bench::TestCounterSourceTensor<limen_core::prelude::linux::NoStdLinuxMonotonicClock, 32>,
             in_ports: 0,
             out_ports: 1,
             in_payload: (),
-            out_payload: u32,
+            out_payload: TestTensor,
             name: Some("src"),
             ingress_policy: EXAMPLE_EDGE_POLICY
         },
         1: {
-            ty: limen_core::node::bench::TestIdentityModelNodeU32_2<32>,
+            ty: limen_core::node::bench::TestIdentityModelNodeTensor<32>,
             in_ports: 1,
             out_ports: 1,
-            in_payload: u32,
-            out_payload: u32,
+            in_payload: TestTensor,
+            out_payload: TestTensor,
             name: Some("map")
         },
         2: {
-            ty: limen_core::node::bench::TestSinkNodeU32_2,
+            ty: limen_core::node::bench::TestSinkNodeTensor,
             in_ports: 1,
             out_ports: 0,
-            in_payload: u32,
+            in_payload: TestTensor,
             out_payload: (),
             name: Some("sink")
         },
@@ -102,8 +103,8 @@ define_graph! {
     edges {
         0: {
             ty: limen_core::edge::spsc_concurrent::ConcurrentEdge,
-            payload: u32,
-            manager: limen_core::memory::concurrent_manager::ConcurrentMemoryManager<u32>,
+            payload: TestTensor,
+            manager: limen_core::memory::concurrent_manager::ConcurrentMemoryManager<TestTensor>,
             from: (0, 0),
             to: (1, 0),
             policy: EXAMPLE_EDGE_POLICY,
@@ -111,8 +112,8 @@ define_graph! {
         },
         1: {
             ty: limen_core::edge::spsc_concurrent::ConcurrentEdge,
-            payload: u32,
-            manager: limen_core::memory::concurrent_manager::ConcurrentMemoryManager<u32>,
+            payload: TestTensor,
+            manager: limen_core::memory::concurrent_manager::ConcurrentMemoryManager<TestTensor>,
             from: (1, 0),
             to: (2, 0),
             policy: EXAMPLE_EDGE_POLICY,
@@ -123,7 +124,7 @@ define_graph! {
     concurrent;
 }
 
-#[cfg(not(feature = "std"))]
+// #[cfg(not(feature = "std"))]
 #[path = "proc_example_graph/no_std.rs"]
 mod no_std;
 

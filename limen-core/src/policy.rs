@@ -2,14 +2,66 @@
 
 use crate::types::{DeadlineNs, QoSClass, Ticks};
 
+/// Configuration for a sliding window.
+///
+/// A sliding window produces overlapping (or non-overlapping) windows of `size` items,
+/// advancing by `stride` items per step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlidingWindow {
+    /// Number of items the window start advances between consecutive windows.
+    stride: usize,
+}
+
+impl SlidingWindow {
+    /// Creates a new sliding window configuration.
+    ///
+    /// `stride` is how many items the window start advances between consecutive windows.
+    #[must_use]
+    pub fn new(stride: usize) -> Self {
+        Self { stride }
+    }
+
+    /// Returns how many items the window start advances between consecutive windows.
+    #[must_use]
+    pub fn stride(&self) -> &usize {
+        &self.stride
+    }
+}
+
+/// How batches are formed over an input stream.
+///
+/// The window policy controls how items from a stream are grouped into `Window`s.
+///
+/// - [`WindowKind::Disjoint`] (default): non-overlapping windows; each window consumes
+///   `size` items from the stream and the next window begins immediately after.
+/// - [`WindowKind::Sliding`]: fixed-size windows that advance by a fixed step. Each
+///   produced window contains `size` items, and the next window starts `stride` items
+///   after the previous window start. When `stride == size`, this is equivalent to
+///   [`WindowKind::Disjoint`].
+///
+/// For [`WindowKind::Sliding`], `stride <= size` is expected.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKind {
+    /// Non-overlapping (disjoint) windows; default.
+    Disjoint,
+    /// Sliding windows: each produced window has `size` items and windows advance
+    /// by `stride` items between steps.
+    Sliding(SlidingWindow),
+}
+
 /// Batch formation policy: fixed-N and/or Δt micro-batching.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchingPolicy {
     /// Fixed number of items per batch (>= 1). If `None`, do not use fixed-N.
     fixed_n: Option<usize>,
+
     /// Maximum micro-batching window in ticks (Δt). If `None`, no Δt cap.
     max_delta_t: Option<Ticks>,
+
+    /// Windowing style: disjoint (default) or sliding (opt-in).
+    window_kind: WindowKind,
 }
 
 impl BatchingPolicy {
@@ -18,6 +70,7 @@ impl BatchingPolicy {
         Self {
             fixed_n: Some(1),
             max_delta_t: None,
+            window_kind: WindowKind::Disjoint,
         }
     }
 
@@ -26,6 +79,7 @@ impl BatchingPolicy {
         Self {
             fixed_n: Some(n),
             max_delta_t: None,
+            window_kind: WindowKind::Disjoint,
         }
     }
 
@@ -34,6 +88,7 @@ impl BatchingPolicy {
         Self {
             fixed_n: None,
             max_delta_t: Some(cap),
+            window_kind: WindowKind::Disjoint,
         }
     }
 
@@ -42,6 +97,41 @@ impl BatchingPolicy {
         Self {
             fixed_n: Some(n),
             max_delta_t: Some(cap),
+            window_kind: WindowKind::Disjoint,
+        }
+    }
+
+    /// Combined fixed-N and Δt caps with explicit window kind (e.g., sliding).
+    #[inline]
+    pub const fn with_window(
+        n: Option<usize>,
+        cap: Option<Ticks>,
+        window_kind: WindowKind,
+    ) -> Self {
+        Self {
+            fixed_n: n,
+            max_delta_t: cap,
+            window_kind,
+        }
+    }
+
+    /// Convenience: fixed-N with explicit window kind.
+    #[inline]
+    pub const fn fixed_with_window(n: usize, window_kind: WindowKind) -> Self {
+        Self {
+            fixed_n: Some(n),
+            max_delta_t: None,
+            window_kind,
+        }
+    }
+
+    /// Convenience: delta-t with explicit window kind.
+    #[inline]
+    pub const fn delta_t_with_window(cap: Ticks, window_kind: WindowKind) -> Self {
+        Self {
+            fixed_n: None,
+            max_delta_t: Some(cap),
+            window_kind,
         }
     }
 
@@ -55,6 +145,12 @@ impl BatchingPolicy {
     #[inline]
     pub const fn max_delta_t(&self) -> &Option<Ticks> {
         &self.max_delta_t
+    }
+
+    /// Return the window kind.
+    #[inline]
+    pub const fn window_kind(&self) -> WindowKind {
+        self.window_kind
     }
 }
 
@@ -242,7 +338,7 @@ impl QueueCaps {
 
 /// Watermark state derived from queue occupancy and caps.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WatermarkState {
     /// Well below soft watermarks.
     BelowSoft,
@@ -269,11 +365,27 @@ pub enum AdmissionPolicy {
 /// Decision returned by an admission controller.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Decision returned by EdgePolicy::decide (pure, side-effect free).
 pub enum AdmissionDecision {
-    /// Admit the item.
+    /// Accept the incoming item without evicting anything.
     Admit,
-    /// Reject the item per policy.
+
+    /// Refuse the incoming item.
     Reject,
+
+    /// Drop the incoming (newest) item; queue unchanged.
+    DropNewest,
+
+    /// Evict `n` oldest items, then admit (caller performs evictions).
+    /// `n` can be 1 for BetweenSoftAndHard with DropOldest.
+    Evict(usize),
+
+    /// Evict oldest items until the queue is below the hard watermark,
+    /// then admit if possible. Caller performs repeated evictions.
+    EvictUntilBelowHard,
+
+    /// Block the producer until space becomes available (edge decides how to block).
+    Block,
 }
 
 /// Per-edge policy bundle.
@@ -335,25 +447,72 @@ impl EdgePolicy {
     }
 
     /// Apply admission logic based on header hints (deadline/qos) and occupancy.
+    ///
+    /// # Behaviour
+    ///
+    /// - `BelowSoft`  => `Admit`.
+    /// - `BetweenSoftAndHard`:
+    ///     - `DeadlineAndQoSAware` => consult deadline/qos to decide (TODO: full impl).
+    ///     - `DropNewest` => `DropNewest`.
+    ///     - `DropOldest` => `Evict(1)`.
+    ///     - `Block` => `Block`.
+    /// - `AtOrAboveHard`:
+    ///     - If the *single* incoming item cannot fit under the hard cap (even when
+    ///       the queue is empty), the item is `Reject`ed immediately.
+    ///     - Otherwise:
+    ///         - `DropNewest` => `DropNewest`.
+    ///         - `DropOldest` => `EvictUntilBelowHard`.
+    ///         - `DeadlineAndQoSAware` => conservative default `Reject` (or consult
+    ///           deadline/qos if implemented).
+    ///         - `Block` => `Block`.
+    ///
+    /// # Warning
+    ///
+    /// QoS-aware behaviour is **not yet implemented**.  The `DeadlineAndQoSAware`
+    /// branch currently uses conservative defaults:
+    /// - between soft/hard it defaults to `Admit`, and
+    /// - at-or-above-hard it defaults to `Reject`.
+    ///
+    /// Implementors should update this method to use deadline and QoS hints
+    /// when the scheduler rules are available.
     pub fn decide(
         &self,
         items: usize,
         bytes: usize,
+        item_bytes: usize,
         _deadline: Option<DeadlineNs>,
         _qos: QoSClass,
     ) -> AdmissionDecision {
         match self.watermark(items, bytes) {
             WatermarkState::BelowSoft => AdmissionDecision::Admit,
-            WatermarkState::AtOrAboveHard => AdmissionDecision::Reject,
+
             WatermarkState::BetweenSoftAndHard => match self.admission {
                 AdmissionPolicy::DeadlineAndQoSAware => {
-                    // The full policy may weigh deadline & QoS; the core keeps it simple. TODO: CHECK!
+                    // TODO: implement full deadline/qos logic. For now, admit.
                     AdmissionDecision::Admit
                 }
-                AdmissionPolicy::DropNewest => AdmissionDecision::Reject,
-                AdmissionPolicy::DropOldest => AdmissionDecision::Admit, // queue impl will evict oldest TODO: CHECK!
-                AdmissionPolicy::Block => AdmissionDecision::Reject, // core cannot block TODO: FIX!
+                AdmissionPolicy::DropNewest => AdmissionDecision::DropNewest,
+                AdmissionPolicy::DropOldest => AdmissionDecision::Evict(1),
+                AdmissionPolicy::Block => AdmissionDecision::Block,
             },
+
+            WatermarkState::AtOrAboveHard => {
+                // If item alone cannot fit under hard caps, reject immediately.
+                if self.caps.at_or_above_hard(0, item_bytes) {
+                    return AdmissionDecision::Reject;
+                }
+
+                match self.admission {
+                    AdmissionPolicy::DeadlineAndQoSAware => {
+                        // Conservative default: reject at or above hard.
+                        // Or evaluate deadline/qos here and map to DropOldest/DropNewest.
+                        AdmissionDecision::Reject
+                    }
+                    AdmissionPolicy::DropNewest => AdmissionDecision::DropNewest,
+                    AdmissionPolicy::DropOldest => AdmissionDecision::EvictUntilBelowHard,
+                    AdmissionPolicy::Block => AdmissionDecision::Block,
+                }
+            }
         }
     }
 }

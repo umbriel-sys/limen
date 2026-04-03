@@ -12,12 +12,12 @@
 //!   never have to mention the adapter type.
 
 use crate::edge::{Edge, EdgeOccupancy};
-use crate::errors::{NodeError, QueueError};
+use crate::errors::NodeError;
 use crate::memory::PlacementAcceptance;
 use crate::message::{payload::Payload, Message};
-use crate::node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult};
+use crate::node::{Node, NodeCapabilities, NodeKind, ProcessResult, StepContext, StepResult};
 use crate::policy::NodePolicy;
-use crate::prelude::{PlatformClock, Telemetry};
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 
 use core::marker::PhantomData;
 
@@ -43,7 +43,7 @@ where
     ///
     /// This is where side effects happen (write, print, publish). Return `Ok(())`
     /// on success. Errors are mapped to `NodeError::execution_failed()`.
-    fn consume(&mut self, port: usize, msg: Message<InP>) -> Result<(), Self::Error>;
+    fn consume(&mut self, msg: &Message<InP>) -> Result<(), Self::Error>;
 
     /// Input placement acceptances for zero-copy compatibility.
     fn input_acceptance(&self) -> [PlacementAcceptance; IN];
@@ -60,7 +60,7 @@ where
     /// "no input available now".
     #[inline]
     fn select_input(&mut self, occ: &[EdgeOccupancy; IN]) -> Option<usize> {
-        occ.iter().position(|o| o.items() > &0)
+        occ.iter().position(|o| *o.items() > 0)
     }
 }
 
@@ -122,7 +122,7 @@ where
 impl<S, InP, const IN: usize> Node<IN, 0, InP, ()> for SinkNode<S, InP, IN>
 where
     S: Sink<InP, IN>,
-    InP: Payload,
+    InP: Payload + Copy,
 {
     #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
@@ -142,6 +142,12 @@ where
     #[inline]
     fn policy(&self) -> NodePolicy {
         self.policy
+    }
+
+    /// **TEST ONLY** method used to override batching policies for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy) {
+        self.policy = policy;
     }
 
     #[inline]
@@ -167,17 +173,33 @@ where
         Ok(())
     }
 
-    /// Pop exactly one message (if available) from the chosen input and consume it.
     #[inline]
-    fn step<'g, 't, 'ck, InQ, OutQ, C, T>(
+    fn process_message<C>(
         &mut self,
-        cx: &mut StepContext<'g, 't, 'ck, IN, 0, InP, (), InQ, OutQ, C, T>,
+        msg: &Message<InP>,
+        _sys_clock: &C,
+    ) -> Result<ProcessResult<()>, NodeError>
+    where
+        C: PlatformClock + Sized,
+    {
+        self.sink
+            .consume(msg)
+            .map(|_| ProcessResult::Consumed)
+            .map_err(|_| NodeError::execution_failed())
+    }
+
+    #[inline]
+    fn step<'g, 't, 'ck, InQ, OutQ, InM, OutM, C, Tel>(
+        &mut self,
+        cx: &mut StepContext<'g, 't, 'ck, IN, 0, InP, (), InQ, OutQ, InM, OutM, C, Tel>,
     ) -> Result<StepResult, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<()>>,
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<()>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
+        Tel: Telemetry + Sized,
     {
         // Snapshot occupancies and let the sink choose an input.
         let occ: [EdgeOccupancy; IN] = core::array::from_fn(|i| cx.in_occupancy(i));
@@ -186,38 +208,71 @@ where
             None => return Ok(StepResult::NoInput),
         };
 
-        // Pop one message from the selected input.
-        let msg = match cx.in_try_pop(port) {
-            Ok(m) => m,
-            Err(QueueError::Empty) => return Ok(StepResult::NoInput),
-            Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
-            Err(QueueError::AtOrAboveHardCap)
-            | Err(QueueError::Unsupported)
-            | Err(QueueError::Poisoned) => return Err(NodeError::execution_failed()),
-        };
-
-        // Delegate to the sink implementation.
-        self.sink
-            .consume(port, msg)
-            .map_err(|_| NodeError::execution_failed())?;
-
-        Ok(StepResult::MadeProgress)
+        cx.pop_and_process(port, |msg| {
+            self.sink
+                .consume(msg)
+                .map(|_| ProcessResult::Consumed)
+                .map_err(|_| NodeError::execution_failed())
+        })
     }
 
     #[inline]
-    fn on_watchdog_timeout<C, T>(&mut self, clock: &C, _t: &mut T) -> Result<StepResult, NodeError>
+    fn step_batch<'graph, 'telemetry, 'clock, InQ, OutQ, InM, OutM, C, Tel>(
+        &mut self,
+        ctx: &mut StepContext<
+            'graph,
+            'telemetry,
+            'clock,
+            IN,
+            0,
+            InP,
+            (),
+            InQ,
+            OutQ,
+            InM,
+            OutM,
+            C,
+            Tel,
+        >,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<()>,
+        C: PlatformClock + Sized,
+        Tel: Telemetry + Sized,
+    {
+        let node_policy = self.policy();
+        let port = match (0..IN).find(|&p| ctx.input_edge_has_batch(p, &node_policy)) {
+            Some(p) => p,
+            None => return Ok(StepResult::NoInput),
+        };
+        let nmax = node_policy.batching().fixed_n().unwrap_or(1);
+        let clock = ctx.clock;
+
+        ctx.pop_batch_and_process(port, nmax, &node_policy, |msg| {
+            self.process_message(msg, clock)
+        })
+    }
+
+    #[inline]
+    fn on_watchdog_timeout<C, Tel>(
+        &mut self,
+        clock: &C,
+        _t: &mut Tel,
+    ) -> Result<StepResult, NodeError>
     where
         C: PlatformClock + Sized,
-        T: Telemetry,
+        Tel: Telemetry,
     {
-        // Sinks typically block on external IO; yield cooperatively.
         Ok(StepResult::YieldUntil(clock.now_ticks()))
     }
 
     #[inline]
-    fn stop<C, T>(&mut self, _c: &C, _t: &mut T) -> Result<(), NodeError>
+    fn stop<C, Tel>(&mut self, _c: &C, _t: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         Ok(())
     }

@@ -1,8 +1,10 @@
 //! Limen single-producer single-consumer edge trait and related types.
 
 use crate::errors::QueueError;
-use crate::message::{payload::Payload, Message};
-use crate::policy::{AdmissionDecision, EdgePolicy, WatermarkState};
+use crate::message::Message;
+use crate::policy::{AdmissionDecision, BatchingPolicy, EdgePolicy, WatermarkState};
+use crate::prelude::{BatchView, HeaderStore, Payload};
+use crate::types::MessageToken;
 
 pub mod link;
 
@@ -10,9 +12,6 @@ pub mod spsc_array;
 
 #[cfg(feature = "alloc")]
 pub mod spsc_vecdeque;
-
-#[cfg(feature = "std")]
-pub mod spsc_ringbuf;
 
 #[cfg(feature = "std")]
 pub mod spsc_concurrent;
@@ -24,6 +23,11 @@ pub mod spsc_priority2;
 
 #[cfg(any(test, feature = "bench"))]
 pub mod bench;
+
+#[cfg(any(test, feature = "bench"))]
+pub mod contract_tests;
+#[cfg(any(test, feature = "bench"))]
+pub use contract_tests::*;
 
 /// Push result for enqueue attempts.
 #[non_exhaustive]
@@ -81,80 +85,158 @@ impl EdgeOccupancy {
 
 /// A single-producer, single-consumer queue contract.
 ///
-/// The `Item` type is typically a [`Message<P>`](Message) with some payload `P`,
-/// but the trait is generic and can be used for other types as needed.
+/// Edges store [`MessageToken`] handles. Actual message data (header + payload)
+/// resides in a [`MemoryManager`](crate::memory::manager::MemoryManager).
+/// Edge methods that need header metadata (admission, batching, peek) receive
+/// a `&impl HeaderStore` parameter — statically dispatched, no `dyn`.
 pub trait Edge {
-    /// The type of items stored in the queue.
-    type Item;
-
-    /// Attempt to push an item onto the queue using the given edge policy.
+    /// Attempt to push a token onto the queue using the given edge policy.
     ///
-    /// Implementations may evict an existing item if `DropOldest` is configured.
-    fn try_push(&mut self, item: Self::Item, policy: &EdgePolicy) -> EnqueueResult;
+    /// The implementation uses `headers` to look up the token's message header
+    /// for admission decisions (byte size, QoS, deadline).
+    ///
+    /// For `DropOldest` policies, the caller must pre-evict via
+    /// `get_admission_decision` + `try_pop` before calling `try_push`.
+    /// `try_push` itself never evicts.
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        token: MessageToken,
+        policy: &EdgePolicy,
+        headers: &H,
+    ) -> EnqueueResult;
 
-    /// Attempt to pop an item from the queue.
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError>;
+    /// Attempt to pop the front token from the queue.
+    ///
+    /// Uses `headers` to look up the popped token's byte size for internal
+    /// byte tracking.
+    fn try_pop<H: HeaderStore>(&mut self, headers: &H) -> Result<MessageToken, QueueError>;
 
     /// Return a snapshot of occupancy used for telemetry and admission.
     ///
-    /// Implementations should avoid blocking. If a concurrent backend might fail
-    /// to sample (e.g., poisoned lock), provide a fallible path in the backend and
-    /// map that to `GraphError::OccupancySampleFailed` in your `GraphApi` impl.
+    /// Uses internal counters (items + total_bytes) — no HeaderStore needed.
     fn occupancy(&self, policy: &EdgePolicy) -> EdgeOccupancy;
 
     /// Return `true` if the queue is empty.
-    fn is_empty(&self) -> bool {
-        matches!(self.try_peek(), Err(QueueError::Empty))
+    fn is_empty(&self) -> bool;
+
+    /// Peek at the front token without removing it.
+    fn try_peek(&self) -> Result<MessageToken, QueueError>;
+
+    /// Peek at the token at logical position `index` from the front.
+    ///
+    /// - `index = 0` is equivalent to `try_peek`.
+    /// - Returns `QueueError::Empty` if `index` is out of range.
+    fn try_peek_at(&self, index: usize) -> Result<MessageToken, QueueError>;
+
+    /// Peek the front message header via `HeaderStore` (convenience).
+    ///
+    /// Returns the `HeaderGuard` associated to `H`, which dereferences to
+    /// `MessageHeader`. This allows both single-threaded managers (which can
+    /// return `&MessageHeader`) and concurrent managers (which return a
+    /// guard holding a slot-level lock).
+    ///
+    /// The returned guard keeps the underlying header valid for the lifetime
+    /// of the guard.
+    fn peek_header<'h, H: HeaderStore>(
+        &self,
+        headers: &'h H,
+    ) -> Result<<H as HeaderStore>::HeaderGuard<'h>, QueueError> {
+        let token = self.try_peek()?;
+        headers.peek_header(token).map_err(|_| QueueError::Empty)
     }
 
-    /// Peek at the front item without removing it. Default implementation
-    /// uses `try_pop` and re-insert is left to concrete impls; many queues
-    /// will override this to be non-destructive.
-    fn try_peek(&self) -> Result<&Self::Item, QueueError>;
-
-    /// std-only helper: copy the front item without removing it (cheap for `Copy`).
+    /// Pop a batch of tokens according to the provided batching policy.
     ///
-    /// Default implementation calls `try_peek()` and clones the result.
-    /// Concurrent implementations that cannot return `&Item` across lock
-    /// guards should override this to avoid returning `Unsupported`.
-    #[cfg(feature = "std")]
-    fn try_peek_copied(&self) -> Result<Self::Item, QueueError>
-    where
-        Self::Item: Copy,
-    {
-        self.try_peek().copied()
+    /// Uses `headers` for delta-t readiness checks (peeks `creation_tick`
+    /// on tokens in the queue via HeaderStore).
+    fn try_pop_batch<H: HeaderStore>(
+        &mut self,
+        policy: &BatchingPolicy,
+        headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError>;
+
+    /// Return an `AdmissionDecision` for the given token according to
+    /// `policy` and the current occupancy snapshot.
+    ///
+    /// Pure: does not mutate the queue.
+    fn get_admission_decision<H: HeaderStore>(
+        &self,
+        policy: &EdgePolicy,
+        token: MessageToken,
+        headers: &H,
+    ) -> AdmissionDecision {
+        let occ = self.occupancy(policy);
+        match headers.peek_header(token) {
+            Ok(h) => policy.decide(
+                occ.items,
+                occ.bytes,
+                *h.payload_size_bytes(),
+                *h.deadline_ns(),
+                *h.qos(),
+            ),
+            Err(_) => AdmissionDecision::Reject,
+        }
     }
 
-    /// std-only helper: clone the front item without removing it (heavier than copy).
+    /// Return an `AdmissionDecision` for the given token according to
+    /// `policy` and the current occupancy snapshot.
     ///
-    /// Default implementation calls `try_peek()` and clones the result.
-    /// Concurrent implementations that cannot return `&Item` across lock
-    /// guards should override this to avoid returning `Unsupported`.
-    #[cfg(feature = "std")]
-    fn try_peek_cloned(&self) -> Result<Self::Item, QueueError>
-    where
-        Self::Item: Clone,
-    {
-        self.try_peek().cloned()
+    /// Pure: does not mutate the queue.
+    fn get_admission_decision_from_message<P: Payload>(
+        &self,
+        policy: &EdgePolicy,
+        message: &Message<P>,
+    ) -> AdmissionDecision {
+        let occ = self.occupancy(policy);
+        let h = message.header();
+        policy.decide(
+            occ.items,
+            occ.bytes,
+            *h.payload_size_bytes(),
+            *h.deadline_ns(),
+            *h.qos(),
+        )
     }
 }
 
-/// Convenience helper to enqueue a message using policy-derived admission logic.
-pub fn enqueue_with_admission<P: Payload, Q: Edge<Item = Message<P>>>(
-    queue: &mut Q,
-    policy: &EdgePolicy,
-    msg: Message<P>,
-) -> EnqueueResult {
-    let occ = queue.occupancy(policy);
-    match policy.decide(
-        occ.items,
-        occ.bytes,
-        *msg.header().deadline_ns(),
-        *msg.header().qos(),
-    ) {
-        AdmissionDecision::Admit => queue.try_push(msg, policy),
-        AdmissionDecision::Reject => EnqueueResult::Rejected,
-    }
+/// Which role a scoped edge handle serves.
+///
+/// Arc-based edges (e.g. `ConcurrentEdge`) ignore this — the clone is
+/// full-duplex. Future lock-free split-handle edges (e.g. `SpscAtomicRing`)
+/// will return a producer-only or consumer-only handle depending on `kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeHandleKind {
+    /// Handle will be used to push messages (output side of a node).
+    Producer,
+    /// Handle will be used to pop messages (input side of a node).
+    Consumer,
+}
+
+/// Scoped handle factory for edges used in concurrent execution.
+///
+/// The GAT `Handle<'a>` allows implementations to return either:
+/// - An owned clone (Arc-based: `ConcurrentEdge`)
+/// - A borrowed split handle (future lock-free: producer or consumer view)
+///
+/// The lifetime `'a` is tied to `std::thread::scope` — all handles are
+/// guaranteed to be dropped before the scope exits.
+#[cfg(feature = "std")]
+pub trait ScopedEdge: Edge {
+    /// Per-worker handle type. Must implement `Edge + Send` so it can be
+    /// moved into a scoped thread and used for stepping.
+    type Handle<'a>: Edge + Send + 'a
+    where
+        Self: 'a;
+
+    /// Create a scoped handle for a worker thread.
+    ///
+    /// `kind` indicates whether the worker will use this handle as a
+    /// producer (push) or consumer (pop). Arc-based implementations may
+    /// ignore `kind`. Split-handle implementations use it to select the
+    /// correct half.
+    fn scoped_handle<'a>(&'a self, kind: EdgeHandleKind) -> Self::Handle<'a>
+    where
+        Self: 'a;
 }
 
 /// A no-op queue implementation used for phantom inputs and outputs.
@@ -178,28 +260,47 @@ pub fn enqueue_with_admission<P: Payload, Q: Edge<Item = Message<P>>>(
 /// - [`SpscQueue::try_peek`] always returns [`QueueError::Empty`].
 /// - [`SpscQueue::occupancy`] always reports zero items, zero bytes, and
 ///   [`WatermarkState::AtOrAboveHard`] (fully saturated, disallowing admission).
-pub struct NoQueue<P: Payload>(core::marker::PhantomData<P>);
+pub struct NoQueue;
 
-impl<P: Payload> Edge for NoQueue<P> {
-    type Item = Message<P>;
+impl Edge for NoQueue {
     #[inline]
-    fn try_push(&mut self, _item: Self::Item, _policy: &EdgePolicy) -> EnqueueResult {
+    fn try_push<H: HeaderStore>(
+        &mut self,
+        _token: MessageToken,
+        _policy: &EdgePolicy,
+        _headers: &H,
+    ) -> EnqueueResult {
         EnqueueResult::Rejected
     }
+
     #[inline]
-    fn try_pop(&mut self) -> Result<Self::Item, QueueError> {
+    fn try_pop<H: HeaderStore>(&mut self, _headers: &H) -> Result<MessageToken, QueueError> {
         Err(QueueError::Empty)
     }
+
     #[inline]
     fn occupancy(&self, _policy: &EdgePolicy) -> EdgeOccupancy {
-        EdgeOccupancy {
-            items: 0,
-            bytes: 0,
-            watermark: WatermarkState::AtOrAboveHard,
-        }
+        EdgeOccupancy::new(0, 0, WatermarkState::AtOrAboveHard)
     }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+
+    fn try_peek(&self) -> Result<MessageToken, QueueError> {
+        Err(QueueError::Empty)
+    }
+
+    fn try_peek_at(&self, _index: usize) -> Result<MessageToken, QueueError> {
+        Err(QueueError::Empty)
+    }
+
     #[inline]
-    fn try_peek(&self) -> Result<&Self::Item, QueueError> {
+    fn try_pop_batch<H: HeaderStore>(
+        &mut self,
+        _policy: &BatchingPolicy,
+        _headers: &H,
+    ) -> Result<BatchView<'_, MessageToken>, QueueError> {
         Err(QueueError::Empty)
     }
 }

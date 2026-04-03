@@ -20,6 +20,9 @@ pub struct GraphDef {
     pub vis: Visibility,
     /// Name of the generated graph struct (e.g., `MyGraph`).
     pub name: Ident,
+    /// Whether to emit the std-only scoped execution API (`ScopedGraphApi`)
+    /// for this graph. The graph structure itself is unchanged.
+    pub emit_concurrent: bool,
     /// All node declarations for this graph, indexed by `NodeDef::idx`.
     pub nodes: Vec<NodeDef>,
     /// All edge declarations for this graph, indexed by `EdgeDef::idx`.
@@ -63,11 +66,13 @@ pub struct NodeDef {
 pub struct EdgeDef {
     /// Edge index in the range `0..edges.len()` (validated later).
     pub idx: usize,
-    /// Queue implementation type (e.g., `limen_core::edge::spsc_ringbuf::SpscRingbuf<..>`).
+    /// Queue implementation type (e.g., `limen_core::edge::spsc_array::StaticRing<8>`).
     pub ty: TypePath,
     /// Payload type carried on this edge; must match the connected nodes’
     /// `out_payload` and `in_payload` (validated later).
     pub payload: Type,
+    /// Memory manager implementation.
+    pub manager_ty: TypePath,
     /// Upstream node index (source endpoint).
     pub from_node: usize,
     /// Upstream node output port index.

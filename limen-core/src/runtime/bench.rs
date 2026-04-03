@@ -162,6 +162,9 @@ where
     type Telemetry = T;
     type Error = RuntimeError;
 
+    #[cfg(feature = "std")]
+    type StopHandle = crate::runtime::RuntimeStopHandle;
+
     #[inline]
     fn init(
         &mut self,
@@ -313,108 +316,132 @@ where
     }
 }
 
-/// ===== std test runtime: one worker thread per node (concurrent) =====
+/// ===== std test runtime: scheduler-driven concurrent execution =====
 #[cfg(feature = "std")]
 pub mod concurrent_runtime {
     use crate::edge::EdgeOccupancy;
-    use crate::errors::{GraphError, NodeError, RuntimeError};
+    use crate::errors::{RuntimeError, RuntimeInvariantError};
     use crate::event_message;
-    use crate::graph::GraphApi;
+    use crate::graph::{GraphApi, ScopedGraphApi};
     use crate::node::StepResult;
     use crate::policy::WatermarkState;
-    use crate::prelude::{PlatformClock, Telemetry};
+    use crate::prelude::{PlatformClock, Readiness, Telemetry};
+    use crate::runtime::LimenRuntime;
+    use crate::scheduling::{WorkerDecision, WorkerScheduler, WorkerState};
+    use crate::types::NodeIndex;
 
-    use std::sync::mpsc::{self, TryRecvError};
-    use std::thread;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
-    /// Commands sent to each worker.
+    // ------------------------------------------------------------------
+    // SimpleBackoffScheduler
+    // ------------------------------------------------------------------
+
+    /// Simple backoff scheduler for test/bench use.
     ///
-    /// `Bundle` is the concrete `Graph::OwnedBundle` type for this graph.
-    enum WorkerCmd<Bundle> {
-        /// Execute exactly one cooperative step and reply with the result.
-        StepOnce {
-            reply: mpsc::Sender<Result<StepResult, NodeError>>,
-        },
-        /// Switch this worker into continuous-stepping mode.
-        StartContinuous,
-        /// Return the owned bundle back to the main thread and exit.
-        ReturnBundle { reply: mpsc::Sender<Bundle> },
+    /// - Steps immediately when ready or when there's no prior result.
+    /// - Backs off on backpressure (longer wait).
+    /// - Idles on no-input/waiting (shorter wait).
+    /// - Stops when the shared `AtomicBool` is set.
+    pub struct SimpleBackoffScheduler {
+        stop: Arc<AtomicBool>,
+        idle_micros: u64,
+        backpressure_micros: u64,
     }
 
-    /// One worker thread per node; owns the node's bundle while running.
+    impl SimpleBackoffScheduler {
+        /// Create a new scheduler with the given stop flag and backoff durations.
+        pub fn new(stop: Arc<AtomicBool>, idle_micros: u64, backpressure_micros: u64) -> Self {
+            Self {
+                stop,
+                idle_micros,
+                backpressure_micros,
+            }
+        }
+    }
+
+    impl WorkerScheduler for SimpleBackoffScheduler {
+        fn decide(&self, state: &WorkerState) -> WorkerDecision {
+            // Honor immediate stop.
+            if self.stop.load(Ordering::Relaxed) {
+                return WorkerDecision::Stop;
+            }
+
+            // If we have a last step result, handle the authoritative cases first.
+            if let Some(last) = state.last_step {
+                match last {
+                    StepResult::Terminal => return WorkerDecision::Stop,
+                    StepResult::Backpressured => {
+                        return WorkerDecision::WaitMicros(self.backpressure_micros)
+                    }
+                    StepResult::MadeProgress => {}
+                    // For NoInput / WaitingOnExternal / YieldUntil(_) we'll consult readiness below.
+                    StepResult::NoInput
+                    | StepResult::WaitingOnExternal
+                    | StepResult::YieldUntil(_) => {}
+                }
+            }
+
+            // Either last_step was None, or the last step did not make progress.
+            // Use the node's computed readiness (set by the worker loop) to decide.
+            match state.readiness {
+                Readiness::Ready | Readiness::ReadyUnderPressure => WorkerDecision::Step,
+                Readiness::NotReady => WorkerDecision::WaitMicros(self.idle_micros),
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // TestScopedRuntime
+    // ------------------------------------------------------------------
+
+    /// Concurrent runtime that delegates to `ScopedGraphApi::run_scoped`.
     ///
-    /// NOTE: this runtime is generic over `Graph` so that we can hold
-    /// `Graph::OwnedBundle` directly and avoid trait objects.
-    pub struct TestStdRuntime<Graph, C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize>
+    /// Implements `LimenRuntime`. The runtime is the orchestrator:
+    /// - `step()`: sequential round-robin via `GraphApi::step_node_by_index`.
+    ///   For debug/test single-tick use.
+    /// - `run()`: overrides default. Creates a `SimpleBackoffScheduler` and calls
+    ///   `graph.run_scoped(clock, telemetry, scheduler)` — one scoped thread per
+    ///   node, true concurrent execution, scheduler-controlled stepping.
+    pub struct TestScopedRuntime<C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize>
     where
-        Graph: GraphApi<NODE_COUNT, EDGE_COUNT> + 'static,
-        C: PlatformClock + Sized + Clone + Send + 'static,
-        T: Telemetry + Sized + Clone + Send + 'static,
+        C: PlatformClock + Clone + Send + Sync + 'static,
+        T: Telemetry + Clone + Send + 'static,
     {
-        stop: bool,
+        stop: Arc<AtomicBool>,
         occ: [EdgeOccupancy; EDGE_COUNT],
-
-        workers: Vec<mpsc::Sender<WorkerCmd<Graph::OwnedBundle>>>,
-        handles: Vec<std::thread::JoinHandle<()>>,
-        /// `true` once workers are spawned and own their bundles.
-        workers_running: bool,
-        /// `true` once we've told workers to run continuously (used by `run()`).
-        continuous_mode: bool,
-
+        /// Per-node last step result, used by `step()` to make scheduler decisions.
+        node_last_step: [Option<StepResult>; NODE_COUNT],
         clock: Option<C>,
         telemetry: Option<T>,
     }
 
-    impl<Graph, C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize>
-        TestStdRuntime<Graph, C, T, NODE_COUNT, EDGE_COUNT>
+    impl<C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize>
+        TestScopedRuntime<C, T, NODE_COUNT, EDGE_COUNT>
     where
-        Graph: GraphApi<NODE_COUNT, EDGE_COUNT> + 'static,
-        C: PlatformClock + Sized + Clone + Send + 'static,
-        T: Telemetry + Sized + Clone + Send + 'static,
+        C: PlatformClock + Clone + Send + Sync + 'static,
+        T: Telemetry + Clone + Send + 'static,
     {
-        /// Construct with a pessimistic initial occupancy; `init()` will overwrite it.
+        /// Construct with pessimistic initial occupancy; `init()` will overwrite.
         pub fn new() -> Self {
             const INIT_OCC: EdgeOccupancy = EdgeOccupancy::new(0, 0, WatermarkState::AtOrAboveHard);
-
             Self {
-                stop: false,
+                stop: Arc::new(AtomicBool::new(false)),
                 occ: [INIT_OCC; EDGE_COUNT],
-
-                workers: Vec::new(),
-                handles: Vec::new(),
-                workers_running: false,
-                continuous_mode: false,
-
+                node_last_step: [None; NODE_COUNT],
                 clock: None,
                 telemetry: None,
             }
         }
 
-        /// Decide whether a `StepResult` constitutes "progress".
-        ///
-        /// Only used in `step()` to compute the boolean return.
-        #[inline]
-        fn made_progress(sr: &StepResult) -> bool {
-            match sr {
-                StepResult::MadeProgress => true,
-                StepResult::Terminal => true, // node finished = progress
-                // TODO: refine once YieldUntil semantics are better specified.
-                StepResult::YieldUntil(_) => true,
-                StepResult::NoInput | StepResult::Backpressured | StepResult::WaitingOnExternal => {
-                    false
-                }
-            }
-        }
-
-        /// Internal helper for a monotonic nanosecond timestamp (if you want telemetry).
+        /// Internal helper for a monotonic nanosecond timestamp.
         #[inline]
         fn now_nanos(clock: &C) -> u64 {
             let ticks = clock.now_ticks();
             clock.ticks_to_nanos(ticks)
         }
 
-        /// Safely access telemetry by mutable reference, if it is present.
+        /// Safely access telemetry by mutable reference, if present.
         #[inline]
         pub fn with_telemetry<F, R>(&mut self, f: F) -> Result<Option<R>, RuntimeError>
         where
@@ -427,292 +454,63 @@ pub mod concurrent_runtime {
                 Ok(None)
             }
         }
-
-        /// Spawn one worker thread per node, moving each node bundle out of the graph.
-        ///
-        /// Workers start in *manual* mode: they only step when they receive `StepOnce`.
-        fn spawn_workers(&mut self, graph: &mut Graph) -> Result<(), RuntimeError> {
-            self.workers.clear();
-            self.handles.clear();
-            self.workers.reserve_exact(NODE_COUNT);
-            self.handles.reserve_exact(NODE_COUNT);
-
-            let clk_template = self
-                .clock
-                .as_ref()
-                .expect("TestStdRuntime used before init()")
-                .clone();
-            let tel_template = self
-                .telemetry
-                .as_ref()
-                .expect("TestStdRuntime used before init()")
-                .clone();
-
-            for index in 0..NODE_COUNT {
-                // Move the bundle out of the graph exactly once.
-                let bundle = graph
-                    .take_owned_bundle_by_index(index)
-                    .map_err(RuntimeError::from)?;
-
-                // Control channel for this worker.
-                let (tx, rx) = mpsc::channel::<
-                    WorkerCmd<<Graph as GraphApi<NODE_COUNT, EDGE_COUNT>>::OwnedBundle>,
-                >();
-                self.workers.push(tx);
-
-                let clk_local = clk_template.clone();
-                let telem_local = tel_template.clone();
-
-                // Spawn worker thread owning the typed bundle.
-                let handle = thread::spawn(move || {
-                    let mut bundle_local: Graph::OwnedBundle = bundle;
-                    let mut telem: T = telem_local;
-                    let clk: C = clk_local;
-
-                    // Per-node backoff parameters.
-                    let idle_sleep = Duration::from_micros(50);
-                    let backpressure_sleep = Duration::from_micros(200);
-
-                    // Two modes:
-                    // - Manual: block on commands; only step on `StepOnce`.
-                    // - Continuous: keep stepping locally with backoff, independent
-                    //   of other nodes, until a ReturnBundle arrives.
-                    let mut continuous = false;
-                    // Per-node "fatal" flag: once we see Terminal, we never call
-                    // `step_owned_bundle` again for this node.
-                    let mut terminated = false;
-
-                    loop {
-                        if !continuous {
-                            // ========== MANUAL MODE ==========
-                            match rx.recv() {
-                                Ok(WorkerCmd::StepOnce { reply }) => {
-                                    let res = if terminated {
-                                        // The only fatal step result is Terminal:
-                                        // once seen, we stop stepping this node.
-                                        Ok(StepResult::Terminal)
-                                    } else {
-                                        Graph::step_owned_bundle::<C, T>(
-                                            &mut bundle_local,
-                                            &clk,
-                                            &mut telem,
-                                        )
-                                    };
-
-                                    if let Ok(StepResult::Terminal) = res {
-                                        terminated = true;
-                                    }
-
-                                    // Per requirements: NodeError is NEVER fatal to
-                                    // the runtime; it's just reported back.
-                                    let _ = reply.send(res);
-                                }
-                                Ok(WorkerCmd::StartContinuous) => {
-                                    continuous = true;
-                                }
-                                Ok(WorkerCmd::ReturnBundle { reply }) => {
-                                    let _ = reply.send(bundle_local);
-                                    break;
-                                }
-                                Err(_) => {
-                                    // Runtime dropped the channel; exit worker.
-                                    break;
-                                }
-                            }
-                        } else {
-                            // ========== CONTINUOUS MODE ==========
-                            // First, handle any high-priority control messages
-                            // non-blockingly (especially ReturnBundle).
-                            match rx.try_recv() {
-                                Ok(WorkerCmd::ReturnBundle { reply }) => {
-                                    let _ = reply.send(bundle_local);
-                                    break;
-                                }
-                                Ok(WorkerCmd::StartContinuous) => {
-                                    // Already continuous; ignore.
-                                }
-                                Ok(WorkerCmd::StepOnce { reply }) => {
-                                    // Rare: debug/manual step while in continuous mode / switch back to step mode.
-                                    continuous = false;
-
-                                    let res = if terminated {
-                                        Ok(StepResult::Terminal)
-                                    } else {
-                                        Graph::step_owned_bundle::<C, T>(
-                                            &mut bundle_local,
-                                            &clk,
-                                            &mut telem,
-                                        )
-                                    };
-
-                                    if let Ok(StepResult::Terminal) = res {
-                                        terminated = true;
-                                    }
-                                    let _ = reply.send(res);
-                                }
-                                Err(TryRecvError::Empty) => {
-                                    // No control message pending.
-                                }
-                                Err(TryRecvError::Disconnected) => {
-                                    break;
-                                }
-                            }
-
-                            if terminated {
-                                // Node is finished; do not step it again.
-                                // Just idle and wait for ReturnBundle.
-                                thread::sleep(idle_sleep);
-                                continue;
-                            }
-
-                            // One cooperative step.
-                            let res = Graph::step_owned_bundle::<C, T>(
-                                &mut bundle_local,
-                                &clk,
-                                &mut telem,
-                            );
-
-                            match res {
-                                Ok(sr) => match sr {
-                                    StepResult::MadeProgress => {
-                                        // Immediately loop and step again.
-                                        continue;
-                                    }
-                                    StepResult::Terminal => {
-                                        // The ONLY fatal step result: stop stepping this node.
-                                        terminated = true;
-                                        continue;
-                                    }
-                                    StepResult::Backpressured => {
-                                        // Outputs are full / backpressured: per-node backoff.
-                                        thread::sleep(backpressure_sleep);
-                                    }
-                                    StepResult::NoInput
-                                    | StepResult::WaitingOnExternal
-                                    | StepResult::YieldUntil(_) => {
-                                        // Nothing useful to do right now: short idle sleep.
-                                        thread::sleep(idle_sleep);
-                                    }
-                                },
-                                Err(_e) => {
-                                    // Per requirements: NodeError is not fatal.
-                                    // Treat as "no progress" with idle sleep.
-                                    thread::sleep(idle_sleep);
-                                }
-                            }
-                        }
-                    }
-                });
-
-                self.handles.push(handle);
-            }
-
-            self.workers_running = true;
-            Ok(())
-        }
-
-        /// Request bundles back from workers, reattach into the graph, and join threads.
-        fn shutdown_workers(&mut self, graph: &mut Graph) -> Result<(), RuntimeError> {
-            if !self.workers_running {
-                return Ok(());
-            }
-
-            for tx in self.workers.iter() {
-                let (reply_tx, reply_rx) =
-                    mpsc::channel::<<Graph as GraphApi<NODE_COUNT, EDGE_COUNT>>::OwnedBundle>();
-
-                if tx
-                    .send(WorkerCmd::ReturnBundle { reply: reply_tx })
-                    .is_err()
-                {
-                    // Channel closed: worker likely died; treat as fatal for this test runtime.
-                    return Err(RuntimeError::from(GraphError::InvalidEdgeIndex));
-                }
-
-                let bundle = match reply_rx.recv() {
-                    Ok(b) => b,
-                    Err(_) => return Err(RuntimeError::from(GraphError::InvalidEdgeIndex)),
-                };
-
-                graph
-                    .put_owned_bundle_by_index(bundle)
-                    .map_err(RuntimeError::from)?;
-            }
-
-            // Join threads.
-            for handle in self.handles.drain(..) {
-                let _ = handle.join();
-            }
-            self.workers.clear();
-            self.workers_running = false;
-            self.continuous_mode = false;
-
-            Ok(())
-        }
     }
 
     impl<Graph, C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize>
-        super::LimenRuntime<Graph, NODE_COUNT, EDGE_COUNT>
-        for TestStdRuntime<Graph, C, T, NODE_COUNT, EDGE_COUNT>
+        LimenRuntime<Graph, NODE_COUNT, EDGE_COUNT>
+        for TestScopedRuntime<C, T, NODE_COUNT, EDGE_COUNT>
     where
-        Graph: GraphApi<NODE_COUNT, EDGE_COUNT> + 'static,
-        C: PlatformClock + Sized + Clone + Send + 'static,
-        T: Telemetry + Sized + Clone + Send + 'static,
+        Graph: GraphApi<NODE_COUNT, EDGE_COUNT> + ScopedGraphApi<NODE_COUNT, EDGE_COUNT>,
+        C: PlatformClock + Clone + Send + Sync + 'static,
+        T: Telemetry + Clone + Send + 'static,
     {
         type Clock = C;
         type Telemetry = T;
         type Error = RuntimeError;
 
-        #[inline]
+        #[cfg(feature = "std")]
+        type StopHandle = crate::runtime::RuntimeStopHandle;
+
         fn init(
             &mut self,
             graph: &mut Graph,
             clock: Self::Clock,
-            telemetry: Self::Telemetry,
+            mut telemetry: Self::Telemetry,
         ) -> Result<(), Self::Error> {
             const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
 
-            // Validate graph topology first (pure, read-only).
             graph.validate_graph().map_err(RuntimeError::from)?;
 
-            self.clock = Some(clock);
-            self.telemetry = Some(telemetry);
-
-            // Move each node bundle into its dedicated worker thread (manual mode).
-            self.spawn_workers(graph)?;
-
-            // Initial occupancy snapshot.
             graph
                 .write_all_edge_occupancies(&mut self.occ)
                 .map_err(RuntimeError::from)?;
 
-            if let (Some(ref clock), Some(telemetry)) = (&self.clock, self.telemetry.as_mut()) {
-                if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
-                    let timestamp_ns = Self::now_nanos(clock);
-                    let event = crate::telemetry::TelemetryEvent::runtime(
-                        crate::telemetry::RuntimeTelemetryEvent::new(
-                            GRAPH_ID,
-                            timestamp_ns,
-                            crate::telemetry::RuntimeTelemetryEventKind::GraphStarted,
-                            None,
-                        ),
-                    );
-                    telemetry.push_event(event);
-                }
+            if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
+                let timestamp_ns = Self::now_nanos(&clock);
+                let event = crate::telemetry::TelemetryEvent::runtime(
+                    crate::telemetry::RuntimeTelemetryEvent::new(
+                        GRAPH_ID,
+                        timestamp_ns,
+                        crate::telemetry::RuntimeTelemetryEventKind::GraphStarted,
+                        None,
+                    ),
+                );
+                telemetry.push_event(event);
             }
 
-            self.stop = false;
-            self.continuous_mode = false;
+            self.clock = Some(clock);
+            self.telemetry = Some(telemetry);
+            self.stop.store(false, Ordering::Relaxed);
+            self.node_last_step = [None; NODE_COUNT];
 
             Ok(())
         }
 
-        #[inline]
         fn reset(&mut self, graph: &Graph) -> Result<(), Self::Error> {
             const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
 
-            // Do not touch worker lifecycle here; just refresh snapshot + stop flag.
-            self.stop = false;
+            self.stop.store(false, Ordering::Relaxed);
+            self.node_last_step = [None; NODE_COUNT];
             graph
                 .write_all_edge_occupancies(&mut self.occ)
                 .map_err(RuntimeError::from)?;
@@ -735,11 +533,10 @@ pub mod concurrent_runtime {
             Ok(())
         }
 
-        #[inline]
         fn request_stop(&mut self) {
             const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
 
-            self.stop = true;
+            self.stop.store(true, Ordering::Relaxed);
 
             if let (Some(ref clock), Some(telemetry)) = (&self.clock, self.telemetry.as_mut()) {
                 if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
@@ -757,9 +554,14 @@ pub mod concurrent_runtime {
             }
         }
 
+        #[cfg(feature = "std")]
+        fn stop_handle(&self) -> Option<Self::StopHandle> {
+            Some(crate::runtime::RuntimeStopHandle::new(self.stop.clone()))
+        }
+
         #[inline]
         fn is_stopping(&self) -> bool {
-            self.stop
+            self.stop.load(Ordering::Relaxed)
         }
 
         #[inline]
@@ -767,138 +569,213 @@ pub mod concurrent_runtime {
             &self.occ
         }
 
-        /// One scheduler tick in manual mode:
+        /// Sequential scheduler-driven step for debug/test single-tick use.
         ///
-        /// - Send `StepOnce` to all workers (nodes).
-        /// - Wait for all results.
-        /// - Refresh occupancy snapshot once.
-        /// - Return `true` if at least one node made progress on this tick.
+        /// For each node, consults `SimpleBackoffScheduler` using the stored
+        /// per-node `last_step` to decide whether to step. This ensures the
+        /// same scheduling policy governs both `step()` and `run()`.
         ///
-        /// IMPORTANT:
-        /// - `StepResult::Terminal` is treated as progress and *only* stops stepping
-        ///   that node (inside the worker); it is not fatal to the runtime.
-        /// - `NodeError` is *never* fatal here; it is treated as "no progress".
-        #[inline]
+        /// `WaitMicros` decisions are treated as "skip this tick" — the
+        /// `last_step` is then cleared so the scheduler returns `Step` on
+        /// the next `step()` call. This avoids permanent starvation in
+        /// sequential mode where there is no real time passage between ticks.
         fn step(&mut self, graph: &mut Graph) -> Result<bool, Self::Error> {
-            // If we've been asked to stop, reattach bundles and stop stepping.
-            if self.stop {
-                if self.workers_running {
-                    self.shutdown_workers(graph)?;
-                }
+            if <TestScopedRuntime<C, T, NODE_COUNT, EDGE_COUNT> as LimenRuntime<
+                Graph,
+                NODE_COUNT,
+                EDGE_COUNT,
+            >>::is_stopping(self)
+            {
                 return Ok(false);
             }
 
-            // Defensive: if a harness calls `step()` without `init()`, start workers.
-            if !self.workers_running {
-                self.spawn_workers(graph)?;
-                graph
-                    .write_all_edge_occupancies(&mut self.occ)
-                    .map_err(RuntimeError::from)?;
-            }
-
-            let (reply_tx, reply_rx) = mpsc::channel::<Result<StepResult, NodeError>>();
-
-            // Tell every worker to step once.
-            for tx in self.workers.iter() {
-                if tx
-                    .send(WorkerCmd::StepOnce {
-                        reply: reply_tx.clone(),
-                    })
-                    .is_err()
-                {
-                    return Err(RuntimeError::from(GraphError::InvalidEdgeIndex));
+            let clock = match self.clock.take() {
+                Some(c) => c,
+                None => {
+                    return Err(RuntimeError::RuntimeInvariant(
+                        RuntimeInvariantError::UninitializedClock,
+                    ))
                 }
-            }
-            drop(reply_tx);
+            };
+            let mut telemetry = match self.telemetry.take() {
+                Some(t) => t,
+                None => {
+                    self.clock = Some(clock);
+                    return Err(RuntimeError::RuntimeInvariant(
+                        RuntimeInvariantError::UninitializedTelemetry,
+                    ));
+                }
+            };
 
+            let scheduler = SimpleBackoffScheduler::new(self.stop.clone(), 50, 200);
             let mut any_progress = false;
 
-            // Collect one result per worker.
-            for _ in 0..self.workers.len() {
-                match reply_rx.recv() {
-                    Ok(Ok(sr)) => {
-                        if Self::made_progress(&sr) {
-                            any_progress = true;
-                        }
-                    }
-                    Ok(Err(_e)) => {
-                        // Per requirements: NodeError is not fatal; we treat it as
-                        // "no progress" for this node on this tick.
-                        // You can optionally push telemetry here.
-                    }
-                    Err(_) => {
-                        return Err(RuntimeError::from(GraphError::InvalidEdgeIndex));
-                    }
-                }
-            }
-
-            // After the global concurrent tick, refresh the occupancy snapshot once.
+            // Refresh a cheap occupancy snapshot for this tick so we can compute
+            // inexpensive readiness for each node (same idea as run_scoped workers).
             graph
                 .write_all_edge_occupancies(&mut self.occ)
                 .map_err(RuntimeError::from)?;
 
+            for i in 0..NODE_COUNT {
+                let mut state = WorkerState::new(i, NODE_COUNT, clock.now_ticks());
+                state.last_step = self.node_last_step[i];
+
+                // Compute max output backpressure and whether any input has items
+                // by scanning the graph's edge descriptors and the occupancy
+                // snapshot `self.occ`.
+                let mut _max_wm = WatermarkState::BelowSoft;
+                let mut any_input_has_items = false;
+                let node_idx = NodeIndex::from(i);
+
+                for ed in graph.get_edge_descriptors().iter() {
+                    let eid = *ed.id().as_usize();
+                    // Upstream edges contribute to output backpressure.
+                    if ed.upstream().node() == &node_idx {
+                        let occ = &self.occ[eid];
+                        if *occ.watermark() > _max_wm {
+                            _max_wm = *occ.watermark();
+                        }
+                    }
+                    // Downstream edges determine whether this node has any input items.
+                    if ed.downstream().node() == &node_idx {
+                        let occ = &self.occ[eid];
+                        if *occ.items() > 0 {
+                            any_input_has_items = true;
+                        }
+                    }
+                }
+                state.backpressure = _max_wm;
+
+                // Compatibility: if we have no prior step (first probe) let the
+                // scheduler see Ready so the node gets probed at least once.
+                if state.last_step.is_none() {
+                    state.readiness = Readiness::Ready;
+                } else {
+                    // Otherwise use the cheap pre-check: if there are items on any
+                    // input edge (ingress included) we are Ready; otherwise NotReady.
+                    state.readiness = if any_input_has_items {
+                        if _max_wm >= WatermarkState::BetweenSoftAndHard {
+                            Readiness::ReadyUnderPressure
+                        } else {
+                            Readiness::Ready
+                        }
+                    } else {
+                        Readiness::NotReady
+                    };
+                }
+
+                // Ask the scheduler and log the decision for debugging.
+                let decision = scheduler.decide(&state);
+                // ::std::eprintln!(
+                //     "sched-debug: node={} last_step={:?} readiness={:?} => decision={:?}",
+                //     i,
+                //     state.last_step,
+                //     state.readiness,
+                //     decision
+                // );
+
+                match decision {
+                    WorkerDecision::Step => {
+                        match graph.step_node_by_index(i, &clock, &mut telemetry) {
+                            Ok(sr) => {
+                                // Record last step result and note progress.
+                                self.node_last_step[i] = Some(sr);
+                                if matches!(sr, StepResult::MadeProgress | StepResult::Terminal) {
+                                    any_progress = true;
+                                }
+
+                                // **Crucial:** update occupancy snapshot immediately so
+                                // downstream nodes in this same step() iteration see the
+                                // newly-produced items and compute readiness correctly.
+                                graph
+                                    .write_all_edge_occupancies(&mut self.occ)
+                                    .map_err(RuntimeError::from)?;
+                            }
+                            Err(e) => {
+                                ::std::eprintln!("sched-debug: node={} step error: {:?}", i, e);
+                                // NodeError is not fatal; clear state so we retry.
+                                self.node_last_step[i] = None;
+                            }
+                        }
+                    }
+                    WorkerDecision::WaitMicros(_) => {
+                        // In sequential mode, skip this node for this tick.
+                        // Clear last_step so the scheduler returns Step next tick,
+                        // preventing permanent starvation.
+                        self.node_last_step[i] = None;
+                    }
+                    WorkerDecision::Stop => {
+                        // Node terminated or runtime stopping; do not step.
+                    }
+                }
+            }
+
+            // No final write_all_edge_occupancies here: we update occupancies
+            // right after each successful step above, so self.occ is up-to-date.
+
+            self.telemetry = Some(telemetry);
+            self.clock = Some(clock);
+
             Ok(any_progress)
         }
 
-        /// `run` mode: nodes step independently in their own threads.
+        /// Concurrent execution via `ScopedGraphApi::run_scoped`.
         ///
-        /// - Switch all workers into continuous-stepping mode.
-        /// - Do *not* globally sleep based on any single edge's watermark.
-        /// - Each worker decides when to back off based on its own StepResult:
-        ///   - `Backpressured` → longer per-node sleep.
-        ///   - `NoInput`/`WaitingOnExternal`/`YieldUntil` → shorter per-node sleep.
-        /// - The runtime just waits until `request_stop()` is called, then
-        ///   reattaches bundles and returns.
-        #[inline]
+        /// Creates a `SimpleBackoffScheduler` and delegates to the graph's
+        /// scoped thread infrastructure. Each node gets its own thread;
+        /// the scheduler controls per-worker stepping.
+        ///
+        /// After all threads join, refreshes the occupancy snapshot.
         fn run(&mut self, graph: &mut Graph) -> Result<(), Self::Error> {
-            // Ensure workers exist.
-            if !self.workers_running {
-                self.spawn_workers(graph)?;
-                graph
-                    .write_all_edge_occupancies(&mut self.occ)
-                    .map_err(RuntimeError::from)?;
-            }
+            const GRAPH_ID: crate::telemetry::GraphInstanceId = 0;
 
-            // Switch all workers into continuous mode exactly once.
-            if !self.continuous_mode {
-                for tx in self.workers.iter() {
-                    if tx.send(WorkerCmd::StartContinuous).is_err() {
-                        return Err(RuntimeError::from(GraphError::InvalidEdgeIndex));
-                    }
+            let clock = self.clock.clone().ok_or(RuntimeError::RuntimeInvariant(
+                RuntimeInvariantError::UninitializedClock,
+            ))?;
+            let telemetry = self
+                .telemetry
+                .clone()
+                .ok_or(RuntimeError::RuntimeInvariant(
+                    RuntimeInvariantError::UninitializedTelemetry,
+                ))?;
+
+            let scheduler = SimpleBackoffScheduler::new(
+                self.stop.clone(),
+                50,  // idle_micros
+                200, // backpressure_micros
+            );
+
+            graph.run_scoped(clock, telemetry, scheduler);
+
+            // After scope exits (all threads joined): refresh occupancies.
+            graph
+                .write_all_edge_occupancies(&mut self.occ)
+                .map_err(RuntimeError::from)?;
+
+            if let (Some(ref clock), Some(telemetry)) = (&self.clock, self.telemetry.as_mut()) {
+                if T::EVENTS_STATICALLY_ENABLED && telemetry.events_enabled() {
+                    let timestamp_ns = Self::now_nanos(clock);
+                    let event = crate::telemetry::TelemetryEvent::runtime(
+                        crate::telemetry::RuntimeTelemetryEvent::new(
+                            GRAPH_ID,
+                            timestamp_ns,
+                            crate::telemetry::RuntimeTelemetryEventKind::GraphStopped,
+                            None,
+                        ),
+                    );
+                    telemetry.push_event(event);
                 }
-                self.continuous_mode = true;
-            }
-
-            // The runtime itself does not schedule steps anymore:
-            // workers run independently. We can optionally refresh
-            // occupancy periodically for telemetry, but we do NOT gate
-            // other nodes based on a single edge's watermark.
-            let poll_sleep = Duration::from_millis(1);
-
-            while !self.is_stopping() {
-                // Optional: refresh occupancies at a low rate for observability.
-                graph
-                    .write_all_edge_occupancies(&mut self.occ)
-                    .map_err(RuntimeError::from)?;
-
-                thread::sleep(poll_sleep);
-            }
-
-            // Stop requested: get bundles back & join threads.
-            if self.workers_running {
-                self.shutdown_workers(graph)?;
             }
 
             Ok(())
         }
     }
 
-    impl<Graph, C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize> Default
-        for TestStdRuntime<Graph, C, T, NODE_COUNT, EDGE_COUNT>
+    impl<C, T, const NODE_COUNT: usize, const EDGE_COUNT: usize> Default
+        for TestScopedRuntime<C, T, NODE_COUNT, EDGE_COUNT>
     where
-        Graph: GraphApi<NODE_COUNT, EDGE_COUNT> + 'static,
-        C: PlatformClock + Sized + Clone + Send + 'static,
-        T: Telemetry + Sized + Clone + Send + 'static,
+        C: PlatformClock + Clone + Send + Sync + 'static,
+        T: Telemetry + Clone + Send + 'static,
     {
         #[inline]
         fn default() -> Self {

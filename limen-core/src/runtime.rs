@@ -12,6 +12,35 @@ use crate::{
     prelude::{PlatformClock, Telemetry},
 };
 
+/// An opaque, cloneable, thread-safe stop handle for external cooperative stop.
+///
+/// Wraps an `Arc<AtomicBool>`. Calling `request_stop()` sets the flag;
+/// `is_stopping()` reads it. Safe to send to another thread and use while
+/// `LimenRuntime::run()` holds `&mut self`.
+#[cfg(feature = "std")]
+#[derive(Clone)]
+pub struct RuntimeStopHandle {
+    flag: std::sync::Arc<core::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "std")]
+impl RuntimeStopHandle {
+    /// Create a new stop handle wrapping the given atomic flag.
+    pub fn new(flag: std::sync::Arc<core::sync::atomic::AtomicBool>) -> Self {
+        Self { flag }
+    }
+
+    /// Request cooperative stop (visible to the runtime's scheduler).
+    pub fn request_stop(&self) {
+        self.flag.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Return `true` if stop has been requested.
+    pub fn is_stopping(&self) -> bool {
+        self.flag.load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// A single, uniform runtime trait that all Limen runtimes (P0, P1, P2, P2Concurrent)
 /// can implement. The API is allocation- and threading-agnostic.
 ///
@@ -32,6 +61,11 @@ where
     /// Error type produced by the runtime. Use `core::convert::Infallible` if none.
     type Error;
 
+    /// External stop handle type. `Clone + Send + Sync + 'static`.
+    /// Only available under `std`.
+    #[cfg(feature = "std")]
+    type StopHandle: Clone + Send + Sync + 'static;
+
     /// Initialize internal state and adopt the provided clock & telemetry.
     fn init(
         &mut self,
@@ -45,6 +79,13 @@ where
 
     /// Request a cooperative stop.
     fn request_stop(&mut self);
+
+    /// Return an external stop handle, if the runtime supports it.
+    /// Clone before calling `run()` to enable stopping from another thread.
+    #[cfg(feature = "std")]
+    fn stop_handle(&self) -> Option<Self::StopHandle> {
+        None
+    }
 
     /// Return `true` iff a stop has been requested.
     fn is_stopping(&self) -> bool;

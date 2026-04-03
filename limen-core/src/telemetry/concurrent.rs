@@ -50,37 +50,85 @@ impl<T: Telemetry> TelemetryCore<T> {
     /// Drive the telemetry core loop until all senders are dropped or a
     /// `Shutdown` message is received.
     pub fn run(mut self) {
-        // Drain messages until all senders are dropped or a Shutdown message arrives.
-        while let Ok(msg) = self.rx.recv() {
-            match msg {
-                TelemetryMsg::IncrCounter(k, d) if T::METRICS_ENABLED => {
-                    self.inner.incr_counter(k, d);
+        while let Ok(message) = self.rx.recv() {
+            let shutdown_requested = match message {
+                TelemetryMsg::IncrCounter(telemetry_key, counter_delta) if T::METRICS_ENABLED => {
+                    self.inner.incr_counter(telemetry_key, counter_delta);
+                    false
                 }
-                TelemetryMsg::SetGauge(k, v) if T::METRICS_ENABLED => {
-                    self.inner.set_gauge(k, v);
+                TelemetryMsg::SetGauge(telemetry_key, gauge_value) if T::METRICS_ENABLED => {
+                    self.inner.set_gauge(telemetry_key, gauge_value);
+                    false
                 }
-                TelemetryMsg::RecordLatency(k, v) if T::METRICS_ENABLED => {
-                    self.inner.record_latency_ns(k, v);
+                TelemetryMsg::RecordLatency(telemetry_key, latency_value_ns)
+                    if T::METRICS_ENABLED =>
+                {
+                    self.inner
+                        .record_latency_ns(telemetry_key, latency_value_ns);
+                    false
                 }
                 TelemetryMsg::PushMetrics => {
                     self.inner.push_metrics();
+                    false
                 }
-                TelemetryMsg::PushEvent(ev) if T::EVENTS_STATICALLY_ENABLED => {
-                    self.inner.push_event(ev);
+                TelemetryMsg::PushEvent(telemetry_event) if T::EVENTS_STATICALLY_ENABLED => {
+                    self.inner.push_event(telemetry_event);
+                    false
                 }
                 TelemetryMsg::Flush => {
                     self.inner.flush();
+                    false
                 }
-                TelemetryMsg::Shutdown => break,
-                _ => {}
-            }
+                TelemetryMsg::Shutdown => true,
+                _ => false,
+            };
 
-            // Keep the shared flag in sync to make events_enabled() cheap on senders.
             self.events_flag
                 .store(self.inner.events_enabled(), Ordering::Relaxed);
+
+            if shutdown_requested {
+                while let Ok(queued_message) = self.rx.try_recv() {
+                    match queued_message {
+                        TelemetryMsg::IncrCounter(telemetry_key, counter_delta)
+                            if T::METRICS_ENABLED =>
+                        {
+                            self.inner.incr_counter(telemetry_key, counter_delta);
+                        }
+                        TelemetryMsg::SetGauge(telemetry_key, gauge_value)
+                            if T::METRICS_ENABLED =>
+                        {
+                            self.inner.set_gauge(telemetry_key, gauge_value);
+                        }
+                        TelemetryMsg::RecordLatency(telemetry_key, latency_value_ns)
+                            if T::METRICS_ENABLED =>
+                        {
+                            self.inner
+                                .record_latency_ns(telemetry_key, latency_value_ns);
+                        }
+                        TelemetryMsg::PushMetrics => {
+                            self.inner.push_metrics();
+                        }
+                        TelemetryMsg::PushEvent(telemetry_event)
+                            if T::EVENTS_STATICALLY_ENABLED =>
+                        {
+                            self.inner.push_event(telemetry_event);
+                        }
+                        TelemetryMsg::Flush => {
+                            self.inner.flush();
+                        }
+                        TelemetryMsg::Shutdown => {}
+                        _ => {}
+                    }
+
+                    self.events_flag
+                        .store(self.inner.events_enabled(), Ordering::Relaxed);
+                }
+
+                self.inner.flush();
+                return;
+            }
         }
 
-        // Final flush on shutdown
         self.inner.flush();
     }
 }

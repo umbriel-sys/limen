@@ -14,32 +14,18 @@
 //! required by payload semantics or batch buffering.
 
 use crate::compute::{BackendCapabilities, ComputeBackend, ComputeModel, ModelMetadata};
-use crate::edge::{Edge, EnqueueResult};
-use crate::errors::{InferenceError, NodeError, QueueError};
+use crate::edge::Edge;
+use crate::errors::{InferenceError, NodeError};
 use crate::memory::PlacementAcceptance;
-use crate::message::{payload::Payload, Message, MessageHeader};
-use crate::node::{Node, NodeCapabilities, NodeKind, StepContext, StepResult};
+use crate::message::{payload::Payload, Message};
+use crate::node::{Node, NodeCapabilities, NodeKind, ProcessResult, StepContext, StepResult};
 use crate::policy::NodePolicy;
-use crate::prelude::{PlatformClock, Telemetry};
-
-use heapless::Vec as HeaplessVec;
-
-// alloc-backed buffers only when the feature is enabled
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use crate::prelude::{MemoryManager, PlatformClock, Telemetry};
 
 // --- local helpers: map backend/queue errors into NodeError (no From impls required)
 #[inline]
 fn map_inference_err(e: InferenceError) -> NodeError {
     NodeError::execution_failed().with_code(*e.code())
-}
-#[inline]
-fn map_queue_err(e: QueueError) -> NodeError {
-    match e {
-        QueueError::Empty => NodeError::no_input(),
-        QueueError::Backpressured | QueueError::AtOrAboveHardCap => NodeError::backpressured(),
-        QueueError::Unsupported | QueueError::Poisoned => NodeError::execution_failed(),
-    }
 }
 
 /// Generic 1×1 inference node for any backend (dyn-free).
@@ -50,7 +36,7 @@ pub struct InferenceModel<B, InP, OutP, const MAX_BATCH: usize>
 where
     B: ComputeBackend<InP, OutP>,
     InP: Payload,
-    OutP: Payload + Default,
+    OutP: Payload + Default + Copy,
 {
     /// Backend instance used solely for model creation and capability query.
     /// Kept to preserve type ownership and avoid dynamic dispatch.
@@ -82,7 +68,7 @@ impl<B, InP, OutP, const MAX_BATCH: usize> InferenceModel<B, InP, OutP, MAX_BATC
 where
     B: ComputeBackend<InP, OutP>,
     InP: Payload,
-    OutP: Payload + Default,
+    OutP: Payload + Default + Copy,
 {
     /// Construct a new `InferenceModel` node.
     ///
@@ -134,29 +120,41 @@ impl<B, InP, OutP, const MAX_BATCH: usize> Node<1, 1, InP, OutP>
     for InferenceModel<B, InP, OutP, MAX_BATCH>
 where
     B: ComputeBackend<InP, OutP>,
-    InP: Payload,
-    OutP: Payload + Default,
+    InP: Payload + Default + Copy,
+    OutP: Payload + Default + Copy,
 {
+    #[inline]
     fn describe_capabilities(&self) -> NodeCapabilities {
         self.node_caps
     }
 
+    #[inline]
     fn input_acceptance(&self) -> [PlacementAcceptance; 1] {
         self.input_acceptance
     }
 
+    #[inline]
     fn output_acceptance(&self) -> [PlacementAcceptance; 1] {
         self.output_acceptance
     }
 
+    #[inline]
     fn policy(&self) -> NodePolicy {
         self.node_policy
     }
 
+    /// **TEST ONLY** method used to override batching policis for node contract tests.
+    #[cfg(any(test, feature = "bench"))]
+    fn set_policy(&mut self, policy: NodePolicy) {
+        self.node_policy = policy;
+    }
+
+    #[inline]
     fn node_kind(&self) -> NodeKind {
         NodeKind::Model
     }
 
+    #[inline]
     fn initialize<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
     where
         T: Telemetry,
@@ -164,6 +162,7 @@ where
         Ok(())
     }
 
+    #[inline]
     fn start<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
     where
         T: Telemetry,
@@ -171,66 +170,83 @@ where
         self.model.init().map_err(map_inference_err)
     }
 
-    fn step<'g, 't, 'c, InQ, OutQ, C, T>(
+    #[inline]
+    fn process_message<C>(
         &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
-    ) -> Result<StepResult, NodeError>
+        msg: &Message<InP>,
+        _sys_clock: &C,
+    ) -> Result<ProcessResult<OutP>, NodeError>
     where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
         C: PlatformClock + Sized,
-        T: Telemetry + Sized,
     {
-        // Decide effective batch size.
-        let want = self.node_policy.batching().fixed_n().unwrap_or(1);
-        // FIX / TODO: should this unwrap to usize::max?
-        let cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
-        let nmax = core::cmp::min(core::cmp::min(want, cap), MAX_BATCH);
+        // Run single-item inference into the reusable scratch output.
+        let inp: &InP = msg.payload();
+        self.model
+            .infer_one(inp, &mut self.scratch_out)
+            .map_err(map_inference_err)?;
 
-        // Single-item fast path (no alloc, no arrays).
-        if nmax == 1 {
-            let m_in = match cx.in_try_pop(0) {
-                Ok(m) => m,
-                Err(QueueError::Empty) => return Ok(StepResult::NoInput),
-                Err(QueueError::Backpressured) => return Ok(StepResult::Backpressured),
-                Err(e) => return Err(map_queue_err(e)),
-            };
+        // Build output message reusing header from input.
+        let hdr = *msg.header();
+        let out_msg = Message::new(hdr, core::mem::take(&mut self.scratch_out));
 
-            let inp: &InP = m_in.payload();
-            self.model
-                .infer_one(inp, &mut self.scratch_out)
-                .map_err(map_inference_err)?;
-
-            let out_msg = m_in.with_payload(core::mem::take(&mut self.scratch_out));
-            return match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => {
-                    Ok(StepResult::MadeProgress)
-                }
-                EnqueueResult::Rejected => Ok(StepResult::Backpressured),
-            };
-        }
-
-        // Batched path:
-        #[cfg(not(feature = "alloc"))]
-        {
-            self.step_batched_stack::<InQ, OutQ, C, T>(cx, nmax)
-        }
-        #[cfg(feature = "alloc")]
-        {
-            self.step_batched_alloc::<InQ, OutQ, C, T>(cx, nmax)
-        }
+        Ok(ProcessResult::Output(out_msg))
     }
 
-    fn on_watchdog_timeout<C, T>(
+    #[inline]
+    fn step<'g, 't, 'c, InQ, OutQ, InM, OutM, C, Tel>(
+        &mut self,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, InM, OutM, C, Tel>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
+        C: PlatformClock + Sized,
+        Tel: Telemetry + Sized,
+    {
+        ctx.pop_and_process(0, |msg| self.process_message(msg, ctx.clock))
+    }
+
+    #[inline]
+    fn step_batch<'g, 't, 'c, InQ, OutQ, InM, OutM, C, Tel>(
+        &mut self,
+        ctx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, InM, OutM, C, Tel>,
+    ) -> Result<StepResult, NodeError>
+    where
+        InQ: Edge,
+        OutQ: Edge,
+        InM: MemoryManager<InP>,
+        OutM: MemoryManager<OutP>,
+        C: PlatformClock + Sized,
+        Tel: Telemetry + Sized,
+    {
+        let want = self.node_policy.batching().fixed_n().unwrap_or(1);
+        let backend_cap = self.backend_caps.max_batch().unwrap_or(usize::MAX);
+        let nmax = core::cmp::min(core::cmp::min(want, backend_cap), MAX_BATCH);
+
+        if nmax <= 1 {
+            return self.step(ctx);
+        }
+
+        let node_policy = self.node_policy;
+        let clock = ctx.clock;
+
+        ctx.pop_batch_and_process(0, nmax, &node_policy, |msg| {
+            self.process_message(msg, clock)
+        })
+    }
+
+    #[inline]
+    fn on_watchdog_timeout<C, Tel>(
         &mut self,
         clock: &C,
-        _telemetry: &mut T,
+        _telemetry: &mut Tel,
     ) -> Result<StepResult, NodeError>
     where
         C: PlatformClock + Sized,
-        T: Telemetry,
+        Tel: Telemetry,
     {
-        // Use configured budget backoff if present; otherwise yield once at "now".
         if let Some(backoff) = self.node_policy.budget().watchdog_ticks() {
             let until = clock.now_ticks().saturating_add(*backoff);
             Ok(StepResult::YieldUntil(until))
@@ -239,137 +255,12 @@ where
         }
     }
 
-    fn stop<C, T>(&mut self, _clock: &C, _telemetry: &mut T) -> Result<(), NodeError>
+    #[inline]
+    fn stop<C, Tel>(&mut self, _clock: &C, _telemetry: &mut Tel) -> Result<(), NodeError>
     where
-        T: Telemetry,
+        Tel: Telemetry,
     {
         self.model.drain().map_err(map_inference_err)?;
         self.model.reset().map_err(map_inference_err)
-    }
-}
-
-#[allow(dead_code)]
-impl<B, InP, OutP, const MAX_BATCH: usize> InferenceModel<B, InP, OutP, MAX_BATCH>
-where
-    B: ComputeBackend<InP, OutP>,
-    InP: Payload,
-    OutP: Payload + Default,
-{
-    fn step_batched_stack<'g, 't, 'c, InQ, OutQ, C, T>(
-        &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
-        nmax: usize,
-    ) -> Result<StepResult, NodeError>
-    where
-        // NOTE: for stack arrays without `alloc`, we require `Copy + Default` on InP.
-        InP: Payload,
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized,
-    {
-        // Fixed-capacity, stack-allocated scratch (no alloc).
-        let mut headers: [MessageHeader; MAX_BATCH] =
-            core::array::from_fn(|_| MessageHeader::empty());
-        let mut in_buf: HeaplessVec<InP, { MAX_BATCH }> = HeaplessVec::new();
-        let mut out_buf: [OutP; MAX_BATCH] = core::array::from_fn(|_| OutP::default());
-
-        while in_buf.len() < nmax {
-            match cx.in_try_pop(0) {
-                Ok(m) => {
-                    let (h, p) = m.into_parts();
-                    let idx = in_buf.len();
-                    headers[idx] = h;
-                    // `nmax <= MAX_BATCH` should guarantee capacity; if this ever
-                    // fails, it indicates a logic error. Avoid imposing `Debug`
-                    // on `InP` by not using `.expect(..)`.
-                    if let Err(_overflowed) = in_buf.push(p) {
-                        debug_assert!(
-                            false,
-                            "heapless capacity exceeded (nmax <= MAX_BATCH invariant broken)"
-                        );
-                        return Err(NodeError::execution_failed().with_code(1));
-                    }
-                }
-                Err(QueueError::Empty) | Err(QueueError::Backpressured) => break,
-                Err(e) => return Err(map_queue_err(e)),
-            }
-        }
-
-        let n = in_buf.len();
-
-        if n == 0 {
-            return Ok(StepResult::NoInput);
-        }
-
-        // Mark batch boundary flags.
-        headers[0].set_first_in_batch();
-        headers[n - 1].set_last_in_batch();
-
-        self.model
-            .infer_batch(in_buf.as_slice(), &mut out_buf[..n])
-            .map_err(map_inference_err)?;
-
-        for i in 0..n {
-            let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-            match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => { /* progress */ }
-                EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-            };
-        }
-        Ok(StepResult::MadeProgress)
-    }
-
-    #[cfg(feature = "alloc")]
-    fn step_batched_alloc<'g, 't, 'c, InQ, OutQ, C, T>(
-        &mut self,
-        cx: &mut StepContext<'g, 't, 'c, 1, 1, InP, OutP, InQ, OutQ, C, T>,
-        nmax: usize,
-    ) -> Result<StepResult, NodeError>
-    where
-        InQ: Edge<Item = Message<InP>>,
-        OutQ: Edge<Item = Message<OutP>>,
-        C: PlatformClock + Sized,
-        T: Telemetry + Sized,
-    {
-        let mut headers: Vec<MessageHeader> = Vec::with_capacity(nmax);
-        let mut in_buf: Vec<InP> = Vec::with_capacity(nmax);
-
-        while headers.len() < nmax {
-            match cx.in_try_pop(0) {
-                Ok(m) => {
-                    let (h, p) = m.into_parts();
-                    headers.push(h);
-                    in_buf.push(p);
-                }
-                Err(QueueError::Empty) | Err(QueueError::Backpressured) => break,
-                Err(e) => return Err(map_queue_err(e)),
-            }
-        }
-
-        if headers.is_empty() {
-            return Ok(StepResult::NoInput);
-        }
-
-        // Mark batch boundary flags.
-        headers[0].set_first_in_batch();
-        let last = headers.len() - 1;
-        headers[last].set_last_in_batch();
-
-        // Prepare outputs and run batched inference.
-        let mut out_buf: Vec<OutP> = Vec::with_capacity(headers.len());
-        out_buf.resize_with(headers.len(), || OutP::default());
-        self.model
-            .infer_batch(&in_buf, &mut out_buf)
-            .map_err(map_inference_err)?;
-
-        for i in 0..headers.len() {
-            let out_msg = Message::new(headers[i], core::mem::take(&mut out_buf[i]));
-            match cx.out_try_push(0, out_msg) {
-                EnqueueResult::Enqueued | EnqueueResult::DroppedNewest => { /* progress */ }
-                EnqueueResult::Rejected => return Ok(StepResult::Backpressured),
-            };
-        }
-        Ok(StepResult::MadeProgress)
     }
 }

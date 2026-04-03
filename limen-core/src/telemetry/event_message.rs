@@ -87,7 +87,7 @@
 /// ```rust,compile_fail
 /// use limen_core::prelude::event_message::EventMessage;
 ///
-/// const too_long = EventMessage::new(
+/// const TOO_LONG: EventMessage = EventMessage::new(
 ///     "12345678901234567890123456789012345678901234567890\
 ///12345678901234567890123456789012345678901234567890\
 ///123456789012345678901234567890"

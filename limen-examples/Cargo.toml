@@ -11,6 +11,7 @@ authors.workspace = true
 default = []
 alloc = ["limen-core/alloc"]
 std = ["alloc", "limen-core/std"]
+spsc_raw = ["std", "limen-core/spsc_raw"]
 
 [dev-dependencies]
 limen-core = { workspace = true, features = ["bench"] }

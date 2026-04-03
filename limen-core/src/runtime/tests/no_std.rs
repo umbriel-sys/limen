@@ -1,44 +1,48 @@
-use limen_core::edge::EdgeOccupancy;
-use limen_core::graph::bench::TestPipeline;
-use limen_core::graph::GraphApi;
-use limen_core::memory::PlacementAcceptance;
-use limen_core::message::MessageFlags;
-use limen_core::node::bench::{
+//! No-std runtime tests
+
+use crate::edge::EdgeOccupancy;
+use crate::graph::bench::TestPipeline;
+use crate::graph::GraphApi;
+use crate::memory::PlacementAcceptance;
+use crate::message::MessageFlags;
+use crate::node::bench::{
     TestCounterSourceTensor, TestIdentityModelNodeTensor, TestSinkNodeTensor, TestTensorBackend,
 };
-use limen_core::node::NodeCapabilities;
-use limen_core::policy::{
-    AdmissionPolicy, BatchingPolicy, BudgetPolicy, DeadlinePolicy, EdgePolicy, NodePolicy,
-    OverBudgetAction, QueueCaps, SlidingWindow, WatermarkState, WindowKind,
+use crate::node::NodeCapabilities;
+use crate::policy::{
+    BatchingPolicy, BudgetPolicy, DeadlinePolicy, EdgePolicy, NodePolicy, SlidingWindow,
+    WatermarkState, WindowKind,
 };
-use limen_core::prelude::graph_telemetry::GraphTelemetry;
-use limen_core::prelude::linux::NoStdLinuxMonotonicClock;
-use limen_core::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
-use limen_core::prelude::{StaticMemoryManager, TestTensor};
-use limen_core::runtime::bench::TestNoStdRuntime;
-use limen_core::runtime::LimenRuntime;
-use limen_core::types::{QoSClass, SequenceNumber, Ticks, TraceId};
+use crate::prelude::graph_telemetry::GraphTelemetry;
+use crate::prelude::linux::NoStdLinuxMonotonicClock;
+use crate::prelude::sink::{fixed_buffer_line_writer, FixedBuffer, FmtLineWriter};
+use crate::prelude::TestTensor;
+use crate::runtime::bench::TestNoStdRuntime;
+use crate::runtime::LimenRuntime;
+use crate::types::{QoSClass, SequenceNumber, Ticks, TraceId};
 
 // Concrete queue type used by the test pipelines
-type Q32 = limen_core::edge::bench::TestSpscRingBuf<32>;
+type Q32 = crate::edge::bench::TestSpscRingBuf<32>;
 
-// Memory manager type (one per real edge)
-type Mgr32 = limen_core::memory::static_manager::StaticMemoryManager<TestTensor, 35>;
+const INGRESS_POLICY: EdgePolicy = EdgePolicy {
+    caps: crate::policy::QueueCaps {
+        max_items: 32,
+        soft_items: 32,
+        max_bytes: None,
+        soft_bytes: None,
+    },
+    over_budget: crate::policy::OverBudgetAction::Drop,
+    admission: crate::policy::AdmissionPolicy::DropOldest,
+};
 
 const TEST_MAX_BATCH: usize = 32;
 type MapNode = TestIdentityModelNodeTensor<TEST_MAX_BATCH>;
 
+const LARGE_DELTA_T: Ticks = Ticks::new(1_000_000_000_000u64);
+
 type NoStdTestTelemetry = GraphTelemetry<3, 3, FmtLineWriter<FixedBuffer<2048>>>;
 
 type NoStdTestClock = NoStdLinuxMonotonicClock;
-
-const INGRESS_POLICY: EdgePolicy = EdgePolicy::new(
-    QueueCaps::new(32, 32, None, None),
-    AdmissionPolicy::DropOldest,
-    OverBudgetAction::Drop,
-);
-
-const LARGE_DELTA_T: Ticks = Ticks::new(1_000_000_000_000u64);
 
 // -------------------------------------------------------------
 // core (no_std) pipeline + no_std test runtime (single-threaded)
@@ -106,13 +110,13 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let q0: Q32 = Q32::default();
     let q1: Q32 = Q32::default();
 
-    // managers
-    let mgr0: Mgr32 = Mgr32::default();
-    let mgr1: Mgr32 = Mgr32::default();
-
     // telemetry
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
+
+    // managers
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     // graph
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
@@ -121,7 +125,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
         TestNoStdRuntime::new();
 
-    // init (no_std runtime does not move anything)
+    // init (no_std runtime doesn't move anything)
     runtime.init(&mut graph, clock, telemetry).unwrap();
 
     // quick validation + snapshot
@@ -132,8 +136,8 @@ fn core_pipeline_runs_with_nostd_runtime() {
     #[cfg(feature = "std")]
     println!(
         "--- [initial_graph_occupancies] --- {:?}\n",
-        <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as limen_core::runtime::LimenRuntime<
-            limen_core::graph::bench::TestPipeline<NoStdTestClock>,
+        <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+            crate::graph::bench::TestPipeline<NoStdTestClock>,
             3,
             3,
         >>::occupancies(&runtime)
@@ -144,8 +148,8 @@ fn core_pipeline_runs_with_nostd_runtime() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as limen_core::runtime::LimenRuntime<
-                limen_core::graph::bench::TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -156,11 +160,18 @@ fn core_pipeline_runs_with_nostd_runtime() {
     graph.validate_graph().unwrap();
     assert!(
         !<TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-            limen_core::graph::bench::TestPipeline<NoStdTestClock>,
+            crate::graph::bench::TestPipeline<NoStdTestClock>,
             3,
             3,
         >>::is_stopping(&runtime)
     );
+
+    <TestNoStdRuntime<
+        NoStdTestClock,
+        GraphTelemetry<3, 3, FmtLineWriter<FixedBuffer<2048>>>,
+        3,
+        3,
+    > as LimenRuntime<TestPipeline<NoStdTestClock>, 3, 3>>::request_stop(&mut runtime);
 
     // Safely inspect telemetry, if present.
     #[cfg(feature = "std")]
@@ -168,7 +179,7 @@ fn core_pipeline_runs_with_nostd_runtime() {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot into the sink and flush.
 
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -256,8 +267,8 @@ fn batch_nostd_disjoint_fixed_n() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -269,8 +280,8 @@ fn batch_nostd_disjoint_fixed_n() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -287,8 +298,7 @@ fn batch_nostd_disjoint_fixed_n() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -371,8 +381,8 @@ fn batch_nostd_disjoint_max_delta_t() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -384,8 +394,8 @@ fn batch_nostd_disjoint_max_delta_t() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -402,8 +412,7 @@ fn batch_nostd_disjoint_max_delta_t() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -486,8 +495,8 @@ fn batch_nostd_disjoint_fixed_n_and_max_delta_t() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -499,8 +508,8 @@ fn batch_nostd_disjoint_fixed_n_and_max_delta_t() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -516,8 +525,7 @@ fn batch_nostd_disjoint_fixed_n_and_max_delta_t() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -600,8 +608,8 @@ fn batch_nostd_sliding_fixed_n() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -613,8 +621,8 @@ fn batch_nostd_sliding_fixed_n() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -631,8 +639,7 @@ fn batch_nostd_sliding_fixed_n() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -718,8 +725,8 @@ fn batch_nostd_sliding_max_delta_t() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -731,8 +738,8 @@ fn batch_nostd_sliding_max_delta_t() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -749,8 +756,7 @@ fn batch_nostd_sliding_max_delta_t() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 
@@ -837,8 +843,8 @@ fn batch_nostd_sliding_fixed_n_and_max_delta_t() {
     let q1: Q32 = Q32::default();
     let sink = fixed_buffer_line_writer::<2048>();
     let telemetry: NoStdTestTelemetry = NoStdTestTelemetry::new(0, true, sink);
-    let mgr0 = StaticMemoryManager::<TestTensor, 35>::new();
-    let mgr1 = StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr0 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
+    let mgr1 = crate::memory::static_manager::StaticMemoryManager::<TestTensor, 35>::new();
 
     let mut graph = TestPipeline::new(src, map, snk, q0, q1, mgr0, mgr1);
     let mut runtime: TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> =
@@ -850,8 +856,8 @@ fn batch_nostd_sliding_fixed_n_and_max_delta_t() {
         #[cfg(feature = "std")]
         println!(
             "--- [graph_occupancies] --- {:?}",
-            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as LimenRuntime<
-                TestPipeline<NoStdTestClock>,
+            <TestNoStdRuntime<NoStdTestClock, NoStdTestTelemetry, 3, 3> as crate::runtime::LimenRuntime<
+                crate::graph::bench::TestPipeline<NoStdTestClock>,
                 3,
                 3,
             >>::occupancies(&runtime)
@@ -868,8 +874,7 @@ fn batch_nostd_sliding_fixed_n_and_max_delta_t() {
     {
         let _ = runtime.with_telemetry(|telemetry| {
             // Push a metrics snapshot and flush the writer.
-
-            use limen_core::prelude::Telemetry as _;
+            use crate::prelude::Telemetry as _;
             telemetry.push_metrics();
             telemetry.flush();
 

@@ -1,5 +1,3 @@
-//! limen-codegen/src/builder.rs
-//!
 //! Strongly typed, Language Server–friendly builder for Limen graphs
 //! (no proc-macro input and no stringly-typed DSL).
 //!

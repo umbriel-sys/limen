@@ -1,3 +1,4 @@
+//! `no_std`-path tests for the build-script-generated `SimpleExampleNoStdGraph`.
 use super::generated::SimpleExampleNoStdGraph;
 
 use limen_core::edge::EdgeOccupancy;

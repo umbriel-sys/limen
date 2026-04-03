@@ -1,4 +1,13 @@
-//! message/tensor.rs — owned inline tensor (no_std, no_alloc)
+//! Owned, fixed-capacity inline tensor (`no_std`, `no_alloc`).
+//!
+//! [`Tensor<T, N, R>`] stores up to `N` elements of scalar type `T` with
+//! a compile-time rank `R`. Data is held inline (stack / static storage),
+//! so no heap allocation is required. A live-element count (`len`) tracks
+//! how many of the `N` slots are in use; the shape array `[usize; R]` records
+//! the logical dimensions.
+//!
+//! Use [`TensorRef<T, R>`] for a borrowed, zero-copy view into an existing
+//! buffer (e.g. a frame from a DMA ring).
 
 use core::mem;
 

@@ -1,3 +1,5 @@
+//! `std`-path tests for the build-script-generated `SimpleExampleConcurrentGraph`.
+//! Exercises `ConcurrentEdge` and `ScopedGraphApi` with codegen-emitted code.
 use std::io::Stdout;
 
 use super::generated::SimpleExampleConcurrentGraph;

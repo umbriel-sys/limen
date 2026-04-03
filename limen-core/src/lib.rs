@@ -4,38 +4,53 @@
 //! # limen-core
 //!
 //! **Limen Core** defines the *stable contracts and primitives* for the Limen
-//! graph-driven, edge inference runtime. It is `no_std` by default and uses
-//! feature gates to enable `alloc` and `std`-specific conveniences. The data
-//! plane is designed for *monomorphization* via generics and const generics,
-//! avoiding dynamic dispatch in the hot path.
+//! graph-driven, edge inference runtime targeting embedded and resource-constrained
+//! systems.
 //!
-//! This crate intentionally **does not** provide graph construction, concrete
-//! schedulers, or queue implementations. Those are provided by `limen-light`
-//! (P0/P1) and `limen` (P2).
+//! ## Design principles
 //!
-//! ## Modules Overview
-//! - [`types`]: small newtypes and shared enums (QoS, identifiers).
-//! - [`memory`]: memory classes and placement descriptors for zero-copy paths.
-//! - [`message`]: message header, payload contract, and message types.
-//! - [`policy`]: batching, budgets, deadlines, admission and edge policies.
-//! - [`edge`]: single-producer single-consumer queue trait and results.
-//! - [`node`]: uniform node contract and step lifecycle.
-//! - [`routing`]: split (fan-out) and join (fan-in) operator traits.
-//! - [`telemetry`]: counters, histograms, and tracing interfaces.
-//! - [`platform`]: platform abstractions (clock, timers, affinities).
-//! - [`scheduling`]: readiness and dequeue policy traits (EDF hooks).
-//! - [`graph`]: port indices, edge descriptors, invariant validation traits.
-//! - [`errors`]: error families for nodes, queues, and runtime surfaces.
-//! - [`prelude`]: convenient re-exports for implementers.
+//! - **`no_std` by default.** All code compiles without `std`. Heap use is gated
+//!   behind `#[cfg(feature = "alloc")]`; concurrent primitives behind `std`.
+//! - **No dynamic dispatch in hot paths.** Node, edge, memory manager, and
+//!   scheduler types are monomorphized via generics and const generics.
+//! - **Token-based message passing.** Edges carry [`types::MessageToken`] handles
+//!   rather than full messages. Message data (header + payload) lives in a
+//!   [`memory::manager::MemoryManager`], addressed by token. This enables
+//!   zero-copy routing and heterogeneous memory classes (host, pinned, device).
+//! - **Stable contracts.** The traits defined here are the versioned boundary
+//!   between application code and the runtime. Higher-level crates
+//!   (`limen-runtime`, `limen-codegen`, `limen-node`) depend on this crate and
+//!   can evolve independently without breaking the contract surface.
 //!
-//! ## Feature Flags
-//! - `alloc`: enables optional APIs using `alloc` types.
-//! - `std`: enables `std`-specific conveniences; implies `alloc`.
+//! ## Module overview
 //!
-//! ## Versioning and Stability
-//! The contracts defined here are intended to be *stable* so higher-level
-//! runtimes can evolve independently. Avoid adding trait objects or dynamic
-//! allocation requirements to keep the core maximally portable.
+//! | Module | What it provides |
+//! |--------|-----------------|
+//! | [`types`] | Newtypes for IDs, timing, QoS, `MessageToken`, `DataType`/`DType`, `F16`/`BF16` |
+//! | [`errors`] | Error families for queues, nodes, inference, graph, runtime |
+//! | [`memory`] | `MemoryClass`, `PlacementAcceptance`, `BufferDescriptor`; memory manager traits and impls |
+//! | [`message`] | `MessageHeader`, `MessageFlags`, `Message<P>`; `Payload` trait; `Tensor`; `Batch` |
+//! | [`policy`] | Batching, budget, deadline, admission, and per-edge/node policy types |
+//! | [`compute`] | `ComputeBackend` / `ComputeModel` traits for dyn-free inference backends |
+//! | [`edge`] | `Edge` SPSC trait; `EnqueueResult`, `EdgeOccupancy`; queue implementations |
+//! | [`node`] | `Node` trait; `StepContext`, `StepResult`, `ProcessResult`; source/sink/model sub-traits |
+//! | [`graph`] | `GraphApi`, `ScopedGraphApi`; compile-time node/edge access traits; descriptor validation |
+//! | [`scheduling`] | `Readiness`, `NodeSummary`, `DequeuePolicy`; `WorkerScheduler` for concurrent execution |
+//! | [`telemetry`] | `Telemetry` trait; `TelemetryEvent`; `NodeMetrics`, `EdgeMetrics`, `GraphMetrics` |
+//! | [`platform`] | `PlatformClock`, `Span`, `Timers`, `Affinity`; `NoopClock` |
+//! | [`runtime`] | `LimenRuntime` trait; `RuntimeStopHandle` |
+//! | [`prelude`] | Convenience re-exports for all of the above, feature-gated |
+//!
+//! ## Feature flags
+//!
+//! | Flag | Effect |
+//! |------|--------|
+//! | *(default)* | `no_std`, no heap; fixed-size SPSC queues (`SpscArrayQueue`) |
+//! | `alloc` | `HeapMemoryManager`, `SpscVecDeque`, owned `BatchView` |
+//! | `std` | implies `alloc`; `ConcurrentMemoryManager`, `ConcurrentEdge`, `ScopedEdge`, `ScopedGraphApi`, concurrent telemetry |
+//! | `spsc_raw` | unsafe lock-free ring buffer (`SpscRawQueue`); requires `std` |
+//! | `bench` | exposes test nodes, edges, graphs, and runtimes for integration tests |
+//! | `checked-memory-manager-refs` | adds per-slot borrow-state tracking to `StaticMemoryManager` and `HeapMemoryManager` |
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

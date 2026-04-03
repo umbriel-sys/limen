@@ -433,7 +433,7 @@ impl fmt::Display for MemoryError {
 #[cfg(feature = "std")]
 impl Error for MemoryError {}
 
-// ***** Runtime Errors *****
+// ***** Runtime Invariant Errors *****
 
 /// Runtime invariants that were violated (programmer errors).
 #[non_exhaustive]

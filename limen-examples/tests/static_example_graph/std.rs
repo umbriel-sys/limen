@@ -1,3 +1,5 @@
+//! `std`-path tests for the static bench graph (`TestPipelineStd`) defined in `limen-core`.
+//! Exercises `ConcurrentEdge` and `ScopedGraphApi` with the hand-written bench graph.
 use limen_core::edge::spsc_concurrent::ConcurrentEdge;
 use limen_core::edge::EdgeOccupancy;
 use limen_core::graph::bench::concurrent_graph::TestPipelineStd;

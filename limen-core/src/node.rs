@@ -1,7 +1,23 @@
-//! Uniform Node contract and lifecycle.
+//! Uniform node contract, lifecycle, and step context.
 //!
-//! Nodes are monomorphized by generics and const generics. There is **no dynamic
-//! dispatch** in the hot path. Port schemas and policies are encoded on the Node.
+//! Nodes are monomorphized by generics and const generics — there is **no
+//! dynamic dispatch** in the hot path. Port schemas and policies are
+//! type-encoded on each node.
+//!
+//! Key types:
+//! - [`Node`] — the core trait: `step(StepContext) -> StepResult`.
+//! - [`StepContext`] — per-step runtime context (clock, telemetry, input/output edges, memory manager).
+//! - [`StepResult`] — scheduling hint returned after each step.
+//! - [`ProcessResult`] — result of processing a single message inside a node.
+//! - [`NodeKind`] — categorical label (source, process, model, sink, …).
+//! - [`NodeCapabilities`] — capability descriptor for device streams and degrade tiers.
+//!
+//! Submodules:
+//! - [`source`] — [`SourceNode`](source::SourceNode) trait for 0-input nodes.
+//! - [`sink`] — [`SinkNode`](sink::SinkNode) trait for 0-output nodes.
+//! - [`model`] — [`ModelNode`](model::ModelNode) trait for inference nodes.
+//! - [`link`] — [`NodeLink`] and [`NodeDescriptor`](link::NodeDescriptor) wiring helpers.
+//! - [`bench`] — test nodes (`bench` / `test` feature).
 
 pub mod link;
 pub mod model;

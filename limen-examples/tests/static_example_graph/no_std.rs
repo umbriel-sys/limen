@@ -1,3 +1,4 @@
+//! `no_std`-path tests for the static bench graph (`TestPipeline`) defined in `limen-core`.
 use limen_core::edge::EdgeOccupancy;
 use limen_core::graph::bench::TestPipeline;
 use limen_core::graph::GraphApi;

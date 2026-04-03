@@ -22,7 +22,7 @@ use quote::quote;
 /// `concurrent;` keyword to additionally request the std-only
 /// `ScopedGraphApi` implementation for that same graph type.
 ///
-/// # Example (non-std only)
+/// # Example (no_std, `GraphApi` only)
 /// ```ignore
 /// use limen_build::define_graph;
 ///
@@ -30,8 +30,8 @@ use quote::quote;
 ///     pub struct MyGraph;
 ///
 ///     nodes {
-///         0: { ty: my::Src, in_ports: 0, out_ports: 1, in_payload: (),  out_payload: u32, name: Some("src"), ingress_policy: MY_Q },
-///         1: { ty: my::Map, in_ports: 1, out_ports: 1, in_payload: u32, out_payload: u32, name: Some("map") },
+///         0: { ty: my::Src,  in_ports: 0, out_ports: 1, in_payload: (),  out_payload: u32, name: Some("src"), ingress_policy: MY_Q },
+///         1: { ty: my::Map,  in_ports: 1, out_ports: 1, in_payload: u32, out_payload: u32, name: Some("map") },
 ///         2: { ty: my::Sink, in_ports: 1, out_ports: 0, in_payload: u32, out_payload: (),  name: Some("sink") },
 ///     }
 ///
@@ -40,15 +40,22 @@ use quote::quote;
 ///         1: { ty: TestSpscRingBuf<8>, payload: u32, manager: StaticMemoryManager<u32, 8>, from: (1, 0), to: (2, 0), policy: EDGE_POL, name: Some("map->sink") },
 ///     }
 /// }
+/// ```
 ///
-/// Add std-only scoped execution support for the same graph type:
-/// #[cfg(feature = "std")]
+/// # Example (std, `GraphApi` + `ScopedGraphApi`)
+///
+/// Adding `concurrent;` inside the **same** invocation extends the generated graph type
+/// with a std-only `ScopedGraphApi` impl — it does **not** emit a second graph type.
+///
+/// ```ignore
+/// use limen_build::define_graph;
+///
 /// define_graph! {
 ///     pub struct MyGraph;
 ///
 ///     nodes {
-///         0: { ty: my::Src, in_ports: 0, out_ports: 1, in_payload: (),  out_payload: u32, name: Some("src"), ingress_policy: MY_Q },
-///         1: { ty: my::Map, in_ports: 1, out_ports: 1, in_payload: u32, out_payload: u32, name: Some("map") },
+///         0: { ty: my::Src,  in_ports: 0, out_ports: 1, in_payload: (),  out_payload: u32, name: Some("src"), ingress_policy: MY_Q },
+///         1: { ty: my::Map,  in_ports: 1, out_ports: 1, in_payload: u32, out_payload: u32, name: Some("map") },
 ///         2: { ty: my::Sink, in_ports: 1, out_ports: 0, in_payload: u32, out_payload: (),  name: Some("sink") },
 ///     }
 ///

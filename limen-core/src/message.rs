@@ -1,8 +1,18 @@
-//! Message header and payload contracts.
+//! Message header, flags, and typed message wrapper.
 //!
-//! The payload type is generic and can be any type that implements
-//! [`Payload`]. For simple byte buffers, `&[u8]` or fixed-size arrays can
-//! be used directly because `Payload` is implemented for them.
+//! Every value in the graph is a [`Message<P>`] carrying a fixed
+//! [`MessageHeader`] and a generic payload `P: Payload`.
+//!
+//! - [`MessageHeader`] — trace ID, sequence number, creation tick, optional
+//!   deadline, QoS class, payload size, flags, and memory class.
+//! - [`MessageFlags`] — compact bitfield for batch boundary and degrade hints.
+//! - [`Message<P>`] — the header/payload pair; implements [`Payload`] itself
+//!   so batches of messages can be nested.
+//!
+//! Submodules:
+//! - [`payload`] — the [`Payload`] trait and blanket impls for slices/arrays/scalars.
+//! - [`tensor`] — owned, fixed-capacity, `no_std`/`no_alloc` [`Tensor`] type.
+//! - [`batch`] — [`Batch`] view, [`BatchView`] container, and [`BatchMessageIter`].
 
 pub mod batch;
 pub mod payload;

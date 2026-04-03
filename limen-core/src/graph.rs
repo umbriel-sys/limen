@@ -1,12 +1,18 @@
-//! Graph contracts, descriptors, and a builder for wiring arbitrary topologies.
+//! Graph trait hierarchy and typed graph contracts.
 //!
-//! # Layers
+//! Graphs are fully typed and monomorphized. Node/edge counts are `const` generics;
+//! there is no runtime-length collection in the hot path.
 //!
-//! - [`descriptor`]: storage-only descriptors (borrowed, owned, and const-buffer).
-//! - [`validate`]: descriptor validators (no-alloc port checks; acyclicity with/without `alloc`).
-//! - [`builder`] (alloc): ergonomic builder that produces a validated owned descriptor.
+//! Key traits:
+//! - [`GraphApi`] — top-level entry point; step + occupancy sampling.
+//! - [`ScopedGraphApi`] (`std`) — concurrent variant with scoped worker threads.
+//! - [`GraphNodeAccess<I>`] / [`GraphEdgeAccess<E>`] — compile-time indexed access.
+//! - [`GraphNodeTypes<I, IN, OUT>`] — per-node payload and queue type associations.
+//! - [`GraphNodeContextBuilder<I, IN, OUT>`] — factory for [`StepContext`](crate::node::StepContext).
 //!
-//! Runtimes consume the **typed** `Graph` trait; tooling and codegen use descriptors.
+//! Submodules:
+//! - [`validate`] — [`GraphValidator`](validate::GraphValidator) and [`GraphDescBuf`](validate::GraphDescBuf) for descriptor validation.
+//! - [`bench`] — test graphs (`bench` / `test` feature).
 
 pub mod validate;
 
@@ -44,7 +50,7 @@ pub trait GraphNodeAccess<const I: usize> {
     fn node_mut(&mut self) -> &mut Self::Node;
 }
 
-// Provides indexed access to a graph edge.
+/// Provides indexed access to a graph edge.
 ///
 /// This trait is implemented by graph container types to allow compile-time
 /// access to a specific edge by index.

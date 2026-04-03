@@ -3,18 +3,34 @@
 #![deny(unsafe_code)]
 //! # limen-runtime
 //!
-//! **Limen Runtime** provides runtime implementations used to run limen graphs.
-//! It is `no_std` by default and uses feature gates to enable `alloc` and
-//! `std`-specific conveniences.
+//! **Limen Runtime** provides concrete runtime and scheduler implementations
+//! for executing Limen graphs. Runtimes implement the [`LimenRuntime`] trait
+//! defined in `limen-core`; schedulers implement [`DequeuePolicy`] (sequential)
+//! or [`WorkerScheduler`] (concurrent).
 //!
-//! ## Modules Overview
-//! - [`todo`]: still todo.
-//! - [`todo`]: still todo.
-//! - [`todo`]: still todo.
+//! > **Status: skeleton.** Module structure and scheduling algorithms are
+//! > designed and partially implemented (see commented code). Full activation
+//! > is tracked by the `RS1` runtime lifecycle and `Q1` test overhaul planned
+//! > items. The `limen-examples` integration tests drive the currently active
+//! > test runtimes (`TestNoStdRuntime`, `TestScopedRuntime`) defined in
+//! > `limen-core::runtime::bench`.
+//!
+//! ## Modules
+//!
+//! - [`runtime`] — P2 single-thread and concurrent runtime implementations.
+//! - [`scheduler`] — EDF and throughput `DequeuePolicy` implementations.
 //!
 //! ## Feature Flags
-//! - `alloc`: enables optional APIs using `alloc` types.
-//! - `std`: enables `std`-specific conveniences; implies `alloc`.
+//!
+//! | Flag | Effect |
+//! |------|--------|
+//! | *(default)* | `no_std`, no heap; single-thread runtime |
+//! | `alloc` | enables `alloc`-backed runtime variants |
+//! | `std` | implies `alloc`; enables `ScopedGraphApi`-based concurrent runtime |
+//!
+//! [`LimenRuntime`]: limen_core::runtime::LimenRuntime
+//! [`DequeuePolicy`]: limen_core::scheduling::DequeuePolicy
+//! [`WorkerScheduler`]: limen_core::scheduling::WorkerScheduler
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

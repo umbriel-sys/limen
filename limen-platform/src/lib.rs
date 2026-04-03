@@ -3,16 +3,30 @@
 #![deny(unsafe_code)]
 //! # limen-platform
 //!
-//! **Limen platform** provides platform adapters for limen. It is `no_std`
-//! by default and uses feature gates to enable `alloc` and `std`-specific
-//! conveniences.
+//! **Limen Platform** provides concrete implementations of the platform
+//! abstractions defined in `limen-core::platform` ([`PlatformClock`],
+//! [`Timers`], [`Affinity`]).
 //!
-//! ## Modules Overview
-//! - [`linux`]: basic linux platform adapters.
+//! > **Status: stub.** The platform contract traits are defined and stable in
+//! > `limen-core`. This crate is the intended home for target-specific
+//! > adapters. The `linux` module skeleton exists but is not yet implemented.
+//! > The `P1` planned item tracks full `PlatformBackend` finalisation.
+//!
+//! ## Modules
+//!
+//! - [`linux`] — Linux / desktop platform adapters (stub; see module docs).
 //!
 //! ## Feature Flags
-//! - `alloc`: enables optional APIs using `alloc` types.
-//! - `std`: enables `std`-specific conveniences; implies `alloc`.
+//!
+//! | Flag | Effect |
+//! |------|--------|
+//! | *(default)* | `no_std`, no heap |
+//! | `alloc` | enables `alloc`-backed adapters |
+//! | `std` | implies `alloc`; enables `std::time`-backed clock and OS primitives |
+//!
+//! [`PlatformClock`]: limen_core::platform::PlatformClock
+//! [`Timers`]: limen_core::platform::Timers
+//! [`Affinity`]: limen_core::platform::Affinity
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

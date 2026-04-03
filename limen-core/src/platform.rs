@@ -32,7 +32,7 @@ pub trait PlatformClock {
     fn nanos_to_ticks(&self, ns: u64) -> Ticks;
 }
 
-/// A no-op telemetry implementation, useful for testing.
+/// A no-op clock implementation that always returns tick zero, useful for testing.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopClock;
 

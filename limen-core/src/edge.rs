@@ -1,4 +1,21 @@
-//! Limen single-producer single-consumer edge trait and related types.
+//! SPSC edge trait, occupancy types, and queue implementations.
+//!
+//! Edges are the typed SPSC queues that connect nodes. They store
+//! [`MessageToken`] handles rather than full messages; actual message data
+//! lives in a [`MemoryManager`](crate::memory::manager::MemoryManager).
+//! Header metadata needed for admission and batching is accessed through a
+//! [`HeaderStore`](crate::memory::header_store::HeaderStore) parameter —
+//! statically dispatched, no `dyn`.
+//!
+//! Key types:
+//! - [`Edge`] — the core SPSC contract (`try_push`, `try_pop`, `occupancy`, etc.).
+//! - [`EdgeOccupancy`] — occupancy snapshot used for scheduling and telemetry.
+//! - [`EnqueueResult`] — outcome of a push attempt.
+//! - [`NoQueue`] — a no-op placeholder for unconnected ports.
+//! - [`ScopedEdge`] (`std`) — factory for per-worker handles in concurrent execution.
+//!
+//! Implementations: [`spsc_array`] (`no_std`), [`spsc_vecdeque`] (`alloc`),
+//! [`spsc_concurrent`] (`std`), [`spsc_priority2`], [`spsc_raw`] (`spsc_raw` feature).
 
 use crate::errors::QueueError;
 use crate::message::Message;

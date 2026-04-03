@@ -1,4 +1,12 @@
-//! Earliest-Deadline-First dequeue policy.
+//! Earliest-Deadline-First (EDF) dequeue policy.
+//!
+//! Implements [`DequeuePolicy`](limen_core::scheduling::DequeuePolicy).
+//! Among `Ready` candidates it selects the node with the smallest
+//! `earliest_deadline`. Ties are broken by round-robin. If no `Ready` node
+//! has a deadline, falls back to any `Ready` candidate in round-robin order.
+//!
+//! > **Status: stub.** Implementation is sketched in commented code; pending
+//! > `RS1` runtime lifecycle work for activation.
 // use limen_core::scheduling::{DequeuePolicy, NodeSummary, Readiness};
 // use limen_core::types::NodeIndex;
 

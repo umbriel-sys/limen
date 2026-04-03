@@ -1,4 +1,19 @@
-//! Memory classes and placement descriptors for zero-copy data paths.
+//! Memory classes, placement policy, and token-backed message storage.
+//!
+//! Edges carry [`MessageToken`](crate::types::MessageToken) handles rather than
+//! full messages. All message data lives in a [`MemoryManager`](manager::MemoryManager),
+//! keyed by token. This module provides:
+//!
+//! - [`MemoryClass`] — tag describing where a payload resides (host, pinned, device, shared).
+//! - [`PlacementAcceptance`] / [`PlacementDecision`] — zero-copy routing policy.
+//! - [`BufferDescriptor`] — lightweight byte-size descriptor returned by [`Payload`](crate::message::payload::Payload).
+//!
+//! Submodules:
+//! - [`header_store`] — [`HeaderStore`](header_store::HeaderStore) supertrait for payload-agnostic header access.
+//! - [`manager`] — [`MemoryManager`](manager::MemoryManager) typed storage interface.
+//! - [`static_manager`] — `no_std`/`no_alloc` fixed-capacity implementation.
+//! - [`heap_manager`] (`alloc`) — heap-backed fixed-capacity implementation.
+//! - [`concurrent_manager`] (`std`) — lock-free freelist + per-slot `RwLock` implementation.
 
 pub mod header_store;
 pub mod manager;

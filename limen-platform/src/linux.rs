@@ -1,4 +1,8 @@
-//! Linux/desktop platform adapters.
+//! Linux / desktop platform adapters.
+//!
+//! > **Status: stub.** The planned `StdClock` implementation (a `PlatformClock`
+//! > backed by `std::time::Instant`) is sketched in commented-out code below.
+//! > It will be activated once the `P1` `PlatformBackend` finalisation work lands.
 // use limen_core::platform::PlatformClock;
 // use limen_core::types::Ticks;
 // use std::time::Instant;

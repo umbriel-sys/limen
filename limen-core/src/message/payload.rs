@@ -1,14 +1,25 @@
-//! Minimal, zero-cost payload descriptors for generic Rust data.
+//! The [`Payload`] trait and blanket implementations for common Rust types.
+//!
+//! A payload type must only report its byte size via [`Payload::buffer_descriptor`].
+//! Memory class (placement) is a property of the [`MemoryManager`](crate::memory::manager::MemoryManager),
+//! not the payload.
+//!
+//! Blanket impls are provided for:
+//! - slices and slice references (`[T]`, `&[T]`),
+//! - fixed-size arrays and their references (`[T; N]`, `&[T; N]`),
+//! - unit `()` (zero bytes), and
+//! - `u32` (convenience for simple test/source nodes).
 
 use crate::memory::BufferDescriptor;
 use core::mem;
 
-/// Trait for payload types that can provide byte length.
+/// Trait for payload types that can report their byte size.
 ///
-/// Memory class (placement) is a property of the [`MemoryManager`], not the
-/// payload. The payload only knows its byte size.
+/// Implementing this trait is the only requirement for a type to be used as
+/// a message payload in the graph. Memory class (placement) is tracked by the
+/// [`MemoryManager`](crate::memory::manager::MemoryManager), not by the payload itself.
 pub trait Payload {
-    /// Return the buffer descriptor (byte size).
+    /// Return a descriptor containing the byte size of this payload.
     fn buffer_descriptor(&self) -> BufferDescriptor;
 }
 

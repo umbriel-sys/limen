@@ -1,10 +1,12 @@
 //! Small shared value types and identifiers used across `limen-core`.
 //!
 //! This module contains:
-//! - strongly-typed IDs for tracing, graph topology, and memory handles,
-//! - timing and scheduling scalars,
-//! - QoS ordering primitives, and
-//! - payload datatype markers (including `F16` and `BF16` wrappers).
+//! - strongly-typed IDs for tracing, graph topology, and memory handles
+//!   ([`TraceId`], [`SequenceNumber`], [`NodeIndex`], [`EdgeIndex`], [`PortId`]),
+//! - timing and scheduling scalars ([`Ticks`], [`DeadlineNs`]),
+//! - lightweight message handle ([`MessageToken`]) used by edges and managers,
+//! - QoS ordering primitive ([`QoSClass`]), and
+//! - payload datatype markers including `F16` and `BF16` wrappers ([`DataType`], [`DType`]).
 
 // ***** Tracing *****
 
@@ -144,7 +146,7 @@ impl Ord for QoSClass {
 
 // ***** Routing *****
 
-/// Port ID (node and port index) for an inout or output port on a node.
+/// Port ID (node and port index) for an input or output port on a node.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PortId {
@@ -673,7 +675,9 @@ impl BF16 {
 
     /// Convert to `f32` by widening (zero-extends the lower 16 bits).
     ///
-    /// TODO: Check this.
+    /// The bfloat16 format shares its exponent width and bias with `f32`, so
+    /// widening is exact for all non-NaN values: the 16 upper bits become the
+    /// sign/exponent/upper-mantissa of the f32 and the lower 16 bits are zero.
     #[inline]
     pub fn to_f32(self) -> f32 {
         f32::from_bits((self.0 as u32) << 16)

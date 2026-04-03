@@ -70,9 +70,10 @@
 //!                policy: my_crate::policies::EDGE_POLICY,
 //!                name: Some("map->sink")
 //!            },
+//!        }
 //!
 //!        concurrent;
-//!        }
+//!    }
 //!    ```
 //!
 //! The trailing `concurrent;` keyword does not generate a separate graph type.
@@ -174,7 +175,7 @@
 //!    Set `.concurrent(true)` to additionally emit the std-only
 //!    `ScopedGraphApi` implementation for the same graph type.
 //!
-//! ## What gets generated (at a glance)
+//! ## What gets generated
 //!
 //! Each invocation emits a single concrete graph type.
 //!
@@ -182,6 +183,10 @@
 //!   - `nodes`: a tuple of `NodeLink<..>` (one per node),
 //!   - `edges`: a tuple of `EdgeLink<..>` (one per **real** edge; see ingress below),
 //!   - `managers`: a tuple of memory manager instances (one per real edge).
+//!
+//! - It also implements `GraphApi` for the concrete type, plus the per-index helper
+//!   traits (`GraphNodeAccess`, `GraphEdgeAccess`, `GraphNodeTypes`,
+//!   `GraphNodeContextBuilder`) that wire the graph into the Limen runtime APIs.
 //!
 //! - When `concurrent = false` (default), codegen emits the graph structure and
 //!   the core `GraphApi` / node-access / context-builder impls only.
@@ -266,21 +271,6 @@
 //!      available to the downstream crate. Ensure your Cargo manifest includes a dependency on
 //!      `limen-core` (the hyphenated package name maps to the `limen_core` crate identifier).
 //!
-//! ## What gets generated
-//!
-//! For each graph definition, this crate emits a concrete `struct` holding:
-//!
-//! - A tuple of `NodeLink<..>` (one per node).
-//! - A tuple of `EdgeLink<..>` (one per **real** edge; ingress edges are synthetic).
-//! - A tuple of memory managers (one per **real** edge).
-//!
-//! It also implements the `limen_core::graph::GraphApi` for the concrete graph type, plus the
-//! per-index helper traits (`GraphNodeAccess`, `GraphEdgeAccess`, `GraphNodeTypes`,
-//! `GraphNodeContextBuilder`) that wire the graph into the Limen runtime APIs.
-//!
-//! If `concurrent = true`, the generated code also includes a std-only
-//! `ScopedGraphApi` impl for the same graph type.
-//!
 //! ## Programmatic entry points (when not using the proc macro)
 //!
 //! All of the following:
@@ -336,7 +326,14 @@ pub enum CodegenError {
     Pretty(String),
 }
 
-/// Expand a *typed* AST into code tokens.
+/// Validate and emit Rust code from a typed [`ast::GraphDef`].
+///
+/// This is the low-level entry used by [`builder::GraphBuilder`] after it has
+/// constructed the AST programmatically.  The graph is validated before emission;
+/// if validation fails a [`CodegenError::Validate`] is returned.
+///
+/// # Errors
+/// Returns [`CodegenError::Validate`] if the graph is structurally or semantically invalid.
 pub fn expand_ast_to_tokens(g: ast::GraphDef) -> Result<TokenStream2, CodegenError> {
     validate::validate_definition(&g).map_err(CodegenError::Validate)?;
     Ok(gen::emit(&g))
@@ -459,7 +456,22 @@ pub fn expand_str_to_file<P: AsRef<Path>>(spec: &str, dest: P) -> Result<PathBuf
     write_tokens_pretty_or_raw(&tokens, dest)
 }
 
-/// Expand a *typed* AST and write it to a file (pretty-or-raw fallback).
+/// Validate, emit, pretty-print, and **write** a typed [`ast::GraphDef`] to `dest`.
+///
+/// Combines [`expand_ast_to_tokens`] with [`write_tokens_pretty_or_raw`].
+/// Parent directories are created if needed.
+///
+/// # Parameters
+/// - `g`: The graph AST, typically produced by [`builder::GraphBuilder`].
+/// - `dest`: Destination filesystem path for the generated Rust source file.
+///
+/// # Returns
+/// - `Ok(PathBuf)`: The absolute path that was written.
+/// - `Err(CodegenError)`: If validation, emission, or I/O fails.
+///
+/// # Errors
+/// Returns [`CodegenError::Validate`], or [`CodegenError::Io`] if filesystem
+/// operations fail (for example, permission denied or out of disk space).
 pub fn expand_ast_to_file<P: AsRef<Path>>(
     g: ast::GraphDef,
     dest: P,

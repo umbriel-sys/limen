@@ -1,3 +1,4 @@
+//! `no_std`-path tests for the proc-macro-generated `ProcExampleNoStdGraph`.
 use super::ProcExampleNoStdGraph;
 
 use limen_core::edge::EdgeOccupancy;

@@ -1,8 +1,8 @@
 //! Telemetry primitives for Limen runtimes.
 //!
-//! This module provides no_std friendly metrics, structured telemetry events,
+//! This module provides `no_std`-friendly metrics, structured telemetry events,
 //! and timing spans that can be used by runtimes without imposing any logging,
-//! allocation, or input output policy.
+//! allocation, or I/O policy.
 
 pub mod event_message;
 pub mod graph_telemetry;
@@ -22,8 +22,8 @@ use sink::write_u64;
 
 /// Core interface for collecting runtime metrics and structured telemetry events.
 ///
-/// This trait is intentionally minimal and input output agnostic so that it can be
-/// implemented in both no_std and std environments. Implementations are free to
+/// This trait is intentionally minimal and I/O-agnostic so that it can be
+/// implemented in both `no_std` and `std` environments. Implementations are free to
 /// ignore any subset of calls.
 pub trait Telemetry {
     /// Compile-time flag indicating whether this telemetry implementation
@@ -882,9 +882,9 @@ impl EdgeMetrics {
 pub struct GraphMetrics<const MAX_NODES: usize, const MAX_EDGES: usize> {
     /// Graph id.
     id: u32,
-    /// graoh nodes.
+    /// Per-node metrics.
     nodes: [NodeMetrics; MAX_NODES],
-    /// graoh edges.
+    /// Per-edge metrics.
     edges: [EdgeMetrics; MAX_EDGES],
 }
 

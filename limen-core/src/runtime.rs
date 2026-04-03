@@ -1,4 +1,11 @@
-//! Limen Runtime
+//! Runtime trait and stop-handle for Limen graph executors.
+//!
+//! [`LimenRuntime`] is the uniform contract that all Limen runtimes implement.
+//! It owns a clock and telemetry after [`LimenRuntime::init`] and drives
+//! execution through [`LimenRuntime::step`] / [`LimenRuntime::run`].
+//!
+//! [`RuntimeStopHandle`] (`std` only) allows cooperative stop requests from
+//! outside the runtime loop (e.g. from another thread).
 
 #[cfg(any(test, feature = "bench"))]
 pub mod bench;

@@ -362,10 +362,9 @@ pub enum AdmissionPolicy {
     Block,
 }
 
-/// Decision returned by an admission controller.
+/// Decision returned by an admission controller (`EdgePolicy::decide`); pure and side-effect free.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Decision returned by EdgePolicy::decide (pure, side-effect free).
 pub enum AdmissionDecision {
     /// Accept the incoming item without evicting anything.
     Admit,
@@ -561,7 +560,7 @@ impl NodePolicy {
         &self.budget
     }
 
-    /// borrow the deadline policy.
+    /// Borrow the deadline policy.
     #[inline]
     pub const fn deadline(&self) -> &DeadlinePolicy {
         &self.deadline

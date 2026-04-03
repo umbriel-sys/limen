@@ -1,4 +1,12 @@
 //! Throughput-oriented dequeue policy.
+//!
+//! Implements [`DequeuePolicy`](limen_core::scheduling::DequeuePolicy).
+//! Prefers `Ready` nodes (outputs below soft watermark) over
+//! `ReadyUnderPressure` nodes, with round-robin tie-breaking within each tier.
+//! Returns `None` only when no node has any available input.
+//!
+//! > **Status: stub.** Implementation is sketched in commented code; pending
+//! > `RS1` runtime lifecycle work for activation.
 // use limen_core::scheduling::{DequeuePolicy, NodeSummary, Readiness};
 // use limen_core::types::NodeIndex;
 

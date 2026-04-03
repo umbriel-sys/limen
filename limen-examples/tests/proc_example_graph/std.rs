@@ -1,3 +1,5 @@
+//! `std`-path tests for the proc-macro-generated `ProcExampleConcurrentGraph`.
+//! Exercises `ConcurrentEdge` and `ScopedGraphApi` with proc-macro-emitted code.
 use super::ProcExampleConcurrentGraph;
 
 use limen_core::edge::spsc_concurrent::ConcurrentEdge;

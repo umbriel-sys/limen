@@ -11,20 +11,19 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/idky137/limen"
 authors = ["idky137 <https://github.com/idky137>"]
 
 [workspace.dependencies]
 # Internal crates
-limen-core = { path = "limen-core", version = "0.1.0", default-features = false }
-limen-codegen = { path = "limen-codegen", version = "0.1.0" }
-limen-build = { path = "limen-build", version = "0.1.0" }
-limen-node = { path = "limen-node", version = "0.1.0", default-features = false }
-limen-runtime = { path = "limen-runtime", version = "0.1.0", default-features = false }
-limen-platform = { path = "limen-platform", version = "0.1.0", default-features = false }
+limen-core = { path = "limen-core", version = "0.1.0-alpha.1", default-features = false }
+limen-codegen = { path = "limen-codegen", version = "0.1.0-alpha.1" }
+limen-build = { path = "limen-build", version = "0.1.0-alpha.1" }
+limen-node = { path = "limen-node", version = "0.1.0-alpha.1", default-features = false }
+limen-runtime = { path = "limen-runtime", version = "0.1.0-alpha.1", default-features = false }
+limen-platform = { path = "limen-platform", version = "0.1.0-alpha.1", default-features = false }
 
 # Shared proc-macro/tooling deps
 proc-macro2 = "1"

@@ -60,12 +60,31 @@ A single iteration of the runtime step loop:
 
 ## Runtime Tiers
 
-| Tier | Runtime | Scheduler | Allocation | Status |
+### Planned Production Runtimes
+
+| Tier | Runtime | Features | Scheduling | Status |
 |---|---|---|---|---|
-| P0 | `TestNoStdRuntime` | Round-robin | None | Stable (integration tested) |
-| P1 | `NoAllocRuntime` | Policy-enforcing | None | In progress |
-| P2 single | `P2Runtime` | EDF / Throughput | `std` | Stubs present |
-| P2 concurrent | `ScopedGraphApi::run_scoped` | Per-node workers | `std` | Stable (integration tested) |
+| P0 | `NoStdRuntime` | `no_std`, no alloc, single-threaded | Round-robin / policy-enforcing | Planned |
+| P1 | `AllocRuntime` | `no_std`, alloc enabled, single-threaded | Policy-enforcing (EDF, Throughput) | Planned |
+| P2 | `ThreadedRuntime` | `std`, alloc enabled, multi-threaded | Per-node workers via `WorkerScheduler` | Planned (requires [ADR-013](../ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)) |
+
+### Existing Test/Bench Runtimes
+
+| Runtime | Features | Purpose | Status |
+|---|---|---|---|
+| `TestNoStdRuntime` | `no_std`, no alloc | Bench-only integration testing (single-threaded, round-robin) | Stable |
+| `TestScopedRuntime` | `std` | Bench-only integration testing (concurrent, `ScopedGraphApi::run_scoped`) | Stable |
+
+P0, P1, and P2 are the planned production runtimes — all are currently
+unimplemented. `TestNoStdRuntime` and `TestScopedRuntime` are bench-only
+implementations (gated behind the `bench` feature) used by integration tests.
+They validate the `LimenRuntime` contract but are not intended for production
+use.
+
+A single P2 multi-threaded runtime is planned rather than separate
+single-threaded and multi-threaded `std` runtimes. If `std` is available but
+only one thread is needed, the P1 runtime with heap-backed types (`HeapRing`,
+`HeapMemoryManager`) covers that scenario without thread-safe overhead.
 
 ---
 

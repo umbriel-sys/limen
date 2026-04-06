@@ -65,7 +65,9 @@ When enabled, the framework automatically emits:
 - Runtime lifecycle events (start, stop, reset)
 
 On MCU targets, telemetry drains via UART or a fixed ring buffer. On
-Linux/desktop, it drains via stdout or a file writer.
+Linux/desktop, it drains via stdout or a file writer. Under `std`, a planned
+TCP/network telemetry adapter will allow draining telemetry events to a remote
+collector over the network.
 
 ---
 

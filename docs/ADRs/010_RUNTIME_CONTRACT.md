@@ -31,13 +31,21 @@ where Graph: GraphApi<NODE_COUNT, EDGE_COUNT>
 }
 ```
 
-### Tiered Implementations
+### Planned Production Runtimes
 
-| Tier | Runtime | Scheduling | Allocation |
+| Tier | Runtime | Scheduling | Features |
 |---|---|---|---|
-| P0 | `TestNoStdRuntime` | Round-robin | None |
-| P1 | `NoAllocRuntime` | Policy-enforcing (EDF, Throughput) | None |
-| P2 | `ScopedGraphApi::run_scoped` | Per-node `WorkerScheduler` | `std` |
+| P0 | `NoStdRuntime` | Round-robin / policy-enforcing | `no_std`, no alloc, single-threaded |
+| P1 | `AllocRuntime` | Policy-enforcing (EDF, Throughput) | `no_std`, alloc enabled, single-threaded |
+| P2 | `ThreadedRuntime` | Per-node `WorkerScheduler` | `std`, alloc enabled, multi-threaded |
+
+All production runtimes are currently planned — none are implemented yet.
+
+### Existing Test/Bench Runtimes
+
+`TestNoStdRuntime` and `TestScopedRuntime` are bench-only implementations
+(gated behind the `bench` feature) used by integration tests. They validate
+the `LimenRuntime` contract but are not production runtimes.
 
 ### Scheduling Abstraction
 
@@ -83,10 +91,12 @@ instances. This ensures consistent time and metric state across all steps.
 ### Trade-offs
 - `step_node_by_index` uses runtime index dispatch (the one place where
   dispatch is not compile-time).
-- P1/P2 runtimes are still in development — only P0 and the scoped-thread
-  test runtime are fully stable.
+- All production runtimes (P0, P1, P2) are planned. Currently, only the
+  bench-only test runtimes (`TestNoStdRuntime`, `TestScopedRuntime`) are
+  implemented and integration-tested.
 
 ## Related ADRs
 
 - [ADR-005](005_MEMORY_MANAGER_EDGE_NODE_GRAPH_RUNTIME_RESPONSIBILITIES.md) — runtime responsibility boundary
 - [ADR-009](009_GRAPH_CONTRACT_CODEGEN.md) — the `GraphApi` that runtimes drive
+- [ADR-013](013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) — zero-lock, zero-copy concurrent graphs (required for full P2 design)

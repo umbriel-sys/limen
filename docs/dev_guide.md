@@ -26,7 +26,11 @@ cargo build --features alloc
 cargo build --features std
 ```
 
-The same graph definition compiles under all three configurations.
+Currently, `std` graphs require concurrent edge and memory manager types
+(`ConcurrentEdge`, `ConcurrentMemoryManager`) which are not available in
+`no_std` builds. A single graph definition does not yet compile across all
+feature flags — [ADR-013](ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)
+addresses this.
 
 ---
 
@@ -55,6 +59,24 @@ cargo test -p limen-core -- core_pipeline_runs_with_nostd_runtime
 | `alloc` | Heap-backed queues, `Vec` batch paths | `cargo test --workspace --features alloc` |
 | `std` | Concurrent queues, scoped-thread runtimes, I/O sinks | `cargo test --workspace --features std` |
 | `bench` | Test nodes, queues, and runtime impls for integration tests | Enabled automatically by `limen-examples` |
+
+### Local CI
+
+Before submitting a pull request, run the local CI script to validate the full
+feature matrix:
+
+```bash
+./dev_utils/run-local-ci.sh
+```
+
+This runs fmt, build, test, and clippy across all feature flag combinations
+(`no-default-features`, `alloc`, `std`, `spsc_raw`). Options:
+
+| Flag | Effect |
+|---|---|
+| `--no-clippy-or-fmt` | Skip `cargo fmt` and `cargo clippy` checks |
+| `--clean` | Run `cargo clean` after all checks pass |
+| `--release` | Run `cargo build --release` after all checks pass |
 
 ---
 
@@ -160,6 +182,7 @@ See [Graph Codegen](architecture/codegen.md) for full details.
 2. **For sources:** Implement `Source<OutP, OUT>` and wrap with `SourceNode`.
 3. **For sinks:** Implement `Sink<InP, IN>` and wrap with `SinkNode`.
 4. **Wire into a graph** using any of the three codegen approaches.
+5. Validate with the conformance test suite, `limen-core::node::contract_tests`.
 
 ---
 

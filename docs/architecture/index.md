@@ -8,10 +8,12 @@ number of composable contracts that compile to zero-overhead code on any target.
 
 ## Design Philosophy
 
-**Core enables; core does not embed.** `limen-core` defines contracts and
-primitives. It does not contain a scheduler, a specific queue chosen for you,
-or any platform code. Runtimes, platforms, and inference backends are all
-downstream of core and can evolve independently.
+**Core defines contracts and provides reference implementations.** `limen-core`
+owns all traits and types, and also provides reference edge implementations
+(`StaticRing`, `HeapRing`, `ConcurrentEdge`) and memory managers
+(`StaticMemoryManager`, `HeapMemoryManager`, `ConcurrentMemoryManager`).
+Runtimes, platforms, and inference backends are all downstream of core and can
+evolve independently.
 
 **Monomorphization over dynamic dispatch.** Every node, edge, queue, clock,
 and telemetry sink is a concrete generic type in the hot path. No vtables, no
@@ -113,7 +115,7 @@ limen/
 
 | Crate | Depends On | Role |
 |---|---|---|
-| `limen-core` | — | Traits, types, edges, nodes, graph API, policies, telemetry |
+| `limen-core` | — | Traits, types, edge implementations, memory managers, nodes, graph API, policies, telemetry |
 | `limen-node` | `limen-core` | Concrete node implementations |
 | `limen-runtime` | `limen-core` | Executors and schedulers |
 | `limen-platform` | `limen-core` | Platform adapters (clocks, I/O) |
@@ -141,7 +143,7 @@ option is planned, using raw pointers internally to provide true zero-lock
 concurrency without `Arc` or `Mutex`. This will allow a single graph definition
 to run on both bare-metal single-threaded and multi-threaded runtimes without
 changing edge or memory manager types. See
-[ADR-013](../ADRs/013_ZERO_LOCK_CONCURRENT_GRAPHS.md) for details.
+[ADR-013](../ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) for details.
 
 ---
 

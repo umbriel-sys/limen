@@ -2,6 +2,9 @@
 
 > **Portable, contract-enforcing computation graphs for AI-enabled embedded systems — from bare-metal microcontrollers to multi-threaded servers, in safe Rust.**
 
+> **Alpha Notice:** Limen is in active pre-release development. Contracts and
+> APIs may change without notice before v0.1.0.
+
 ---
 
 ## The Problem
@@ -28,8 +31,12 @@ Limen closes this gap.
 
 ## What Limen Delivers
 
-- **Single graph definition, any target.** The same graph runs on a bare-metal
-  MCU or a multi-threaded server — zero application code changes.
+- **Single graph definition, any target.** Node and policy code is identical
+  across bare-metal MCU and multi-threaded server targets. Edge and memory
+  manager types must currently be switched between `no_std` and `std`
+  (concurrent) builds — a planned zero-lock edge and memory manager
+  ([ADR-013](docs/ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)) will
+  close this gap, enabling a single graph definition with zero code changes.
 - **Zero dynamic dispatch in the hot path.** All nodes and edges are
   monomorphized at compile time. No vtables, no heap required.
 - **Contract enforcement, not just observability.** Freshness, liveness,
@@ -72,11 +79,13 @@ GraphBuilder::new("MyPipeline", GraphVisibility::Public)
     .edge(Edge::new(0)
         .ty::<StaticRing<MessageToken, 8>>()
         .payload::<ImuFrame>()
+        .manager_ty::<StaticMemoryManager<ImuFrame, 8>>()
         .from(0, 0).to(1, 0)
         .policy(EdgePolicy::default()))
     .edge(Edge::new(1)
         .ty::<StaticRing<MessageToken, 4>>()
         .payload::<ActivityLabel>()
+        .manager_ty::<StaticMemoryManager<ActivityLabel, 4>>()
         .from(1, 0).to(2, 0)
         .policy(EdgePolicy::default()))
     .finish()
@@ -126,7 +135,11 @@ the memory model, node contracts, edge semantics, and graph execution flow.
 | `alloc` | Heap-backed queues, `Vec`-based batch paths |
 | `std` | Implies `alloc`. Concurrent queues, threaded runtimes, I/O sinks |
 
-The same graph definition compiles under all three configurations.
+Currently, `std` graphs require concurrent edge and memory manager types
+(`ConcurrentEdge`, `ConcurrentMemoryManager`), so a single graph definition
+does not yet compile across all configurations. A planned zero-lock edge and
+memory manager ([ADR-013](docs/ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md))
+will unify this.
 
 ---
 
@@ -177,22 +190,18 @@ See the full [Roadmap](docs/roadmap.md) for phased delivery to v0.1.0 and beyond
 
 ## Contributing
 
-Limen is currently in pre-release development. The repository will be made
-public alongside the v0.1.0 release.
-
-If you are interested in early access, collaboration, or have a use case you
-would like to discuss, please open an issue or reach out directly.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and the contributor
+licence agreement.
 
 ---
 
 ## Licence
 
-Licensed under either of:
+Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Unless required by applicable law or agreed to in writing, software distributed
+under this licence is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND. See the licence for details.
 
 ---
 

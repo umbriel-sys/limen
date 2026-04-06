@@ -100,7 +100,7 @@ sequenceDiagram
 | `HeapRing` | `alloc` | Heap-backed, bounded | Flexible capacity |
 | `ConcurrentEdge` | `std` | `Arc<Mutex<Q>>` wrapper | For `ScopedGraphApi` |
 | `Priority2<QHi, QLo>` | *(default)* | Composable | Two-lane QoS priority |
-| `SpscAtomicRing` | `spsc_raw` | Lock-free atomic | Unsafe, performance-critical |
+| `SpscAtomicRing` | `spsc_raw` | Lock-free atomic | **Incomplete stub.** Foundation for zero-lock concurrent edge (ADR-013). Will be updated or removed before release. |
 
 ### NoQueue
 
@@ -113,7 +113,7 @@ A future `AtomicRing<N>` will provide lock-free, `no_alloc` SPSC queueing
 using atomic head/tail pointers and raw pointers internally. This will allow
 a single edge type to work in both single-threaded and multi-threaded
 execution without `Arc` or `Mutex`. See
-[ADR-013](../ADRs/013_ZERO_LOCK_CONCURRENT_GRAPHS.md) for the full design.
+[ADR-013](../ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) for the full design.
 
 ---
 

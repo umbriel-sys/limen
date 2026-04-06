@@ -71,16 +71,21 @@ Used by `ScopedGraphApi` for multi-threaded execution. Each slot is
 independently locked via `RwLock<Message<P>>`, so reads on different tokens
 do not contend. The freelist is lock-free (atomic CAS).
 
-### Planned: Zero-Lock Concurrent Manager
+### Planned: Zero-Lock, Zero-Copy Concurrent Manager
 
 A future `no_alloc`, lock-free concurrent memory manager is planned. It will
 use raw pointers internally (safe external API, `unsafe` confined to the
 implementation) to provide true zero-lock concurrent access without `Arc` or
 `Mutex`. This will unify the single-threaded and multi-threaded code paths —
 a graph using this manager will run on both a bare-metal `no_std` runtime and
-a multi-threaded runtime without changing types. See
-[ADR-013](../ADRs/013_ZERO_LOCK_CONCURRENT_GRAPHS.md) for the full design
-rationale.
+a multi-threaded runtime without changing types.
+
+The unsafe memory manager will also enable true zero-copy processing — nodes
+can mutate payload data in place via `UnsafeCell<MaybeUninit<T>>` slot
+storage, eliminating store/free overhead for in-place transforms.
+
+See [ADR-013](../ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) for the
+full design rationale.
 
 ---
 

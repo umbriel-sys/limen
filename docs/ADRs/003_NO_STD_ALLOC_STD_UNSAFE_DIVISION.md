@@ -59,7 +59,10 @@ own feature flag. All other hot-path code is safe Rust.
 ## Consequences
 
 ### Positive
-- Same graph definition compiles under all three configurations.
+- Node and policy code compiles identically under all three configurations.
+  Edge and memory manager types must currently differ between `no_std` and `std`
+  (concurrent) builds — [ADR-013](013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)
+  will unify this.
 - CI matrix enforces correctness across the feature matrix.
 - Default build is safe, heap-free, and MCU-ready.
 
@@ -74,10 +77,10 @@ A planned zero-lock concurrent edge and memory manager will use raw pointers
 internally (`unsafe` confined to the implementation, safe external API) to
 enable `no_alloc` concurrent execution. This extends the `unsafe` confinement
 principle to a second sanctioned module while keeping the rest of the codebase
-safe. See [ADR-013](013_ZERO_LOCK_CONCURRENT_GRAPHS.md) for details.
+safe. See [ADR-013](013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) for details.
 
 ## Related ADRs
 
 - [ADR-001](001_WORKSPACE_STRUCTURE_CRATE_RESPONSIBILITIES.md) — crate isolation
 - [ADR-002](002_TRAIT_FIRST_ZERO_DYN_CONTRACTS.md) — zero dynamic dispatch
-- [ADR-013](013_ZERO_LOCK_CONCURRENT_GRAPHS.md) — zero-lock concurrent graphs
+- [ADR-013](013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) — zero-lock concurrent graphs

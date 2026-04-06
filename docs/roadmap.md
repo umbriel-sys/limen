@@ -43,7 +43,7 @@ Established the foundation for stable API evolution:
 Finalise what flows through the graph and how ports are addressed:
 
 - **C1 — Tensor-first currency.** Tensor and batch payloads as the primary
-  currency for ML workloads. Scalar shortcuts removed. Nearly complete.
+  currency for ML workloads. Scalar shortcuts removed. **Complete.**
 - **C2 — N-to-M node arity.** Port model with indexed inputs/outputs,
   optional input semantics, fan-in/fan-out support.
 - **R0a — MessageHeader baseline.** Lock `Timestamp` and `Duration` types,
@@ -137,8 +137,12 @@ All of the following must be satisfied:
   implementations.
 - Stability guarantees: semver compliance, deprecation policy.
 
-### Stretch Goals
+### Post v0.1.0 (Stretch Goals)
 
+- **Zero-lock concurrent graphs ([ADR-013](ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md))** —
+  lock-free edge and memory manager enabling a single graph type across all
+  execution models (no_std single-threaded, std multi-threaded, and no_std
+  multi-core).
 - Async node adapter for I/O-bound workloads.
 - Device memory transfer orchestration (Host ↔ GPU/NPU).
 - Dynamic graph reconfiguration (add/remove nodes at runtime).

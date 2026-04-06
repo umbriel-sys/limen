@@ -104,6 +104,10 @@ Rank-specific constructors are provided: `nhwc(n, h, w, c, data)`,
 - **`Batch<'a, P>`** — read-only slice of payloads for batch inference.
 - **`BatchView<'a, T>`** — iterator-like view over a contiguous batch of
   `MessageToken` handles, used by edges for batch pop operations.
+- **`BatchMessageIter<'edge, 'mgr, P, M>`** — lazy token-resolving iterator
+  that reads messages from a `MemoryManager` on demand. Used internally by
+  `step_batch` to iterate over batched tokens without copying all messages
+  up front.
 
 Batch boundaries are signalled via `MessageFlags::FIRST_IN_BATCH` and
 `LAST_IN_BATCH` in the message header. The `BatchingPolicy` in `NodePolicy`

@@ -24,6 +24,11 @@ pub enum NodeKind {
 }
 ```
 
+> **Note:** `NodeKind` and `NodeCapabilities` are not yet finalised. Some
+> variants (e.g., `Split`, `Join`, `External`) are legacy placeholders and
+> currently unused. These will be finalised in the run-up to v0.1.0 as part
+> of C2 (N-to-M arity) and C3 (trait stabilisation).
+
 ---
 
 ## Node Trait

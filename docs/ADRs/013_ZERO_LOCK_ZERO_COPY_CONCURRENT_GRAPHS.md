@@ -1,4 +1,4 @@
-# ADR-013: Zero-Lock Concurrent Graphs
+# ADR-013: Zero-Lock, Zero-Copy Concurrent Graphs
 
 **Status:** Proposed
 **Date:** 2026-04-03
@@ -33,6 +33,9 @@ Introduce a new edge implementation and memory manager that are:
 - **`no_alloc`** — fixed-size, stack-allocatable, no heap.
 - **Lock-free** — use atomic operations and raw pointers for concurrent access.
   No `Arc`, no `Mutex`, no `RwLock`.
+- **Zero-copy** — slot storage uses `UnsafeCell<MaybeUninit<T>>`, enabling
+  nodes to mutate payload data in place without store/free overhead. True
+  zero-copy processing for the entire graph.
 - **Internally `unsafe`, externally safe** — the `unsafe` is confined to the
   implementation module (same principle as `spsc_raw`). The public API is safe.
 - **Unified** — the same edge and manager types work in both single-threaded
@@ -45,16 +48,25 @@ Introduce a new edge implementation and memory manager that are:
 - Fixed-capacity ring buffer of `MessageToken` using atomic head/tail pointers.
 - Single-producer, single-consumer (SPSC) — no need for MPMC complexity since
   each edge connects exactly one output port to one input port.
-- Raw pointer to the backing `[MaybeUninit<MessageToken>; N]` array, enabling
-  both owned and borrowed access patterns.
-- Implements both `Edge` and `ScopedEdge` — the scoped handle is a raw pointer
+- Backing storage is `[UnsafeCell<MaybeUninit<MessageToken>>; N]` — `UnsafeCell`
+  permits interior mutability without a lock, while `MaybeUninit` avoids
+  requiring `Default` or initialising unused slots.
+- Implements both `Edge` and `ScopedEdge` — the scoped handle is a pointer
   to the same ring, valid for the lifetime of the scoped thread.
 
 **Lock-Free Memory Manager (`AtomicMemoryManager<P, DEPTH>`):**
 - Fixed-capacity slot array with atomic per-slot state (Free/Occupied/Reading).
+- Slot storage is `[UnsafeCell<MaybeUninit<Message<P>>>; DEPTH]`:
+  - `UnsafeCell` enables zero-copy in-place mutation — nodes can transform
+    payload data directly in the slot without a store/free round-trip.
+  - `MaybeUninit` avoids requiring `Default` on `P` and eliminates
+    initialisation cost for unused slots.
 - Lock-free freelist using atomic CAS on a stack head pointer.
 - Read access returns a guard that atomically transitions the slot from
   Occupied to Reading and back on drop — no `RwLock`.
+- Write/mutate access returns a guard that provides `&mut Message<P>` via
+  the `UnsafeCell`, enabling true zero-copy processing for in-place
+  transforms.
 - `HeaderStore` implementation uses the same atomic state machine for
   header-only access.
 
@@ -143,6 +155,8 @@ a new `AsyncNode` trait or a generator-based extension to `StepContext`.
   `AtomicMemoryManager` compiles and runs correctly on a single-threaded
   `no_std` runtime, a multi-threaded `std` runtime, and a multi-core `no_std`
   runtime — with zero type changes.
+- **True zero-copy.** `UnsafeCell<MaybeUninit<T>>` slot storage allows nodes
+  to mutate data in place for the whole graph, eliminating store/free overhead.
 - **No lock contention.** SPSC atomic ring buffers have no contention by
   design (one producer, one consumer). The memory manager uses per-slot atomic
   state instead of locks.

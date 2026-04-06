@@ -41,7 +41,7 @@ checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
 name = "limen-build"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-codegen",
  "proc-macro2",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "limen-codegen"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-core",
  "prettyplease",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "limen-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "heapless",
  "libc",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "limen-examples"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-build",
  "limen-codegen",
@@ -82,21 +82,21 @@ dependencies = [
 
 [[package]]
 name = "limen-node"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-core",
 ]
 
 [[package]]
 name = "limen-platform"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-core",
 ]
 
 [[package]]
 name = "limen-runtime"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "limen-core",
 ]

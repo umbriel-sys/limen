@@ -1,9 +1,11 @@
 # Limen Documentation
 
 Limen is a Rust framework for portable, contract-enforcing computation graphs
-targeting AI-enabled embedded systems. It runs the same graph definition —
-unchanged — from bare-metal `no_std` microcontrollers to multi-threaded Linux
-servers.
+targeting AI-enabled embedded systems. Node and policy code is identical from
+bare-metal `no_std` microcontrollers to multi-threaded Linux servers. Edge and
+memory manager types must currently be switched between targets — a planned
+zero-lock implementation ([ADR-013](ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md))
+will close this gap.
 
 ---
 
@@ -59,7 +61,7 @@ considered, and consequences.
 | [010](ADRs/010_RUNTIME_CONTRACT.md) | Runtime contract |
 | [011](ADRs/011_BATCH_SEMANTICS.md) | Batch semantics |
 | [012](ADRs/012_ROBOTICS_READINESS.md) | Robotics readiness primitives |
-| [013](ADRs/013_ZERO_LOCK_CONCURRENT_GRAPHS.md) | Zero-lock concurrent graphs |
+| [013](ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md) | Zero-lock, zero-copy concurrent graphs |
 
 ---
 

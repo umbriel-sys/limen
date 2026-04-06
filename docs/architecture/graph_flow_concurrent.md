@@ -16,7 +16,7 @@ sequenceDiagram
     participant W1 as Worker 1<br/>(Model)
     participant W2 as Worker 2<br/>(Sink)
     participant SCH as WorkerScheduler
-    participant CE as ConcurrentEdge<br/>(Arc<Mutex<Q>>)
+    participant CE as ConcurrentEdge
     participant CMM as ConcurrentMemoryManager<br/>(per-slot RwLock)
     participant STOP as RuntimeStopHandle
 
@@ -76,9 +76,10 @@ accessing shared graph state.
 
 ### ConcurrentEdge
 
-`ConcurrentEdge` wraps any `Edge` implementation in `Arc<Mutex<Q>>`. The
-`ScopedEdge` trait produces `Handle` instances (producer or consumer) that
-are `Send` and safe to use across scoped threads.
+`ConcurrentEdge` implements the `Edge` trait directly with `Arc<Mutex<...>>`
+internals for thread safety. The `ScopedEdge` trait produces `Handle`
+instances (producer or consumer) that are `Send` and safe to use across scoped
+threads.
 
 ### ConcurrentMemoryManager
 
@@ -147,6 +148,14 @@ Shared (Clone)
 | Allocation | Zero (stack only) | Heap (Arc, Vec, RwLock) |
 | Stop mechanism | `is_stopping()` flag | `RuntimeStopHandle` (cross-thread) |
 | Graph access | `&mut Graph` | `OwnedBundle` (decomposed) |
+
+### Future: Unified Execution (ADR-013)
+
+With [ADR-013](../ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)
+(zero-lock, zero-copy edge and memory manager), the two execution models will
+converge. A single edge and memory manager type will work across both
+single-threaded and concurrent flows, eliminating the need to switch types
+between `no_std` and `std` targets.
 
 ---
 

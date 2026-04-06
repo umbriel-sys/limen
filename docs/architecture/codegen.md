@@ -94,6 +94,11 @@ graph LR
 Validation errors are reported as `CodegenError::Validate` with a descriptive
 message identifying the offending node/edge.
 
+> **Current limitation:** All inbound edges to a node must share a single
+> payload type, and all outbound edges must share a single payload type. This
+> constraint is planned to be relaxed if possible in future versions (see
+> C2 — N-to-M arity).
+
 ---
 
 ## Generated Items
@@ -109,13 +114,16 @@ For a graph `pub struct MyGraph`:
 | `impl GraphNodeTypes<I, IN, OUT>` | Payload, queue, and manager type association |
 | `impl GraphNodeContextBuilder<I, IN, OUT>` | StepContext factory |
 
-With `concurrent;` in the DSL (or `.concurrent(true)` in the builder):
+With `concurrent;` in the DSL (or `.concurrent(true)` in the builder), the
+following items are generated **in addition to** the base `GraphApi`
+implementation — the concurrent variant is an extension, not an alternative:
 
 | Item | Description |
 |---|---|
 | `impl ScopedGraphApi<N, E>` | Concurrent execution via scoped threads |
 | `enum OwnedBundle` | Safe per-node data bundle for thread handoff |
 
+Both the base and concurrent items are available in the same generated file.
 The concurrent items are gated behind `#[cfg(feature = "std")]`.
 
 ---

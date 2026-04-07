@@ -13,6 +13,22 @@
 
 ---
 
+## Quickstart: Run an Example Pipeline
+
+```bash
+# no_std single-threaded runtime (default features)
+cargo test -p limen-examples -- codegen_core_pipeline_runs_with_nostd_runtime --nocapture
+
+# std multi-threaded runtime (concurrent queues, scoped threads)
+cargo test -p limen-examples --features std -- codegen_std_pipeline_runs_with_std_runtime --nocapture
+```
+
+Both tests build a three-node **Source → Model → Sink** pipeline from a
+codegen-generated graph, wire it to a runtime, and step it through several
+iterations. `--nocapture` prints edge occupancies and telemetry to stdout.
+
+---
+
 ## Building
 
 ```bash

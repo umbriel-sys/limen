@@ -23,10 +23,12 @@ have received permission to submit it under these terms.
 ## 3. Relicensing
 
 You agree that your contributions may be distributed under the current project
-licence (Apache Licence, Version 2.0), as well as under other licences
-determined by the project copyright holder(s). This right ensures the project
-can evolve its licensing terms as needed for sustainability, including
-dual-licensing for commercial use.
+licence (Apache Licence, Version 2.0), as well as under alternative or
+dual-licensing models where appropriate.
+
+This flexibility ensures the long-term sustainability of the project,
+including the ability to support commercial use, funding, and broader
+adoption, while maintaining an open and accessible core.
 
 ## 4. No Obligation
 

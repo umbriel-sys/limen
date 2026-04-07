@@ -1,18 +1,21 @@
 # Limen
 
-> **Portable, contract-enforcing computation graphs for AI-enabled embedded systems — from bare-metal microcontrollers to multi-threaded servers, in safe Rust.**
+> **Portable, contract-enforcing computation graphs for AI-enabled embedded
+> systems — from bare-metal microcontrollers to multi-threaded servers, in
+> safe Rust.**
 
-> **Alpha Notice:** Limen is in active pre-release development. Contracts and
-> APIs may change without notice before v0.1.0.
+> **Alpha release.** Core contracts, code generator, and integration-tested
+> runtimes are functional. APIs may change before v0.1.0.
 
 ---
 
 ## The Problem
 
-Building AI-enabled robotics and edge computing systems today means rebuilding
-the same software pipeline for every hardware target. A perception-inference-actuation
-pipeline written for a Cortex-M4 cannot run on a Raspberry Pi or a server without
-substantial rework — despite implementing identical logic.
+Building AI-enabled robotics and edge computing systems today means
+rebuilding the same software pipeline for every hardware target. A
+perception-inference-actuation pipeline written for a Cortex-M4 cannot run
+on a Raspberry Pi or a server without substantial rework — despite
+implementing identical logic.
 
 No existing framework bridges this gap:
 
@@ -31,10 +34,10 @@ Limen closes this gap.
 
 ## What Limen Delivers
 
-- **Single graph definition, any target.** Node and policy code is identical
-  across bare-metal MCU and multi-threaded server targets. Edge and memory
-  manager types must currently be switched between `no_std` and `std`
-  (concurrent) builds — a planned zero-lock edge and memory manager
+- **Single graph definition, any target.** Node logic and policies are
+  identical across bare-metal MCU and multi-threaded server targets. Edge
+  and memory manager types must currently be switched between `no_std` and
+  `std` builds; a planned zero-lock edge and memory manager
   ([ADR-013](docs/ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md)) will
   close this gap, enabling a single graph definition with zero code changes.
 - **Zero dynamic dispatch in the hot path.** All nodes and edges are
@@ -43,18 +46,40 @@ Limen closes this gap.
   criticality, and backpressure are runtime-enforced policies — not logging
   conveniences.
 - **Inference as a first-class citizen.** A `ComputeBackend` trait abstracts
-  TFLite Micro on MCU and Tract on desktop behind the same model node, within
-  the same graph.
-- **Safe Rust throughout.** No `unsafe` in the hot path. Memory safety without
-  a garbage collector.
-- **Codegen removes all boilerplate.** Describe your graph in `build.rs` or a
-  proc-macro; the framework generates fully type-safe wiring at build time.
+  TFLite Micro on MCU and Tract on desktop behind the same model node.
+- **Safe Rust throughout.** No `unsafe` in the hot path. Memory safety
+  without a garbage collector.
+- **Codegen removes all boilerplate.** Describe your graph in `build.rs` or
+  a proc-macro; the framework generates fully type-safe wiring at build time.
 
 ---
 
-## Quick Example
+## Quickstart
 
-Define a three-node pipeline (sensor → inference → output) in your build script:
+**Prerequisites:** Rust stable toolchain. No external dependencies.
+
+```bash
+# Clone and enter the repository
+git clone https://github.com/idky137/limen.git
+cd limen
+
+# Run the no_std single-threaded pipeline
+cargo test -p limen-examples -- codegen_core_pipeline_runs_with_nostd_runtime --nocapture
+
+# Run the std multi-threaded pipeline (concurrent queues, scoped threads)
+cargo test -p limen-examples --features std -- codegen_std_pipeline_runs_with_std_runtime --nocapture
+```
+
+Both tests build a three-node **Source → Model → Sink** pipeline from a
+codegen-generated graph, wire it to a runtime, and step it through several
+iterations. `--nocapture` prints edge occupancies and telemetry to stdout.
+
+---
+
+## Example: Define a Graph
+
+A three-node pipeline (sensor → inference → output) defined in a build
+script:
 
 ```rust
 // build.rs
@@ -104,31 +129,16 @@ runtime.init(&mut graph, clock, telemetry).unwrap();
 runtime.run(&mut graph).unwrap();
 ```
 
-Same graph. Same policies. `NoAllocRuntime` on a Cortex-M4. `ThreadedRuntime`
-on Linux. No code changes.
+Same node logic. Same policies. `NoAllocRuntime` on a Cortex-M4.
+`ThreadedRuntime` on Linux. Only edge and memory manager types differ
+between targets today — ADR-013 will unify these.
 
 ---
 
-## Quickstart: Run an Example Pipeline
+## Architecture
 
-```bash
-# no_std single-threaded runtime (default features)
-cargo test -p limen-examples -- codegen_core_pipeline_runs_with_nostd_runtime --nocapture
-
-# std multi-threaded runtime (concurrent queues, scoped threads)
-cargo test -p limen-examples --features std -- codegen_std_pipeline_runs_with_std_runtime --nocapture
-```
-
-Both tests build a three-node **Source → Model → Sink** pipeline from a
-codegen-generated graph, wire it to a runtime, and step it through several
-iterations. `--nocapture` prints edge occupancies and telemetry to stdout.
-
----
-
-## Architecture at a Glance
-
-Limen is organised as a layered workspace where the core contract crate owns
-no implementations — runtimes, platforms, and backends are all downstream:
+Limen is organised as a layered workspace. The core contract crate owns no
+implementations — runtimes, platforms, and backends are all downstream:
 
 | Crate | Role |
 |---|---|
@@ -140,9 +150,6 @@ no implementations — runtimes, platforms, and backends are all downstream:
 | `limen-build` | Proc-macro wrapper for `limen-codegen` |
 | `limen-examples` | Integration tests and cross-platform examples |
 
-See the [Architecture Guide](docs/architecture/index.md) for a deep dive into
-the memory model, node contracts, edge semantics, and graph execution flow.
-
 ### Feature Flags
 
 | Flag | Enables |
@@ -151,45 +158,44 @@ the memory model, node contracts, edge semantics, and graph execution flow.
 | `alloc` | Heap-backed queues, `Vec`-based batch paths |
 | `std` | Implies `alloc`. Concurrent queues, threaded runtimes, I/O sinks |
 
-Currently, `std` graphs require concurrent edge and memory manager types
-(`ConcurrentEdge`, `ConcurrentMemoryManager`), so a single graph definition
-does not yet compile across all configurations. A planned zero-lock edge and
-memory manager ([ADR-013](docs/ADRs/013_ZERO_LOCK_ZERO_COPY_CONCURRENT_GRAPHS.md))
-will unify this.
+See the [Architecture Guide](docs/architecture/index.md) for a deep dive
+into the memory model, node contracts, edge semantics, and graph execution
+flow.
 
 ---
 
-## Current Status
+## Status
 
 Limen has been in active development for seven months.
 
 **Complete:**
-
-- Core contract layer — edges, nodes, messages, policies, graph API, telemetry
+- Core contract layer — edges, nodes, messages, policies, graph API,
+  telemetry
 - Multiple SPSC queue implementations with conformance test suite
 - Source, Sink, and InferenceModel node adapters
 - Code generator (build-script and proc-macro) with full graph validation
 - `no_std` and `std` graph variants generated from the same definition
 - Token-based zero-copy memory model with three manager implementations
-- Integration-tested runtimes: single-threaded (`no_std`) and scoped-thread (`std`)
+- Integration-tested runtimes: single-threaded (`no_std`) and scoped-thread
+  (`std`)
 - `GraphTelemetry` with fixed-buffer and I/O writer sinks
 - Linux monotonic clock implementation
 
 **In progress:**
-
-- Robotics primitives — freshness, liveness, criticality, urgency, mailbox semantics
+- Robotics primitives — freshness, liveness, criticality, urgency, mailbox
+  semantics
 - N-to-M node arity and optional input ports
 - Platform backend finalisation
 - Production `NoAllocRuntime` with full policy enforcement
 
 **Planned:**
-
 - TFLite Micro backend (Cortex-M4)
 - Tract backend (desktop/server)
 - Raspberry Pi and Cortex-M4 platform implementations
 - Cross-platform IMU activity recognition example
 
-See the full [Roadmap](docs/roadmap.md) for phased delivery to v0.1.0 and beyond.
+See the full [Roadmap](docs/roadmap.md) for phased delivery to v0.1.0 and
+beyond.
 
 ---
 
@@ -199,8 +205,23 @@ See the full [Roadmap](docs/roadmap.md) for phased delivery to v0.1.0 and beyond
 |---|---|
 | [Architecture Guide](docs/architecture/index.md) | System design, memory model, execution flow |
 | [Decision Records](docs/ADRs/) | Rationale behind key design decisions |
-| [Roadmap](docs/roadmap.md) | Phased plan to v1 and stretch goals |
+| [Roadmap](docs/roadmap.md) | Phased plan to v0.1.0 and stretch goals |
 | [Development Guide](docs/dev_guide.md) | Building, testing, and contributing |
+
+---
+
+## Licensing and IP
+
+Limen is released under the Apache License, Version 2.0
+([LICENSE-APACHE](LICENSE-APACHE)).
+
+The project is developed and owned by its original author. Contributions
+are accepted under a Contributor Licence Agreement (CLA), which ensures
+the project can be maintained, evolved, and (if necessary) dual-licensed
+for commercial use.
+
+The goal is to keep Limen broadly accessible while retaining the ability
+to support long-term sustainability and real-world deployment.
 
 ---
 
@@ -211,18 +232,7 @@ licence agreement.
 
 ---
 
-## Licence
+*Limen — the threshold between the graph you define and the hardware it
+runs on.*
 
-Licensed under the Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)).
-
-Unless required by applicable law or agreed to in writing, software distributed
-under this licence is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-CONDITIONS OF ANY KIND. See the licence for details.
-
----
-
-*Limen — the threshold between the graph you define and the hardware it runs on.*
-
----
-
-Copyright © 2025–present Arlo Louis Byrne (idky137)
+Copyright &copy; 2025–present Arlo Louis Byrne (idky137)

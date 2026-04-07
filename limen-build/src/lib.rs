@@ -1,3 +1,9 @@
+// Copyright © 2025–present Arlo Louis Byrne (idky137)
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0.
+// See the LICENSE-APACHE file in the project root for license terms.
+
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 //! # limen-build — proc-macro front for `limen-codegen`

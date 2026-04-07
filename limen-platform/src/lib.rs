@@ -1,3 +1,9 @@
+// Copyright © 2025–present Arlo Louis Byrne (idky137)
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0.
+// See the LICENSE-APACHE file in the project root for license terms.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]

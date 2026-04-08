@@ -15,7 +15,7 @@ jobs:
         profile: [no-default-features, alloc, std, spsc_raw]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
@@ -23,7 +23,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -36,30 +36,40 @@ jobs:
       - name: Rustfmt check
         run: cargo fmt --all -- --check
 
-      - name: Build, test & clippy (no-default-features)
+      - name: Build, test, clippy & doc (no-default-features)
         if: matrix.profile == 'no-default-features'
         run: |
           cargo build --all --no-default-features --all-targets --verbose
           cargo test --all --no-default-features --all-targets --verbose
           cargo clippy --all --no-default-features -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --no-default-features
 
-      - name: Build, test & clippy (alloc)
+      - name: Build, test, clippy & doc (alloc)
         if: matrix.profile == 'alloc'
         run: |
           cargo build --all --features alloc --all-targets --verbose
           cargo test  --all --features alloc --all-targets --verbose
           cargo clippy --all --features alloc -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features alloc
 
-      - name: Build, test & clippy (std)
+      - name: Build, test, clippy & doc (std)
         if: matrix.profile == 'std'
         run: |
           cargo build --all --features std --all-targets --verbose
           cargo test  --all --features std --all-targets --verbose
           cargo clippy --all --features std -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features std
 
-      - name: Build, test & clippy (spsc_raw)
+      - name: Build, test, clippy & doc (spsc_raw)
         if: matrix.profile == 'spsc_raw'
         run: |
           cargo build --all --features spsc_raw --all-targets --verbose
           cargo test  --all --features spsc_raw --all-targets --verbose
           cargo clippy --all --features spsc_raw -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features spsc_raw
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2

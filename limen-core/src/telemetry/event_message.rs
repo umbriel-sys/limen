@@ -6,7 +6,7 @@
 //! newline characters. Violations detected in a `const` context produce
 //! compile-time errors.
 //!
-//! The accompanying [`event_message!`] macro guarantees that all validation
+//! The accompanying `event_message!` macro guarantees that all validation
 //! happens during compilation, even when invoked inside non-const functions.
 //! When compiled successfully, an `EventMessage` is represented and used at
 //! runtime with **no overhead**, making it as efficient as a bare `&'static str`.
@@ -27,7 +27,7 @@
 /// - The message must not exceed [`EventMessage::MAX_LEN`] bytes.
 /// - The message must not contain newline characters (`'\n'` or `'\r'`).
 ///
-/// When constructed using the accompanying [`event_message!`] macro, all
+/// When constructed using the accompanying `event_message!` macro, all
 /// validation is **guaranteed to occur at compile time**, ensuring:
 ///
 /// - **Zero runtime cost** (no loops, no checks, no panics).
@@ -52,9 +52,9 @@
 /// - Using `EventMessage::new` inside a `const` context performs validation at
 ///   compile time.
 /// - Using `EventMessage::new` at runtime may incur runtime checking cost.
-/// - Using the [`event_message!`] macro **always** validates at compile time.
+/// - Using the `event_message!` macro **always** validates at compile time.
 ///
-/// Prefer [`event_message!`] for maximal performance and strictness.
+/// Prefer `event_message!` for maximal performance and strictness.
 ///
 /// # Examples
 ///
@@ -129,7 +129,7 @@ impl EventMessage {
     /// - Validation executes at runtime.
     /// - Violations cause a runtime panic.
     ///
-    /// For most usage, the [`event_message!`] macro ensures compile-time
+    /// For most usage, the `event_message!` macro ensures compile-time
     /// validation in all cases.
     pub const fn new(s: &'static str) -> Self {
         let bytes = s.as_bytes();

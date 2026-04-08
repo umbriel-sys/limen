@@ -251,7 +251,7 @@ impl EdgeIndex {
 
 // ***** Memory *****
 
-/// A lightweight handle to a message stored in a [`MemoryManager`].
+/// A lightweight handle to a message stored in a [`MemoryManager`](crate::memory::manager::MemoryManager).
 ///
 /// Edges carry `MessageToken` values instead of full `Message<P>` payloads.
 /// The token is an index into a manager's slot array. Tokens are `Copy`,

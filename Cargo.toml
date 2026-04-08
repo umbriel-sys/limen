@@ -12,11 +12,15 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.81"
 license = "Apache-2.0"
-license-file = "LICENSE-APACHE"
 authors = ["Arlo Louis Byrne (idky137) <arlo@umbriel-systems.com>"]
 repository = "https://github.com/idky137/limen"
+homepage = "https://github.com/idky137/limen"
+documentation = "https://docs.rs/limen-core"
 readme = "README.md"
+keywords = ["embedded", "inference", "runtime", "no-std", "graph"]
+categories = ["embedded", "no-std::no-alloc", "science::robotics"]
 
 [workspace.dependencies]
 # Internal crates

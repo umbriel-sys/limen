@@ -15,9 +15,9 @@
 //! Submodules:
 //! - [`source`] — [`SourceNode`](source::SourceNode) trait for 0-input nodes.
 //! - [`sink`] — [`SinkNode`](sink::SinkNode) trait for 0-output nodes.
-//! - [`model`] — [`ModelNode`](model::ModelNode) trait for inference nodes.
-//! - [`link`] — [`NodeLink`] and [`NodeDescriptor`](link::NodeDescriptor) wiring helpers.
-//! - [`bench`] — test nodes (`bench` / `test` feature).
+//! - [`model`] — [`InferenceModel`](model::InferenceModel) adapter for inference nodes.
+//! - [`link`] — [`NodeLink`](link::NodeLink) and [`NodeDescriptor`](link::NodeDescriptor) wiring helpers.
+//! - `bench` — test nodes (`bench` / `test` feature).
 
 pub mod link;
 pub mod model;

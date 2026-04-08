@@ -3,12 +3,13 @@
 //! Importing `limen_core::prelude::*` brings all public surface into scope,
 //! gated by the same feature flags as the source modules:
 //!
-//! - (default / `no_std`) — [`Edge`], [`SpscArrayQueue`], [`StaticMemoryManager`],
-//!   [`Tensor`], [`Batch`], [`Node`], [`GraphApi`], [`PlatformClock`], policy types, etc.
-//! - `alloc` — [`HeapMemoryManager`], [`SpscVecDeque`].
-//! - `std` — [`ConcurrentMemoryManager`], [`ConcurrentEdge`], [`ScopedEdge`],
-//!   [`ScopedGraphApi`], concurrent telemetry.
-//! - `spsc_raw` — [`SpscRawQueue`].
+//! - (default / `no_std`) — [`Edge`], [`StaticRing`], [`StaticMemoryManager`],
+//!   [`Tensor`], [`Batch`], [`Node`], [`GraphApi`],
+//!   [`PlatformClock`], policy types, etc.
+//! - `alloc` — `HeapMemoryManager`, `HeapRing`.
+//! - `std` — `ConcurrentMemoryManager`, `ConcurrentEdge`, `ScopedEdge`,
+//!   `ScopedGraphApi`, concurrent telemetry.
+//! - `spsc_raw` — `SpscAtomicRing`.
 //! - `bench` / `test` — test nodes, test edges, test graph, test runtime.
 
 pub use crate::edge::{

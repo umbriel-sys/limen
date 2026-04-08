@@ -12,8 +12,8 @@
 //! - [`header_store`] — [`HeaderStore`](header_store::HeaderStore) supertrait for payload-agnostic header access.
 //! - [`manager`] — [`MemoryManager`](manager::MemoryManager) typed storage interface.
 //! - [`static_manager`] — `no_std`/`no_alloc` fixed-capacity implementation.
-//! - [`heap_manager`] (`alloc`) — heap-backed fixed-capacity implementation.
-//! - [`concurrent_manager`] (`std`) — lock-free freelist + per-slot `RwLock` implementation.
+//! - `heap_manager` (`alloc`) — heap-backed fixed-capacity implementation.
+//! - `concurrent_manager` (`std`) — lock-free freelist + per-slot `RwLock` implementation.
 
 pub mod header_store;
 pub mod manager;
@@ -207,7 +207,7 @@ impl PlacementAcceptance {
 
 /// A descriptor of a buffer/payload view for size accounting.
 ///
-/// Memory class information is now owned by the [`MemoryManager`] rather than
+/// Memory class information is now owned by the [`manager::MemoryManager`] rather than
 /// the payload itself — see `MemoryManager::memory_class()`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

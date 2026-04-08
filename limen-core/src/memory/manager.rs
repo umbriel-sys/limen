@@ -26,7 +26,7 @@
 //! - [`MemoryManager::memory_class`]
 //!
 //! Shared header access is provided separately through the
-//! [`HeaderStore`](crate::memory::header_store::HeaderStore) supertrait.
+//! [`HeaderStore`] supertrait.
 //!
 //! # Guard-based borrows
 //!
@@ -204,7 +204,7 @@ pub trait MemoryManager<P: Payload>: HeaderStore {
     /// - [`MemoryError::BadToken`] if `token` is invalid;
     /// - [`MemoryError::NotAllocated`] if the slot is already empty;
     /// - [`MemoryError::BorrowActive`] if the slot still has active borrows;
-    /// - [`MemoryError::QueueOwned`] if the implementation tracks queue
+    /// - `MemoryError::QueueOwned` if the implementation tracks queue
     ///   ownership internally and the token is still considered live in one or
     ///   more queues;
     /// - [`MemoryError::Poisoned`] if a concurrent implementation encounters a

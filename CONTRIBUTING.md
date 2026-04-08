@@ -7,11 +7,10 @@ to contribute and the terms under which contributions are accepted.
 
 ## Getting Started
 
-Limen is currently in pre-release development. The repository will be made
-public alongside the v0.1.0 release.
+Limen is in alpha. The repository is public and contributions are welcome.
 
-If you are interested in early access, collaboration, or have a use case you
-would like to discuss, please open an issue or reach out directly.
+If you have a use case you would like to discuss or would like to collaborate,
+please open an issue or reach out directly.
 
 ### Development Setup
 

@@ -6,7 +6,7 @@
 //! how many of the `N` slots are in use; the shape array `[usize; R]` records
 //! the logical dimensions.
 //!
-//! Use [`TensorRef<T, R>`] for a borrowed, zero-copy view into an existing
+//! Use `&Tensor<T, N, R>` for a borrowed, zero-copy view into an existing
 //! buffer (e.g. a frame from a DMA ring).
 
 use core::mem;

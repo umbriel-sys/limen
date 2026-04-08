@@ -3,10 +3,19 @@ name = "limen-runtime"
 description = "Limen runtime implementations and schedulers."
 version = "0.1.0-alpha.1"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-license-file.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/limen-runtime"
+readme.workspace = true
 authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []

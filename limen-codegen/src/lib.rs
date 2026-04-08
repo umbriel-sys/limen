@@ -332,7 +332,7 @@ pub enum CodegenError {
     Pretty(String),
 }
 
-/// Validate and emit Rust code from a typed [`ast::GraphDef`].
+/// Validate and emit Rust code from a typed `ast::GraphDef`.
 ///
 /// This is the low-level entry used by [`builder::GraphBuilder`] after it has
 /// constructed the AST programmatically.  The graph is validated before emission;
@@ -462,7 +462,7 @@ pub fn expand_str_to_file<P: AsRef<Path>>(spec: &str, dest: P) -> Result<PathBuf
     write_tokens_pretty_or_raw(&tokens, dest)
 }
 
-/// Validate, emit, pretty-print, and **write** a typed [`ast::GraphDef`] to `dest`.
+/// Validate, emit, pretty-print, and **write** a typed `ast::GraphDef` to `dest`.
 ///
 /// Combines [`expand_ast_to_tokens`] with [`write_tokens_pretty_or_raw`].
 /// Parent directories are created if needed.

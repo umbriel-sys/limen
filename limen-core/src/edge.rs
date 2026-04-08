@@ -4,7 +4,7 @@
 //! [`MessageToken`] handles rather than full messages; actual message data
 //! lives in a [`MemoryManager`](crate::memory::manager::MemoryManager).
 //! Header metadata needed for admission and batching is accessed through a
-//! [`HeaderStore`](crate::memory::header_store::HeaderStore) parameter —
+//! [`HeaderStore`] parameter —
 //! statically dispatched, no `dyn`.
 //!
 //! Key types:
@@ -12,10 +12,10 @@
 //! - [`EdgeOccupancy`] — occupancy snapshot used for scheduling and telemetry.
 //! - [`EnqueueResult`] — outcome of a push attempt.
 //! - [`NoQueue`] — a no-op placeholder for unconnected ports.
-//! - [`ScopedEdge`] (`std`) — factory for per-worker handles in concurrent execution.
+//! - `ScopedEdge` (`std`) — factory for per-worker handles in concurrent execution.
 //!
-//! Implementations: [`spsc_array`] (`no_std`), [`spsc_vecdeque`] (`alloc`),
-//! [`spsc_concurrent`] (`std`), [`spsc_priority2`], [`spsc_raw`] (`spsc_raw` feature).
+//! Implementations: [`spsc_array`] (`no_std`), `spsc_vecdeque` (`alloc`),
+//! `spsc_concurrent` (`std`), [`spsc_priority2`], `spsc_raw` (`spsc_raw` feature).
 
 use crate::errors::QueueError;
 use crate::message::Message;
@@ -272,10 +272,10 @@ pub trait ScopedEdge: Edge {
 /// - `P`: Payload type of the [`Message`] carried by this queue.
 ///
 /// # Behavior
-/// - [`SpscQueue::try_push`] always returns [`EnqueueResult::Rejected`].
-/// - [`SpscQueue::try_pop`] always returns [`QueueError::Empty`].
-/// - [`SpscQueue::try_peek`] always returns [`QueueError::Empty`].
-/// - [`SpscQueue::occupancy`] always reports zero items, zero bytes, and
+/// - [`Edge::try_push`] always returns [`EnqueueResult::Rejected`].
+/// - [`Edge::try_pop`] always returns [`QueueError::Empty`].
+/// - [`Edge::try_peek`] always returns [`QueueError::Empty`].
+/// - [`Edge::occupancy`] always reports zero items, zero bytes, and
 ///   [`WatermarkState::AtOrAboveHard`] (fully saturated, disallowing admission).
 pub struct NoQueue;
 

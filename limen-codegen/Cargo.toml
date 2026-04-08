@@ -3,10 +3,19 @@ name = "limen-codegen"
 description = "Reusable code generator for Limen graphs (proc-macro and build.rs compatible)."
 version = "0.1.0-alpha.1"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-license-file.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/limen-codegen"
+readme.workspace = true
 authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 limen-core = { workspace = true }

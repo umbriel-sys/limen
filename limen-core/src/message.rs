@@ -11,8 +11,8 @@
 //!
 //! Submodules:
 //! - [`payload`] — the [`Payload`] trait and blanket impls for slices/arrays/scalars.
-//! - [`tensor`] — owned, fixed-capacity, `no_std`/`no_alloc` [`Tensor`] type.
-//! - [`batch`] — [`Batch`] view, [`BatchView`] container, and [`BatchMessageIter`].
+//! - [`tensor`] — owned, fixed-capacity, `no_std`/`no_alloc` [`Tensor`](tensor::Tensor) type.
+//! - [`batch`] — [`Batch`](batch::Batch) view, [`BatchView`](batch::BatchView) container, and [`BatchMessageIter`](batch::BatchMessageIter).
 
 pub mod batch;
 pub mod payload;

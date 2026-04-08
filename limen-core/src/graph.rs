@@ -5,14 +5,14 @@
 //!
 //! Key traits:
 //! - [`GraphApi`] — top-level entry point; step + occupancy sampling.
-//! - [`ScopedGraphApi`] (`std`) — concurrent variant with scoped worker threads.
+//! - `ScopedGraphApi` (`std`) — concurrent variant with scoped worker threads.
 //! - [`GraphNodeAccess<I>`] / [`GraphEdgeAccess<E>`] — compile-time indexed access.
 //! - [`GraphNodeTypes<I, IN, OUT>`] — per-node payload and queue type associations.
-//! - [`GraphNodeContextBuilder<I, IN, OUT>`] — factory for [`StepContext`](crate::node::StepContext).
+//! - [`GraphNodeContextBuilder<I, IN, OUT>`] — factory for [`StepContext`].
 //!
 //! Submodules:
-//! - [`validate`] — [`GraphValidator`](validate::GraphValidator) and [`GraphDescBuf`](validate::GraphDescBuf) for descriptor validation.
-//! - [`bench`] — test graphs (`bench` / `test` feature).
+//! - [`validate`] — [`GraphValidator`] and [`GraphDescBuf`] for descriptor validation.
+//! - `bench` — test graphs (`bench` / `test` feature).
 
 pub mod validate;
 
@@ -385,7 +385,7 @@ pub type EdgeOccupancyBuf<const E: usize> = [EdgeOccupancy; E];
 /// # Edge and manager handles
 ///
 /// Edges must implement [`ScopedEdge`](crate::edge::ScopedEdge) and managers
-/// must implement [`ScopedManager`](crate::memory::ScopedManager) to produce
+/// must implement [`ScopedManager`](crate::memory::manager::ScopedManager) to produce
 /// per-worker handles. Arc-based types (e.g. `ConcurrentEdge`,
 /// `ConcurrentMemoryManager`) return clones; future lock-free types will
 /// return split producer/consumer handles via

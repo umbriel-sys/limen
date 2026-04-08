@@ -1,5 +1,9 @@
 # Limen
 
+[![CI](https://github.com/idky137/limen/actions/workflows/ci.yml/badge.svg)](https://github.com/idky137/limen/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.81-blue.svg)](#)
+
 > **Portable, contract-enforcing computation graphs for AI-enabled embedded
 > systems — from bare-metal microcontrollers to multi-threaded servers, in
 > safe Rust.**
@@ -203,6 +207,7 @@ beyond.
 
 | Document | Description |
 |---|---|
+| [API Reference](https://idky137.github.io/limen/) | Rustdoc API documentation (GitHub Pages) |
 | [Architecture Guide](docs/architecture/index.md) | System design, memory model, execution flow |
 | [Decision Records](docs/ADRs/) | Rationale behind key design decisions |
 | [Roadmap](docs/roadmap.md) | Phased plan to v0.1.0 and stretch goals |

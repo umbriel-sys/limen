@@ -2,7 +2,7 @@
 //! (no proc-macro input and no stringly-typed DSL).
 //!
 //! Use this from your crate’s `build.rs` to construct a
-//! [`crate::ast::GraphDef`] with ordinary Rust types and expressions
+//! `crate::ast::GraphDef` with ordinary Rust types and expressions
 //! (typically authored via `syn::parse_quote!`). Then pass the finished AST to
 //! `expand_ast_to_file(..)` to emit the generated graph implementation.
 //!

@@ -14,6 +14,7 @@
 #         * std
 #         * spsc_raw
 #     - clippy for the same feature sets (unless `--no-clippy-or-fmt` is set)
+#     - cargo doc with -D warnings (unless `--no-clippy-or-fmt` is set)
 #
 # Options:
 #   --clean       Run `cargo clean` after all CI checks pass
@@ -77,8 +78,11 @@ cargo test --all --no-default-features --all-targets --verbose
 if [ "$SKIP_CLIPPY_AND_FMT" = false ]; then
   printf "  -> cargo clippy --all --no-default-features -- -D warnings\n"
   cargo clippy --all --no-default-features -- -D warnings
+  printf "  -> RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --no-default-features"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --no-default-features
 else
   printf "  -> clippy skipped (--no-clippy-or-fmt)\n"
+  printf "  -> doc check skipped (--no-clippy-or-fmt)\n\n"
 fi
 printf "\n"
 
@@ -90,8 +94,11 @@ cargo test --all --features alloc --all-targets --verbose
 if [ "$SKIP_CLIPPY_AND_FMT" = false ]; then
   printf "  -> cargo clippy --all --features alloc -- -D warnings\n"
   cargo clippy --all --features alloc -- -D warnings
+  printf "  -> RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features alloc"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features alloc
 else
   printf "  -> clippy skipped (--no-clippy-or-fmt)\n"
+  printf "  -> doc check skipped (--no-clippy-or-fmt)\n\n"
 fi
 printf "\n"
 
@@ -103,8 +110,11 @@ cargo test --all --features std --all-targets --verbose
 if [ "$SKIP_CLIPPY_AND_FMT" = false ]; then
   printf "  -> cargo clippy --all --features std -- -D warnings\n"
   cargo clippy --all --features std -- -D warnings
+  printf "  -> RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features std"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features std
 else
   printf "  -> clippy skipped (--no-clippy-or-fmt)\n"
+  printf "  -> doc check skipped (--no-clippy-or-fmt)\n\n"
 fi
 printf "\n"
 
@@ -116,8 +126,11 @@ cargo test --all --features spsc_raw --all-targets --verbose
 if [ "$SKIP_CLIPPY_AND_FMT" = false ]; then
   printf "  -> cargo clippy --all --features spsc_raw -- -D warnings\n"
   cargo clippy --all --features spsc_raw -- -D warnings
+  printf "  -> RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features spsc_raw"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features spsc_raw
 else
   printf "  -> clippy skipped (--no-clippy-or-fmt)\n"
+  printf "  -> doc check skipped (--no-clippy-or-fmt)\n\n"
 fi
 printf "\n"
 
@@ -127,7 +140,7 @@ if [ "$SKIP_CLIPPY_AND_FMT" = false ]; then
   cargo fmt --all -- --check
   printf "\n"
 else
-  printf "==> rustfmt skipped (--no-clippy-or-fmt)\n\n"
+  printf "==> rustfmt skipped (--no-clippy-or-fmt)\n"
 fi
 
 printf "==> local CI passed\n\n"

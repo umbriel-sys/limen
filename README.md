@@ -1,6 +1,8 @@
 # Limen
 
 [![CI](https://github.com/umbriel-sys/limen/actions/workflows/ci.yml/badge.svg)](https://github.com/umbriel-sys/limen/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/limen-core.svg)](https://crates.io/crates/limen-core)
+[![docs.rs](https://docs.rs/limen-core/badge.svg)](https://docs.rs/limen-core)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.81-blue.svg)](#)
 

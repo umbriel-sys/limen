@@ -11,7 +11,7 @@ demonstrates Limen's core capabilities in under a minute.
 - No external dependencies — everything builds from source.
 
 ```bash
-git clone https://github.com/idky137/limen.git
+git clone https://github.com/umbriel-sys/limen.git
 cd limen
 ```
 
@@ -177,7 +177,7 @@ graph id: 0
 |---|---|
 | Define your own graph | See `limen-examples/examples/pipeline_demo.rs` for the `define_graph!` DSL |
 | Architecture deep dive | [Architecture Guide](architecture/index.md) |
-| API reference | `cargo doc --workspace --open` or [GitHub Pages](https://idky137.github.io/limen/) |
+| API reference | `cargo doc --workspace --open` or [GitHub Pages](https://umbriel-sys.github.io/limen/) |
 | Design decisions | [ADRs](ADRs/) |
 | Full roadmap | [Roadmap](roadmap.md) |
 

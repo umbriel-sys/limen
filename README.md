@@ -211,6 +211,7 @@ beyond.
 | [Architecture Guide](docs/architecture/index.md) | System design, memory model, execution flow |
 | [Decision Records](docs/ADRs/) | Rationale behind key design decisions |
 | [Roadmap](docs/roadmap.md) | Phased plan to v0.1.0 and stretch goals |
+| [Funding & Licensing](FUNDING.md) | Funded work commitments and how to support the project |
 | [Development Guide](docs/dev_guide.md) | Building, testing, and contributing |
 
 ---
@@ -221,12 +222,14 @@ Limen is released under the Apache License, Version 2.0
 ([LICENSE-APACHE](LICENSE-APACHE)).
 
 The project is developed and owned by its original author. Contributions
-are accepted under a Contributor Licence Agreement (CLA), which ensures
-the project can be maintained, evolved, and (if necessary) dual-licensed
-for commercial use.
+are accepted under a Contributor Licence Agreement ([CLA](CLA.md)), which
+ensures the project can be maintained, evolved, and (if necessary)
+dual-licensed for commercial use.
 
-The goal is to keep Limen broadly accessible while retaining the ability
-to support long-term sustainability and real-world deployment.
+All deliverables produced under accepted public grants will be released
+under Apache-2.0 and remain available under Apache-2.0. Future major
+versions may be distributed under different or additional licence terms.
+See [FUNDING.md](FUNDING.md) for details.
 
 ---
 

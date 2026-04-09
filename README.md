@@ -1,6 +1,6 @@
 # Limen
 
-[![CI](https://github.com/idky137/limen/actions/workflows/ci.yml/badge.svg)](https://github.com/idky137/limen/actions/workflows/ci.yml)
+[![CI](https://github.com/umbriel-sys/limen/actions/workflows/ci.yml/badge.svg)](https://github.com/umbriel-sys/limen/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.81-blue.svg)](#)
 
@@ -64,7 +64,7 @@ Limen closes this gap.
 
 ```bash
 # Clone and enter the repository
-git clone https://github.com/idky137/limen.git
+git clone https://github.com/umbriel-sys/limen.git
 cd limen
 
 # Run the pipeline demo (requires std feature for concurrent execution)
@@ -206,7 +206,7 @@ beyond.
 
 | Document | Description |
 |---|---|
-| [API Reference](https://idky137.github.io/limen/) | Rustdoc API documentation (GitHub Pages) |
+| [API Reference](https://umbriel-sys.github.io/limen/) | Rustdoc API documentation (GitHub Pages) |
 | [Quickstart Guide](docs/quickstart.md) | Pipeline demo walkthrough and expected output |
 | [Architecture Guide](docs/architecture/index.md) | System design, memory model, execution flow |
 | [Decision Records](docs/ADRs/) | Rationale behind key design decisions |

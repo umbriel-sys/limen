@@ -33,14 +33,16 @@ Raspberry Pi or a server — despite implementing identical logic.
 
 No existing framework bridges this gap:
 
-| Framework | Portable Graphs | Inference Built-in | `no_std` | Contract Enforcement |
+| Framework | Graph Model | Inference | `no_std` | Contracts |
 |---|---|---|---|---|
-| ROS 2 | Yes | No | No | No |
-| Embassy | No | No | Yes | No |
-| RTIC | No | No | Yes | No |
-| Burn / Tract | No | Yes | Partial | No |
-| TFLite Micro | No | Yes | Yes | No |
-| **Limen** | **Yes** | **Yes** | **Yes** | **Yes** |
+| ROS 2 | Distributed graph | No | No | Limited |
+| Zenoh Flow | Portable execution graph | No | No | Limited |
+| Embassy | None | No | Yes | No |
+| RTIC | None | No | Yes | Limited |
+| TFLite Micro | Model graph only | Yes | Yes | No |
+| Tract | Model graph only | Yes | Partial | No |
+| ONNX Runtime | Model graph only | Yes | No | No |
+| **Limen** | **Portable execution graph** | **Yes** | **Yes** | **Yes** |
 
 Limen closes this gap.
 

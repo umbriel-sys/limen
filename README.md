@@ -6,22 +6,30 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.81-blue.svg)](#)
 
-> **Portable, contract-enforcing computation graphs for AI-enabled embedded
-> systems — from bare-metal microcontrollers to multi-threaded servers, in
-> safe Rust.**
+> **A real-time runtime for continuous AI systems operating on live data
+> streams — portable, contract-enforcing computation graphs from bare-metal
+> microcontrollers to multi-threaded servers, in safe Rust.**
 
 > **Alpha release.** Core contracts, code generator, and integration-tested
 > runtimes are functional. APIs may change before v0.1.0.
+
+> See [umbriel-systems.com/limen](https://umbriel-systems.com/limen) for
+> project overview and target domains.
 
 ---
 
 ## The Problem
 
-Building AI-enabled robotics and edge computing systems today means
-rebuilding the same software pipeline for every hardware target. A
-perception-inference-actuation pipeline written for a Cortex-M4 cannot run
-on a Raspberry Pi or a server without substantial rework — despite
-implementing identical logic.
+AI systems are increasingly deployed in environments where data is
+continuous, latency constraints are strict, and resources are limited.
+Robotics platforms, industrial control systems, and edge sensor networks
+require real-time processing of live data — not batch jobs or API calls.
+
+Existing infrastructure — from PyTorch to ONNX Runtime — is designed for
+batch or request-response workloads. These systems introduce unpredictable
+latency, dynamic memory behaviour, and limited control over execution. And
+building for a Cortex-M4 means rebuilding everything when you move to a
+Raspberry Pi or a server — despite implementing identical logic.
 
 No existing framework bridges this gap:
 

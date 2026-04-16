@@ -151,6 +151,17 @@ between targets today — ADR-013 will unify these.
 ---
 
 ## Architecture
+<p align="center">
+  <a href="./docs/limen-architectural-diagram-background-light.png">
+    <img
+      src="./docs/limen-architectural-diagram-background-light.png"
+      alt="Limen system architecture diagram"
+      width="900"
+    />
+  </a>
+  <br />
+  <em>Figure 1. Limen system architecture. (Click to view full resolution)</em>
+</p>
 
 Limen is organised as a layered workspace. The core contract crate owns no
 implementations — runtimes, platforms, and backends are all downstream:
@@ -225,6 +236,7 @@ beyond.
 | [Roadmap](docs/roadmap.md) | Phased plan to v0.1.0 and stretch goals |
 | [Funding & Licensing](FUNDING.md) | Funded work commitments and how to support the project |
 | [Development Guide](docs/dev_guide.md) | Building, testing, and contributing |
+| [Whitepaper](docs/whitepaper.md) | Design philosophy, architecture, and execution semantics |
 
 ---
 

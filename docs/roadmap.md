@@ -22,7 +22,7 @@ downstream crates to build against without repeated breaking changes.
 | **0** | Guardrails | Feature hygiene, CI matrix, `#[non_exhaustive]` | Done |
 | **1** | Currency + Arity | Tensor-first payloads, N-to-M ports, time types | In progress |
 | **2** | Trait Surface | Contract stabilisation, metadata completeness | Planned |
-| **3** | Robotics Primitives | Freshness, liveness, criticality, urgency, mailbox | Planned |
+| **3** | Robotics Primitives | Freshness, liveness, criticality, deadline ordering, mailbox | Planned |
 | **4** | Runtime Semantics | Lifecycle contract, error propagation | Planned |
 | **5** | Platform Finalisation | `PlatformBackend` stabilisation | Planned |
 | **6** | Quality + Release | Tests overhaul, docs audit, MSRV, CI gates | Planned |
@@ -43,11 +43,14 @@ Established the foundation for stable API evolution:
 Finalise what flows through the graph and how ports are addressed:
 
 - **C1 — Tensor-first currency.** Tensor and batch payloads as the primary
-  currency for ML workloads. Scalar shortcuts removed. **Complete.**
+  currency for ML workloads. **Complete.**
+- **C1a — Zero-copy memory model.** Token-based payload memory management with
+  three manager implementations. **Complete.**
 - **C2 — N-to-M node arity.** Port model with indexed inputs/outputs,
-  optional input semantics, fan-in/fan-out support.
-- **R0a — MessageHeader baseline.** Lock `Timestamp` and `Duration` types,
-  define `received_at` / `produced_at` semantics, set sequence ID scope.
+  per-port readiness rules, and fan-in/fan-out support.
+- **R0a — MessageHeader baseline.** Lock `Timestamp` and `Duration` newtypes,
+  add `max_age` (producer freshness cap) and `ClockDomainId` fields, remove
+  `QoSClass` (scheduling is deadline-driven).
 
 ### Phase 2: Trait Surface Stabilisation
 
@@ -55,53 +58,91 @@ Freeze the public trait signatures based on Phase 1 outcomes:
 
 - **C3 — Contract stabilisation.** Finalise `Node`, `Edge`, `MemoryManager`,
   `GraphApi`, and `LimenRuntime` signatures. Sync-first core; async adapters
-  above.
+  above. Lock generated graph construction boundaries, including where node and
+  edge policies are supplied.
 - **C4 — Metadata completeness.** Port definitions, batch constraints, shape
-  metadata, quantisation metadata. All alloc-free by default.
+  metadata, quantisation metadata, and memory-manager capacity contracts. All
+  alloc-free by default.
 
 ### Phase 3: Robotics Primitives
 
 Add first-class contracts for robotics and control system graphs:
 
-- **R1** — Urgency in `MessageHeader` (priority ordering).
-- **R2** — Freshness / expiry semantics (`max_age`, `valid_until`).
-- **R4** — Mailbox semantics (`peek_latest`, `read_latest`, overwrite-on-full).
-- **R5** — Per-input liveness policy (detect stuck sensors).
-- **R6** — Node liveness policy (detect stalled nodes).
-- **R7** — Edge peek APIs for scheduler decisions.
-- **R8** — Criticality classes (safety-critical vs best-effort).
-- **R9** — Standard telemetry event identifiers for robotics.
-
-Optional (may defer to v0.2.0):
-- R3 (clock domain identification), R10 (stale-skip convenience),
-  R11 (execution measurement).
+- **R1** — Deadline-driven ordering. `deadline_ns` in `MessageHeader` is the
+  sole per-message urgency signal. Unified priority key:
+  `(criticality, readiness, deadline, sequence, index)`.
+- **R2** — Two-sided freshness. `max_age` on both the message header
+  (producer-asserted) and `InputPortPolicy` (consumer-asserted);
+  effective age = min of both.
+- **R3** — Clock domain identification. `ClockDomainId` in `MessageHeader`
+  ensures correct freshness evaluation across split-clock graphs (e.g. MCU +
+  Linux). In scope for v0.1.0.
+- **R4** — Mailbox and latch semantics. `EdgePolicy::RetentionMode`:
+  `Consume` (latest-wins mailbox) and `Sticky` (latched value). Ergonomic
+  constructors: `EdgePolicy::mailbox_latest()` / `latch_latest()`.
+- **R5** — Per-input liveness policy. `InputPortPolicy.liveness` detects
+  stuck sensors; runtime tracks last-push time per edge.
+- **R6** — Node liveness policy. `NodePolicy.node_liveness` detects stalled
+  nodes; runtime tracks last-step time per node.
+- **R7** — `in_peek_deadline` on `StepContext` for node-author inspection of
+  per-port head deadlines. (`Edge::peek_header` already exists.)
+- **R8** — Criticality classes. `CriticalityClass { SafetyCritical, Operational,
+  BestEffort }` on `NodePolicy`. Codegen enforces criticality-flow rules
+  (lower-criticality producer cannot feed a `Required` input on a
+  higher-criticality consumer).
+- **R9** — Standard telemetry events. `TelemetryEvent::Policy(PolicyEvent)`
+  routed through the existing `Telemetry` trait. Covers stale messages,
+  liveness violations, deadline misses, overruns, failsafe signals, and
+  structural drops.
+- **R10** — Stale-skip convenience. `ctx.in_read_latest_fresh::<PORT, P>()`
+  (compile-time restricted to mailbox/latch ports) and
+  `ctx.in_pop_front_fresh::<PORT, P>()` (any FIFO port). In scope for v0.1.0.
+- **R11** — Execution overrun measurement. Wired to existing
+  `BudgetPolicy.watchdog_ticks`; emits `PolicyEvent::ExecutionOverrun`. In
+  scope for v0.1.0.
 
 ### Phase 4: Runtime Semantics
 
 Define the execution lifecycle and error propagation contracts:
 
 - **RS1 — Runtime lifecycle.** Five phases: `init` → `start` → `running` →
-  `stop` → `reset`/`shutdown`. Soft vs hard reset semantics.
-- **G1 — Error propagation.** Safety-critical failures halt or emit failsafe
-  signal. Best-effort failures drop and emit telemetry events.
+  `stop` → `reset`/`shutdown`. Soft reset (queue flush, liveness tables
+  zeroed) vs hard reset. Runtime tables (`edge_last_push`, `node_last_step`,
+  etc.) initialised at `start`.
+- **G1 — Error propagation.** `ErrorAction` enum on `NodePolicy`:
+  `HaltGraph` (whole-graph stop), `Quiesce` (node stops; downstream reacts
+  via readiness), `EmitFailsafeSignal { quiesce }` (writes to declared
+  failsafe output port), `Continue` (drop and emit). Defaults derived from
+  `CriticalityClass`.
 
 ### Phase 5: Platform Finalisation
 
 Stabilise the platform abstraction:
 
-- **P1 — PlatformBackend.** Service provider (time, event hooks, capabilities),
-  not policy engine. Reference implementation for Linux. Cortex-M4 stub.
+- **P1 — PlatformBackend.** Service provider: `now() -> Timestamp`,
+  `local_domain_id() -> ClockDomainId`, `init()`/`shutdown()` lifecycle hooks.
+  Not a policy engine; no event-emission hook (telemetry uses the existing
+  `Telemetry` trait). Reference implementation for Linux. Cortex-M4 stub.
 
 ### Phase 6: Quality + Release
 
 Final gates before tagging v0.1.0:
 
-- **Q1 — Tests overhaul.** Tensor-first, N-to-M graphs, mailbox, freshness,
-  liveness, urgency ordering, deterministic time injection.
+- **Q1 — Tests overhaul.** Tensor-first, N-to-M graphs, mailbox Consume/Sticky
+  modes, two-sided freshness, liveness, criticality ordering, activation policy
+  (Periodic coalescing), trigger-based inputs, deadline miss telemetry,
+  budget hardcap/softcap behaviour, heap/alloc graph variants, test-runtime
+  parity with production dequeue policy, concurrent scheduler invariants, and
+  codegen validation errors. Deterministic time injection via mock
+  `PlatformBackend`.
 - **Q2 — Docs audit.** All public API documented. Feature flag requirements
-  noted on every item. API freeze rules published.
-- **Q3 — Release hygiene.** MSRV pinned. CI gates: fmt, clippy, test, doc.
-  Feature matrix. Changelog. Examples compile under all features.
+  noted on every item. `QoSClass` references removed. API freeze rules
+  published.
+- **Q3 — Release hygiene.** MSRV pinned (≥ 1.65). CI gates: fmt, clippy,
+  test, doc. Feature matrix. Changelog. Public codegen entrypoint and builder
+  naming settled; unhandled fallible calls cleaned up; experimental queues fixed
+  or gated before inclusion in the stable feature matrix. Examples compile under
+  all features.
 
 ---
 
@@ -111,8 +152,9 @@ All of the following must be satisfied:
 
 1. All leaf issues closed or explicitly deferred with documented rationale.
 2. Feature matrix builds clean in CI: `no_std`, `alloc`, `std`.
-3. Comprehensive test coverage for tensor payloads, N-to-M graphs, mailbox
-   semantics, staleness detection, liveness violations, and telemetry events.
+3. Comprehensive test coverage for tensor payloads, N-to-M graphs,
+   mailbox/latch semantics, two-sided freshness, liveness violations,
+   criticality ordering, and telemetry events (full S0 §7 test matrix).
 4. Public API documented and frozen.
 5. At least one platform crate satisfies the final `PlatformBackend` contract.
 
@@ -120,19 +162,23 @@ All of the following must be satisfied:
 
 ## Beyond v0.1.0
 
-### v0.2.0 — Inference Backends and Platform Implementations
+### v0.2.0 — Inference Backends, Platforms, and First Product Slice
 
 - **TFLite Micro backend** — `no_std`, static tensor arena, Cortex-M4 target.
 - **Tract backend** — pure Rust, `std`, desktop and server targets.
 - **Raspberry Pi platform** — full `PlatformBackend` implementation with
   GPIO, SPI, and I2C support.
 - **Cortex-M4 platform** — SysTick/DWT clock, UART telemetry drain.
+- **Source and sink node library** — Replay, file, synthetic, IMU, UART, GPIO,
+  stdout/log/file sinks.
+- **Cross-platform IMU activity recognition demo** — Same graph running across
+  desktop/server and embedded targets.
 
 ### v1.0 — Production Readiness
 
 - Production `NoAllocRuntime` with full policy enforcement.
 - `ThreadedRuntime` with EDF and throughput scheduling.
-- Cross-platform IMU activity recognition reference example.
+- Production polish for the IMU reference example and deployment guides.
 - External conformance test suite documentation for third-party
   implementations.
 - Stability guarantees: semver compliance, deprecation policy.
